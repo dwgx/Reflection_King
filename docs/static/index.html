@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Reflection King</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #101316;
+      --panel: #1b2025;
+      --line: #323a43;
+      --text: #eef3f7;
+      --muted: #9aa8b4;
+      --accent: #2da7d7;
+      --accent-strong: #55c7f2;
+      --danger: #ff7272;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      display: grid;
+      place-items: center;
+      padding: 24px;
+    }
+    main {
+      width: min(760px, 100%);
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 22px;
+      box-shadow: 0 16px 48px rgba(0,0,0,.28);
+    }
+    h1 {
+      margin: 0 0 18px;
+      font-size: 22px;
+      font-weight: 650;
+      letter-spacing: 0;
+    }
+    label {
+      display: block;
+      color: var(--muted);
+      font-size: 13px;
+      margin-bottom: 8px;
+    }
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 128px;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+    input, select, button {
+      height: 42px;
+      border-radius: 6px;
+      border: 1px solid var(--line);
+      font: inherit;
+    }
+    input, select {
+      width: 100%;
+      background: #11161b;
+      color: var(--text);
+      padding: 0 12px;
+      outline: none;
+    }
+    input:focus, select:focus { border-color: var(--accent); }
+    button {
+      padding: 0 16px;
+      background: var(--accent);
+      color: #061017;
+      border-color: var(--accent);
+      font-weight: 700;
+      cursor: pointer;
+    }
+    button:disabled {
+      opacity: .58;
+      cursor: not-allowed;
+    }
+    .status {
+      margin-top: 18px;
+      padding-top: 16px;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      word-break: break-word;
+      min-height: 56px;
+      line-height: 1.55;
+    }
+    a { color: var(--accent-strong); }
+    .error { color: var(--danger); }
+    @media (max-width: 640px) {
+      body { padding: 12px; }
+      main { padding: 16px; }
+      .row { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Reflection King</h1>
+    <form id="form">
+      <label for="url">Source URL</label>
+      <div class="row">
+        <input id="url" name="url" type="url" required placeholder="https://example.com/audio.m4a">
+        <select id="bitrate" name="bitrate" aria-label="Bitrate">
+          <option value="192k" selected>192k</option>
+          <option value="128k">128k</option>
+          <option value="256k">256k</option>
+          <option value="320k">320k</option>
+        </select>
+      </div>
+      <label for="apiKey">API Key</label>
+      <input id="apiKey" name="apiKey" type="password" autocomplete="off" placeholder="Optional">
+      <div style="height:14px"></div>
+      <button id="submit" type="submit">Transcode</button>
+    </form>
+    <div id="status" class="status">Idle</div>
+  </main>
+  <script>
+    const form = document.querySelector("#form");
+    const submit = document.querySelector("#submit");
+    const statusBox = document.querySelector("#status");
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      submit.disabled = true;
+      statusBox.className = "status";
+      statusBox.textContent = "Queued";
+
+      try {
+        const response = await fetch("/api/jobs", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(form.apiKey.value ? { "x-api-key": form.apiKey.value } : {})
+          },
+          body: JSON.stringify({
+            url: form.url.value,
+            bitrate: form.bitrate.value
+          })
+        });
+        const job = await response.json();
+        if (!response.ok) throw new Error(job.error || "Request failed");
+        poll(job.status_url);
+      } catch (error) {
+        submit.disabled = false;
+        statusBox.className = "status error";
+        statusBox.textContent = error.message;
+      }
+    });
+
+    async function poll(statusUrl) {
+      try {
+        const response = await fetch(statusUrl);
+        const job = await response.json();
+        if (!response.ok) throw new Error(job.error || "Job not found");
+
+        if (job.status === "ready") {
+          submit.disabled = false;
+          statusBox.className = "status";
+          statusBox.innerHTML = 'Ready<br><a href="' + job.media_url + '" target="_blank" rel="noreferrer">' + job.media_url + "</a>";
+          return;
+        }
+
+        if (job.status === "error") {
+          submit.disabled = false;
+          statusBox.className = "status error";
+          statusBox.textContent = job.error || "Transcode failed";
+          return;
+        }
+
+        statusBox.textContent = job.status.charAt(0).toUpperCase() + job.status.slice(1);
+        setTimeout(() => poll(statusUrl), 1200);
+      } catch (error) {
+        submit.disabled = false;
+        statusBox.className = "status error";
+        statusBox.textContent = error.message;
+      }
+    }
+  </script>
+</body>
+</html>

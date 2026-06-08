@@ -1,0 +1,15 @@
+[Unit]
+Description=Reflection King API
+After=network.target reflection-browser.service
+Wants=reflection-browser.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/reflection-king
+EnvironmentFile=/etc/reflection-king/reflection.env
+ExecStart=/root/.cargo/bin/cargo run --release -p reflection-api
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

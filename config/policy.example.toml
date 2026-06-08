@@ -1,0 +1,14 @@
+[downloads]
+max_download_mb = 300
+max_redirects = 5
+timeout_seconds = 300
+
+[transcode.audio_mp3_vrc]
+sample_rate = 44100
+channels = 2
+allowed_bitrates = ["96k", "128k", "160k", "192k", "256k", "320k"]
+default_bitrate = "192k"
+
+[security]
+require_api_key = true
+allow_private_networks = false

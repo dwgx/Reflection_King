@@ -1,0 +1,7 @@
+[audio_mp3_vrc]
+container = "mp3"
+codec = "libmp3lame"
+sample_rate = 44100
+channels = 2
+default_bitrate = "192k"
+allowed_bitrates = ["96k", "128k", "160k", "192k", "256k", "320k"]

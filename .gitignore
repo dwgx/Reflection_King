@@ -1,0 +1,18 @@
+/target/
+/storage/
+/.env
+/services/reflection-browser/node_modules/
+/services/reflection-browser/dist/
+/services/reflection-browser/storage/
+/*.log
+*.pdb
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Local editor and OS files
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store

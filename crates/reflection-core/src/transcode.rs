@@ -1,0 +1,105 @@
+use std::path::{Path, PathBuf};
+
+use tokio::process::Command;
+
+use crate::{Result, RkError};
+
+#[derive(Debug, Clone)]
+pub struct Transcoder {
+    ffmpeg_path: PathBuf,
+}
+
+impl Transcoder {
+    pub fn new(ffmpeg_path: impl Into<PathBuf>) -> Self {
+        Self {
+            ffmpeg_path: ffmpeg_path.into(),
+        }
+    }
+
+    pub async fn audio_to_mp3(&self, input: &Path, output: &Path, bitrate: &str) -> Result<()> {
+        let output = Command::new(&self.ffmpeg_path)
+            .arg("-y")
+            .arg("-hide_banner")
+            .arg("-loglevel")
+            .arg("error")
+            .arg("-i")
+            .arg(input)
+            .arg("-vn")
+            .arg("-map_metadata")
+            .arg("-1")
+            .arg("-codec:a")
+            .arg("libmp3lame")
+            .arg("-b:a")
+            .arg(bitrate)
+            .arg("-ar")
+            .arg("44100")
+            .arg("-ac")
+            .arg("2")
+            .arg(output)
+            .output()
+            .await?;
+
+        if output.status.success() {
+            return Ok(());
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(RkError::Transcode(if stderr.is_empty() {
+            "ffmpeg exited with failure".to_string()
+        } else {
+            stderr
+        }))
+    }
+
+    pub async fn media_to_mp4(&self, input: &Path, output: &Path) -> Result<()> {
+        self.media_input_to_mp4(input.as_os_str(), output).await
+    }
+
+    pub async fn media_url_to_mp4(&self, input_url: &str, output: &Path) -> Result<()> {
+        self.media_input_to_mp4(input_url, output).await
+    }
+
+    async fn media_input_to_mp4(
+        &self,
+        input: impl AsRef<std::ffi::OsStr>,
+        output: &Path,
+    ) -> Result<()> {
+        let output = Command::new(&self.ffmpeg_path)
+            .arg("-y")
+            .arg("-hide_banner")
+            .arg("-loglevel")
+            .arg("error")
+            .arg("-i")
+            .arg(input)
+            .arg("-map")
+            .arg("0:v:0?")
+            .arg("-map")
+            .arg("0:a:0?")
+            .arg("-c:v")
+            .arg("libx264")
+            .arg("-preset")
+            .arg("veryfast")
+            .arg("-crf")
+            .arg("23")
+            .arg("-c:a")
+            .arg("aac")
+            .arg("-b:a")
+            .arg("160k")
+            .arg("-movflags")
+            .arg("+faststart")
+            .arg(output)
+            .output()
+            .await?;
+
+        if output.status.success() {
+            return Ok(());
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(RkError::Transcode(if stderr.is_empty() {
+            "ffmpeg exited with failure".to_string()
+        } else {
+            stderr
+        }))
+    }
+}
