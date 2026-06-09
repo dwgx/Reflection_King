@@ -1,0 +1,6 @@
+[mp4_faststart]
+container = "mp4"
+video_codec = "libx264"
+audio_codec = "aac"
+movflags = "+faststart"
+max_height = 720

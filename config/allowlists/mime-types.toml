@@ -1,0 +1,11 @@
+allowed_inputs = [
+  "audio/",
+  "video/",
+  "application/octet-stream",
+  "application/vnd.apple.mpegurl",
+  "application/dash+xml",
+]
+
+blocked_inputs = [
+  "text/html",
+]

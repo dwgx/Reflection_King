@@ -1,0 +1,6 @@
+[source_hosts]
+allow = []
+deny = ["localhost", "127.0.0.1"]
+
+[playback_hosts]
+allow = []

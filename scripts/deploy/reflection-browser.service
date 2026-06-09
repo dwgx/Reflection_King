@@ -1,0 +1,14 @@
+[Unit]
+Description=Reflection King Browser Sidecar
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/reflection-king/services/reflection-browser
+EnvironmentFile=/etc/reflection-king/reflection.env
+ExecStart=/usr/bin/npm run start
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

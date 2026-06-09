@@ -1,0 +1,3 @@
+max_download_mb = 300
+max_concurrent_jobs = 4
+max_duration_seconds = 7200

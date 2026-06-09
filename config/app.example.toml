@@ -1,0 +1,6 @@
+[server]
+bind_address = "0.0.0.0:8787"
+public_base_url = "http://localhost:8787"
+
+[storage]
+dir = "storage"
