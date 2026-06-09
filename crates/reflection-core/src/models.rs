@@ -416,7 +416,9 @@ pub fn normalize_profile_id(value: Option<String>) -> String {
 
 pub fn normalize_bitrate(value: Option<&str>) -> String {
     match value {
-        Some(value @ ("96k" | "128k" | "160k" | "192k" | "256k" | "320k")) => value.to_string(),
+        Some(value @ ("auto" | "96k" | "128k" | "160k" | "192k" | "256k" | "320k")) => {
+            value.to_string()
+        }
         _ => "192k".to_string(),
     }
 }

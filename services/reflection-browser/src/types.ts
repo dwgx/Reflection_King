@@ -23,6 +23,7 @@ export interface BrowserCandidate {
   qualityLabel?: string;
   score: number;
   requiresAuthorization: boolean;
+  metadata?: Record<string, unknown>;
 }
 
 export interface ProbeResponse {

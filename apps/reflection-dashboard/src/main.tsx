@@ -112,6 +112,7 @@ interface CreateJobPayload {
 
 const OUTPUTS: OutputKind[] = ["audio", "video", "image", "page_html"];
 const TERMINAL = new Set(["ready", "error", "candidates_ready"]);
+const PAGE_SIZE_OPTIONS = [3, 5, 10, 20, 50];
 
 function App() {
   const [apiKey, setApiKey] = useState(() => localStorage.getItem("reflection_api_key") ?? "");
@@ -124,11 +125,15 @@ function App() {
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [selectedCandidates, setSelectedCandidates] = useState<Set<string>>(new Set());
   const [showAllCandidates, setShowAllCandidates] = useState(false);
+  const [jobPage, setJobPage] = useState(1);
+  const [jobPageSize, setJobPageSize] = useState(3);
+  const [candidatePage, setCandidatePage] = useState(1);
+  const [candidatePageSize, setCandidatePageSize] = useState(3);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string>("空闲");
   const [form, setForm] = useState<CreateJobPayload>({
     url: "",
-    bitrate: "192k",
+    bitrate: "auto",
     discovery: "auto",
     platform_hint: "auto",
     outputs: ["audio"],
@@ -153,6 +158,7 @@ function App() {
     if (!selectedJobId) return;
     setSelectedCandidates(new Set());
     setShowAllCandidates(false);
+    setCandidatePage(1);
     void loadJob(selectedJobId);
     const timer = window.setInterval(() => {
       void loadJob(selectedJobId, true);
@@ -169,6 +175,24 @@ function App() {
     () => bestCandidate(candidates, selectedJob),
     [candidates, selectedJob],
   );
+
+  const pagedJobs = useMemo(
+    () => paginate(jobs, jobPage, jobPageSize),
+    [jobs, jobPage, jobPageSize],
+  );
+
+  const pagedCandidates = useMemo(
+    () => paginate(visibleCandidates, candidatePage, candidatePageSize),
+    [visibleCandidates, candidatePage, candidatePageSize],
+  );
+
+  useEffect(() => {
+    setJobPage((page) => clampPage(page, jobs.length, jobPageSize));
+  }, [jobs.length, jobPageSize]);
+
+  useEffect(() => {
+    setCandidatePage((page) => clampPage(page, visibleCandidates.length, candidatePageSize));
+  }, [visibleCandidates.length, candidatePageSize]);
 
   async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const response = await fetch(path, {
@@ -231,6 +255,7 @@ function App() {
     try {
       const data = await request<JobView[]>("/api/jobs?limit=100");
       setJobs(data);
+      setJobPage((page) => clampPage(page, data.length, jobPageSize));
       if (!selectedJobId && data[0]) {
         setSelectedJobId(data[0].id);
       }
@@ -283,6 +308,10 @@ function App() {
 
   async function pasteFromClipboard() {
     try {
+      if (!navigator.clipboard?.readText) {
+        await pasteWithPrompt();
+        return;
+      }
       const text = await navigator.clipboard.readText();
       if (!text.trim()) {
         setMessage("剪贴板为空");
@@ -291,8 +320,18 @@ function App() {
       setForm({ ...form, url: text.trim() });
       setMessage("已粘贴剪贴板内容");
     } catch {
-      setMessage("无法读取剪贴板，请手动粘贴");
+      await pasteWithPrompt();
     }
+  }
+
+  async function pasteWithPrompt() {
+    const text = window.prompt("浏览器禁止直接读取剪贴板，请在这里粘贴 URL");
+    if (!text?.trim()) {
+      setMessage("未粘贴内容");
+      return;
+    }
+    setForm({ ...form, url: text.trim() });
+    setMessage("已填入粘贴内容");
   }
 
   function clearForm() {
@@ -403,7 +442,8 @@ function App() {
                   <Select
                     value={form.bitrate}
                     onChange={(event) => setForm({ ...form, bitrate: event.target.value })}
-                    options={["96k", "128k", "160k", "192k", "256k", "320k"]}
+                    options={["auto", "96k", "128k", "160k", "192k", "256k", "320k"]}
+                    labelFor={bitrateLabel}
                   />
                 </Field>
                 <Field label="授权模式">
@@ -453,12 +493,14 @@ function App() {
           </Card>
         </section>
 
-        <section className="grid gap-4 xl:grid-cols-[1.25fr_0.75fr]">
+        <section className="grid items-stretch gap-4 xl:grid-cols-[1.05fr_0.95fr]">
           <Card
             title="任务列表"
             icon={<Activity size={16} />}
             action={<Button variant="secondary" onClick={refreshJobs}><ListRestart size={16} /> 刷新</Button>}
+            className="h-full"
           >
+            <div className="grid h-full gap-3">
             <div className="overflow-x-auto">
               <table className="w-full min-w-[720px] table-fixed text-left text-sm">
                 <thead className="text-xs uppercase text-zinc-500">
@@ -470,7 +512,7 @@ function App() {
                   </tr>
                 </thead>
                 <tbody>
-                  {jobs.map((job) => (
+                  {pagedJobs.items.map((job) => (
                     <tr
                       key={job.id}
                       className={`cursor-pointer border-t border-zinc-900 hover:bg-zinc-900/70 ${job.id === selectedJobId ? "bg-zinc-900 ring-1 ring-inset ring-cyan-500/25" : ""}`}
@@ -488,63 +530,86 @@ function App() {
                 </tbody>
               </table>
             </div>
+            <Pager
+              page={pagedJobs.page}
+              pageSize={jobPageSize}
+              total={jobs.length}
+              onPageChange={setJobPage}
+              onPageSizeChange={(value) => {
+                setJobPageSize(value);
+                setJobPage(1);
+              }}
+            />
+            </div>
           </Card>
 
-          <Card title="任务详情" icon={<Settings size={16} />}>
-            {selectedJob ? (
-              <div className="grid gap-3 text-sm">
-                <Info label="ID" value={selectedJob.id} />
-                <Info label="状态" value={statusLabel(selectedJob.status)} tone={selectedJob.status === "error" ? "danger" : "normal"} />
-                <Info label="输出类型" value={selectedJob.outputs.map(outputLabel).join(", ")} />
-                {selectedJob.error && <Info label="错误摘要" value={friendlyError(selectedJob.error)} tone="danger" />}
-                <Info label="播放地址" value={selectedJob.media_url ?? "-"} copyable />
-                {selectedJob.media_url && <Player url={selectedJob.media_url} />}
-              </div>
-            ) : (
-              <Empty label="请选择一个任务" />
-            )}
-          </Card>
+          <div className="grid h-full gap-4">
+            <Card title="任务详情" icon={<Settings size={16} />} className="min-h-[260px]">
+              {selectedJob ? (
+                <div className="grid gap-3 text-sm">
+                  <Info label="ID" value={selectedJob.id} />
+                  <Info label="状态" value={statusLabel(selectedJob.status)} tone={selectedJob.status === "error" ? "danger" : "normal"} />
+                  <Info label="输出类型" value={selectedJob.outputs.map(outputLabel).join(", ")} />
+                  {selectedJob.error && <Info label="错误摘要" value={friendlyError(selectedJob.error)} tone="danger" />}
+                  <Info label="播放地址" value={selectedJob.media_url ?? "-"} copyable />
+                  {selectedJob.media_url && <Player url={selectedJob.media_url} />}
+                </div>
+              ) : (
+                <Empty label="请选择一个任务" />
+              )}
+            </Card>
+
+            <Card
+              title="资源选择"
+              icon={<FileAudio size={16} />}
+              action={
+                <Button
+                  onClick={selectCandidates}
+                  disabled={!selectedJob || (!selectedCandidates.size && !defaultCandidate) || busy}
+                >
+                  {busy ? <Loader2 className="animate-spin" size={16} /> : <Play size={16} />}
+                  {selectedCandidates.size ? "转换选中资源" : "转换推荐资源"}
+                </Button>
+              }
+            >
+              {candidates.length ? (
+                <div className="grid gap-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-zinc-500">
+                    <span>已找到 {candidates.length} 个资源，当前显示 {pagedCandidates.items.length} 个。</span>
+                    <Button type="button" variant="secondary" className="h-8" onClick={() => setShowAllCandidates(!showAllCandidates)}>
+                      {showAllCandidates ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                      {showAllCandidates ? "收起低价值资源" : "显示全部资源"}
+                    </Button>
+                  </div>
+                  {pagedCandidates.items.map((candidate, index) => (
+                    <CandidateRow
+                      key={candidate.id}
+                      candidate={candidate}
+                      recommended={!selectedCandidates.size && candidate.id === defaultCandidate?.id}
+                      index={pagedCandidates.start + index}
+                      selected={selectedCandidates.has(candidate.id)}
+                      onToggle={() => toggleCandidate(candidate.id)}
+                    />
+                  ))}
+                  <Pager
+                    page={pagedCandidates.page}
+                    pageSize={candidatePageSize}
+                    total={visibleCandidates.length}
+                    onPageChange={setCandidatePage}
+                    onPageSizeChange={(value) => {
+                      setCandidatePageSize(value);
+                      setCandidatePage(1);
+                    }}
+                  />
+                </div>
+              ) : (
+                <Empty label={selectedJob?.status === "error" ? "解析失败，没有可用资源" : "还没有发现可用资源"} />
+              )}
+            </Card>
+          </div>
         </section>
 
         <section className="grid gap-4 xl:grid-cols-2">
-          <Card
-            title="资源选择"
-            icon={<FileAudio size={16} />}
-            action={
-              <Button
-                onClick={selectCandidates}
-                disabled={!selectedJob || (!selectedCandidates.size && !defaultCandidate) || busy}
-              >
-                {busy ? <Loader2 className="animate-spin" size={16} /> : <Play size={16} />}
-                {selectedCandidates.size ? "转换选中资源" : "转换推荐资源"}
-              </Button>
-            }
-          >
-            {candidates.length ? (
-              <div className="grid gap-3">
-                <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-zinc-500">
-                  <span>已找到 {candidates.length} 个资源，默认只显示适合当前输出的前 {visibleCandidates.length} 个。</span>
-                  <Button type="button" variant="secondary" className="h-8" onClick={() => setShowAllCandidates(!showAllCandidates)}>
-                    {showAllCandidates ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-                    {showAllCandidates ? "收起低价值资源" : "显示全部资源"}
-                  </Button>
-                </div>
-                {visibleCandidates.map((candidate, index) => (
-                  <CandidateRow
-                    key={candidate.id}
-                    candidate={candidate}
-                    recommended={!selectedCandidates.size && candidate.id === defaultCandidate?.id}
-                    index={index}
-                    selected={selectedCandidates.has(candidate.id)}
-                    onToggle={() => toggleCandidate(candidate.id)}
-                  />
-                ))}
-              </div>
-            ) : (
-              <Empty label={selectedJob?.status === "error" ? "解析失败，没有可用资源" : "还没有发现可用资源"} />
-            )}
-          </Card>
-
           <Card title="产物" icon={<ExternalLink size={16} />}>
             {artifacts.length ? (
               <div className="grid gap-3">
@@ -604,9 +669,9 @@ function App() {
   );
 }
 
-function Card(props: { title: string; icon: React.ReactNode; action?: React.ReactNode; children: React.ReactNode }) {
+function Card(props: { title: string; icon: React.ReactNode; action?: React.ReactNode; children: React.ReactNode; className?: string }) {
   return (
-    <section className="rounded-lg border border-zinc-800 bg-zinc-900/80">
+    <section className={`rounded-lg border border-zinc-800 bg-zinc-900/80 ${props.className ?? ""}`}>
       <div className="flex items-center justify-between gap-3 border-b border-zinc-800 px-4 py-3">
         <h2 className="flex items-center gap-2 text-sm font-semibold text-zinc-100">{props.icon}{props.title}</h2>
         {props.action}
@@ -688,6 +753,50 @@ function CandidateRow(props: {
         <div>{formatBytes(props.candidate.content_length)}</div>
       </div>
     </label>
+  );
+}
+
+function Pager(props: {
+  page: number;
+  pageSize: number;
+  total: number;
+  onPageChange: (page: number) => void;
+  onPageSizeChange: (pageSize: number) => void;
+}) {
+  const pageCount = Math.max(1, Math.ceil(props.total / props.pageSize));
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-2 border-t border-zinc-900 pt-3 text-xs text-zinc-500">
+      <span>第 {props.page} / {pageCount} 页，共 {props.total} 条</span>
+      <div className="flex items-center gap-2">
+        <select
+          className="h-8 rounded-md border border-zinc-800 bg-zinc-950 px-2 text-xs text-zinc-200 outline-none"
+          value={props.pageSize}
+          onChange={(event) => props.onPageSizeChange(Number(event.target.value))}
+        >
+          {PAGE_SIZE_OPTIONS.map((value) => (
+            <option key={value} value={value}>每页 {value}</option>
+          ))}
+        </select>
+        <Button
+          type="button"
+          variant="secondary"
+          className="h-8"
+          disabled={props.page <= 1}
+          onClick={() => props.onPageChange(props.page - 1)}
+        >
+          上一页
+        </Button>
+        <Button
+          type="button"
+          variant="secondary"
+          className="h-8"
+          disabled={props.page >= pageCount}
+          onClick={() => props.onPageChange(props.page + 1)}
+        >
+          下一页
+        </Button>
+      </div>
+    </div>
   );
 }
 
@@ -776,6 +885,21 @@ function formatBytes(value: number | null | undefined): string {
   return `${size.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
 }
 
+function paginate<T>(items: T[], page: number, pageSize: number): { items: T[]; page: number; start: number } {
+  const safePage = clampPage(page, items.length, pageSize);
+  const start = (safePage - 1) * pageSize;
+  return {
+    items: items.slice(start, start + pageSize),
+    page: safePage,
+    start,
+  };
+}
+
+function clampPage(page: number, total: number, pageSize: number): number {
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
+  return Math.min(Math.max(1, page), pageCount);
+}
+
 function capabilityStatus(value: boolean | undefined, apiKey: string): string {
   if (value === true) return "已配置";
   if (value === false) return "未配置";
@@ -833,6 +957,10 @@ function outputLabel(value: string): string {
   } as Record<string, string>)[value] ?? value;
 }
 
+function bitrateLabel(value: string): string {
+  return value === "auto" ? "自动" : value;
+}
+
 function candidateDisplayList(candidates: Candidate[], job: JobView | null, showAll: boolean): Candidate[] {
   const ranked = [...candidates].sort((left, right) => candidateRank(right, job) - candidateRank(left, job));
   if (showAll) return ranked;
@@ -860,7 +988,7 @@ function candidateRank(candidate: Candidate, job: JobView | null): number {
 
   if (outputs.has("video")) {
     if (candidate.kind === "video" || candidate.kind === "manifest") rank += 1000;
-    if (candidate.kind === "audio") rank += 200;
+    if (candidate.kind === "audio") rank += 50;
   }
 
   if (outputs.has("image") && candidate.kind === "image") rank += 900;
@@ -874,7 +1002,7 @@ function preferredCandidateKinds(job: JobView | null): Set<string> {
     return new Set(["audio", "manifest", "video"]);
   }
   if (outputs.has("video")) {
-    return new Set(["video", "manifest"]);
+    return new Set(["video", "manifest", "audio"]);
   }
   if (outputs.has("image")) {
     return new Set(["image"]);

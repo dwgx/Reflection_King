@@ -339,7 +339,9 @@ async function bilibiliCandidatesFromPage(page: Page, pageUrl: string): Promise<
     const currentWindow = window as Window & { __playinfo__?: unknown };
     return currentWindow.__playinfo__;
   });
-  return candidatesFromBilibiliPlayInfo(playInfo, pageUrl);
+  const candidates = candidatesFromBilibiliPlayInfo(playInfo, pageUrl);
+  const apiCandidates = await bilibiliCandidatesFromApi(page, pageUrl).catch(() => []);
+  return [...candidates, ...apiCandidates];
 }
 
 function candidatesFromBilibiliPlayInfo(playInfo: unknown, pageUrl: string): BrowserCandidate[] {
@@ -390,6 +392,8 @@ function candidateFromBilibiliDashEntry(entry: unknown, kind: "audio" | "video",
   const mediaId = firstString(record?.id) ?? m4sMediaId(urlPath(url));
   const height = asNumber(record?.height);
   const bandwidth = asNumber(record?.bandwidth);
+  const width = asNumber(record?.width);
+  const codecs = firstString(record?.codecs);
   return {
     url,
     kind,
@@ -403,6 +407,15 @@ function candidateFromBilibiliDashEntry(entry: unknown, kind: "audio" | "video",
       : mediaId ? `bilibili-audio-${mediaId}` : bandwidth ? `audio-${bandwidth}` : mimeType,
     score: scoreCandidate(kind, mimeType, url) + 35 + (height ? Math.min(Math.floor(height / 20), 60) : 0),
     requiresAuthorization: false,
+    metadata: {
+      source: "bilibili_playinfo",
+      mediaId,
+      height,
+      width,
+      bandwidth,
+      codecs,
+      backupUrls: asArray(record?.backupUrl ?? record?.backup_url).filter((value): value is string => typeof value === "string"),
+    },
   };
 }
 
@@ -424,7 +437,47 @@ function candidateFromBilibiliDurlEntry(entry: unknown, pageUrl: string): Browse
     qualityLabel: qualityLabel(url, "video/mp4"),
     score: scoreCandidate(kind, "video/mp4", url) + 30,
     requiresAuthorization: false,
+    metadata: {
+      source: "bilibili_durl",
+      size: asNumber(record?.size),
+    },
   };
+}
+
+async function bilibiliCandidatesFromApi(page: Page, pageUrl: string): Promise<BrowserCandidate[]> {
+  const ids = bilibiliIdsFromUrl(pageUrl);
+  if (!ids.bvid && !ids.aid) {
+    return [];
+  }
+
+  const response = await page.evaluate(async ({ bvid, aid }) => {
+    const viewParams = bvid ? `bvid=${encodeURIComponent(bvid)}` : `aid=${encodeURIComponent(String(aid))}`;
+    const view = await fetch(`https://api.bilibili.com/x/web-interface/view?${viewParams}`, {
+      credentials: "include",
+      headers: { accept: "application/json, text/plain, */*" },
+    }).then((item) => item.json());
+    const cid = view?.data?.cid;
+    if (!cid) {
+      return { view, play: null };
+    }
+    const idParams = bvid ? `bvid=${encodeURIComponent(bvid)}` : `avid=${encodeURIComponent(String(aid))}`;
+    const play = await fetch(`https://api.bilibili.com/x/player/playurl?${idParams}&cid=${encodeURIComponent(String(cid))}&qn=120&fnval=4048&fourk=1`, {
+      credentials: "include",
+      headers: { accept: "application/json, text/plain, */*" },
+    }).then((item) => item.json());
+    return { view, play };
+  }, ids);
+
+  const play = asRecord(response)?.play;
+  return candidatesFromBilibiliPlayInfo(play, pageUrl).map((candidate) => ({
+    ...candidate,
+    resourceType: "bilibili_api",
+    score: candidate.score + 8,
+    metadata: {
+      ...(candidate.metadata ?? {}),
+      source: "bilibili_api",
+    },
+  }));
 }
 
 async function genericCandidatesFromPage(page: Page, pageUrl: string): Promise<BrowserCandidate[]> {
@@ -618,6 +671,7 @@ function requestedCandidateKinds(outputs: string[] | undefined): ReadonlySet<Can
       case "video":
         kinds.add("video");
         kinds.add("manifest");
+        kinds.add("audio");
         break;
       case "image":
         kinds.add("image");
@@ -647,6 +701,7 @@ function outputPreferenceBoost(kind: CandidateKind, outputs: string[] | undefine
 
   if (wantsVideo && !wantsAudio) {
     if (kind === "video" || kind === "manifest") return 60;
+    if (kind === "audio") return 15;
   }
 
   return 0;
@@ -689,6 +744,23 @@ function isBilibiliUrl(value: string): boolean {
     return host === "bilibili.com" || host.endsWith(".bilibili.com");
   } catch {
     return false;
+  }
+}
+
+function bilibiliIdsFromUrl(value: string): { bvid?: string; aid?: string } {
+  try {
+    const url = new URL(value);
+    const pathMatch = url.pathname.match(/\/video\/(BV[a-zA-Z0-9]+|av\d+)/i);
+    const id = pathMatch?.[1];
+    if (!id) {
+      return {};
+    }
+    if (id.toLowerCase().startsWith("av")) {
+      return { aid: id.slice(2) };
+    }
+    return { bvid: id };
+  } catch {
+    return {};
   }
 }
 

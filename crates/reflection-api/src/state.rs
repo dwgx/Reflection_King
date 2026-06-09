@@ -295,8 +295,9 @@ impl AppState {
         }
 
         let selected = candidates
-            .into_iter()
+            .iter()
             .filter(|candidate| job.selected_candidate_ids.contains(&candidate.id))
+            .cloned()
             .collect::<Vec<_>>();
 
         if selected.is_empty() {
@@ -305,8 +306,8 @@ impl AppState {
             ));
         }
 
-        for candidate in selected {
-            self.process_candidate(&job, &candidate).await?;
+        for candidate in &selected {
+            self.process_candidate(&job, candidate, &candidates).await?;
         }
 
         let artifacts = self.job_store.list_artifacts(job.id).await?;
@@ -323,7 +324,12 @@ impl AppState {
         Ok(())
     }
 
-    async fn process_candidate(&self, job: &JobRecord, candidate: &MediaCandidate) -> Result<()> {
+    async fn process_candidate(
+        &self,
+        job: &JobRecord,
+        candidate: &MediaCandidate,
+        available_candidates: &[MediaCandidate],
+    ) -> Result<()> {
         validate_candidate_url(&candidate.url)?;
         if candidate.extractor == "yt_dlp" && candidate.requires_authorization {
             return Err(RkError::Source(
@@ -374,9 +380,24 @@ impl AppState {
                 } else {
                     self.update_status(job.id, JobStatus::Remuxing).await?;
                     let output_path = job_dir.join(format!("video-{}.mp4", candidate.id));
-                    Transcoder::new(self.config.ffmpeg_path.clone())
-                        .media_url_to_mp4_with_headers(&candidate.url, &output_path, &headers)
-                        .await?;
+                    if let Some(audio_candidate) =
+                        best_companion_audio(candidate, available_candidates)
+                    {
+                        let audio_headers = self.download_headers(job, audio_candidate).await?;
+                        Transcoder::new(self.config.ffmpeg_path.clone())
+                            .media_urls_to_mp4_with_headers(
+                                &candidate.url,
+                                &headers,
+                                &audio_candidate.url,
+                                &audio_headers,
+                                &output_path,
+                            )
+                            .await?;
+                    } else {
+                        Transcoder::new(self.config.ffmpeg_path.clone())
+                            .media_url_to_mp4_with_headers(&candidate.url, &output_path, &headers)
+                            .await?;
+                    }
                     self.insert_artifact(job.id, OutputKind::Video, output_path, "video/mp4")
                         .await?;
                 }
@@ -475,4 +496,61 @@ impl AppState {
 
 fn validate_candidate_url(url: &str) -> Result<()> {
     reflection_core::url_policy::parse_and_validate_url(url).map(|_| ())
+}
+
+fn best_companion_audio<'a>(
+    video_candidate: &MediaCandidate,
+    candidates: &'a [MediaCandidate],
+) -> Option<&'a MediaCandidate> {
+    if video_candidate.kind != CandidateKind::Video {
+        return None;
+    }
+
+    candidates
+        .iter()
+        .filter(|candidate| candidate.kind == CandidateKind::Audio)
+        .filter(|candidate| same_candidate_family(video_candidate, candidate))
+        .max_by_key(|candidate| audio_rank(candidate))
+}
+
+fn same_candidate_family(left: &MediaCandidate, right: &MediaCandidate) -> bool {
+    if left.extractor != right.extractor {
+        return false;
+    }
+
+    if left.resource_type.as_deref() == Some("bilibili_playinfo")
+        || left.resource_type.as_deref() == Some("bilibili_api")
+    {
+        return matches!(
+            right.resource_type.as_deref(),
+            Some("bilibili_playinfo") | Some("bilibili_api")
+        );
+    }
+
+    left.initiator_url == right.initiator_url
+}
+
+fn audio_rank(candidate: &MediaCandidate) -> i64 {
+    candidate_metadata_number(candidate, "bandwidth")
+        .unwrap_or_else(|| audio_quality_id(candidate).unwrap_or(candidate.score))
+}
+
+fn audio_quality_id(candidate: &MediaCandidate) -> Option<i64> {
+    candidate
+        .quality_label
+        .as_deref()
+        .and_then(|label| label.rsplit('-').next())
+        .and_then(|value| value.parse::<i64>().ok())
+}
+
+fn candidate_metadata_number(candidate: &MediaCandidate, key: &str) -> Option<i64> {
+    candidate
+        .metadata_json
+        .get("candidate")
+        .and_then(|metadata| metadata.get(key))
+        .and_then(|value| {
+            value
+                .as_i64()
+                .or_else(|| value.as_f64().map(|number| number as i64))
+        })
 }

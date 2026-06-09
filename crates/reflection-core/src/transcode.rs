@@ -58,6 +58,20 @@ impl Transcoder {
             .await
     }
 
+    pub async fn media_urls_to_mp4_with_headers(
+        &self,
+        video_url: &str,
+        video_headers: &HeaderMap,
+        audio_url: &str,
+        audio_headers: &HeaderMap,
+        output: &Path,
+    ) -> Result<()> {
+        let video_args = ffmpeg_http_args(video_headers);
+        let audio_args = ffmpeg_http_args(audio_headers);
+        self.media_inputs_to_mp4(video_url, &video_args, audio_url, &audio_args, output)
+            .await
+    }
+
     async fn audio_input_to_mp3(
         &self,
         input: impl AsRef<std::ffi::OsStr>,
@@ -65,6 +79,7 @@ impl Transcoder {
         bitrate: &str,
         input_args: &[OsString],
     ) -> Result<()> {
+        let bitrate = normalize_audio_bitrate(bitrate);
         let mut command = Command::new(&self.ffmpeg_path);
         command
             .arg("-y")
@@ -158,6 +173,73 @@ impl Transcoder {
         } else {
             stderr
         }))
+    }
+
+    async fn media_inputs_to_mp4(
+        &self,
+        video_input: impl AsRef<std::ffi::OsStr>,
+        video_input_args: &[OsString],
+        audio_input: impl AsRef<std::ffi::OsStr>,
+        audio_input_args: &[OsString],
+        output: &Path,
+    ) -> Result<()> {
+        let mut command = Command::new(&self.ffmpeg_path);
+        command
+            .arg("-y")
+            .arg("-hide_banner")
+            .arg("-loglevel")
+            .arg("error");
+
+        for arg in video_input_args {
+            command.arg(arg);
+        }
+        command.arg("-i").arg(video_input);
+
+        for arg in audio_input_args {
+            command.arg(arg);
+        }
+        command.arg("-i").arg(audio_input);
+
+        let output = command
+            .arg("-map")
+            .arg("0:v:0")
+            .arg("-map")
+            .arg("1:a:0")
+            .arg("-c:v")
+            .arg("libx264")
+            .arg("-preset")
+            .arg("veryfast")
+            .arg("-crf")
+            .arg("23")
+            .arg("-c:a")
+            .arg("aac")
+            .arg("-b:a")
+            .arg("160k")
+            .arg("-shortest")
+            .arg("-movflags")
+            .arg("+faststart")
+            .arg(output)
+            .output()
+            .await?;
+
+        if output.status.success() {
+            return Ok(());
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(RkError::Transcode(if stderr.is_empty() {
+            "ffmpeg exited with failure".to_string()
+        } else {
+            stderr
+        }))
+    }
+}
+
+fn normalize_audio_bitrate(value: &str) -> &str {
+    if value == "auto" {
+        "192k"
+    } else {
+        value
     }
 }
 

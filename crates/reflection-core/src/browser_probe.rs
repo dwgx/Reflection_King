@@ -59,6 +59,7 @@ pub struct BrowserCandidate {
     pub score: i64,
     #[serde(rename = "requiresAuthorization")]
     pub requires_authorization: bool,
+    pub metadata: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -177,6 +178,7 @@ impl BrowserCandidate {
                 "warnings": metadata.warnings,
                 "event_count": metadata.event_count,
                 "timed_out": metadata.timed_out,
+                "candidate": self.metadata,
             }),
             created_at: OffsetDateTime::now_utc(),
         }
