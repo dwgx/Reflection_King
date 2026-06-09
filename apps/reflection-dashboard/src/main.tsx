@@ -3,6 +3,8 @@ import { createRoot } from "react-dom/client";
 import {
   Activity,
   AlertTriangle,
+  ChevronDown,
+  ChevronUp,
   CheckCircle2,
   Clipboard,
   ClipboardPaste,
@@ -121,12 +123,13 @@ function App() {
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [selectedCandidates, setSelectedCandidates] = useState<Set<string>>(new Set());
+  const [showAllCandidates, setShowAllCandidates] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string>("空闲");
   const [form, setForm] = useState<CreateJobPayload>({
     url: "",
     bitrate: "192k",
-    discovery: "browser",
+    discovery: "auto",
     platform_hint: "auto",
     outputs: ["audio"],
     profile_id: "admin_default",
@@ -148,12 +151,24 @@ function App() {
 
   useEffect(() => {
     if (!selectedJobId) return;
+    setSelectedCandidates(new Set());
+    setShowAllCandidates(false);
     void loadJob(selectedJobId);
     const timer = window.setInterval(() => {
       void loadJob(selectedJobId, true);
     }, 3000);
     return () => window.clearInterval(timer);
   }, [selectedJobId, headers]);
+
+  const visibleCandidates = useMemo(
+    () => candidateDisplayList(candidates, selectedJob, showAllCandidates),
+    [candidates, selectedJob, showAllCandidates],
+  );
+
+  const defaultCandidate = useMemo(
+    () => bestCandidate(candidates, selectedJob),
+    [candidates, selectedJob],
+  );
 
   async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const response = await fetch(path, {
@@ -207,7 +222,7 @@ function App() {
       if (apiKey) {
         setMessage(errorMessage(error));
       } else {
-        setMessage("系统状态已加载；填写 API Key 后可查看解析能力和任务。");
+        setMessage("系统状态已加载；填写管理密钥后可查看解析能力和任务。");
       }
     }
   }
@@ -286,18 +301,24 @@ function App() {
   }
 
   async function selectCandidates() {
-    if (!selectedJob || selectedCandidates.size === 0) return;
+    if (!selectedJob) return;
+    const candidateIds = selectedCandidates.size
+      ? Array.from(selectedCandidates)
+      : defaultCandidate
+        ? [defaultCandidate.id]
+        : [];
+    if (candidateIds.length === 0) return;
     setBusy(true);
-    setMessage("正在提交候选...");
+    setMessage("正在开始转码资源...");
     try {
       await request<JobView>(`/api/jobs/${selectedJob.id}/select-candidates`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ candidate_ids: Array.from(selectedCandidates) }),
+        body: JSON.stringify({ candidate_ids: candidateIds }),
       });
       setSelectedCandidates(new Set());
       await loadJob(selectedJob.id);
-      setMessage("候选已提交");
+      setMessage("已提交转码任务");
     } catch (error) {
       setMessage(errorMessage(error));
     } finally {
@@ -331,7 +352,7 @@ function App() {
             <Input
               className="w-64"
               type="password"
-              placeholder="输入 API Key"
+              placeholder="输入管理密钥"
               value={apiKey}
               onChange={(event) => setApiKey(event.target.value)}
             />
@@ -345,7 +366,7 @@ function App() {
       <div className="mx-auto grid max-w-7xl gap-4 p-4">
         {!apiKey && (
           <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
-            填写 API Key 后可查看解析能力、任务列表、候选资源和产物。
+            填写管理密钥后可查看解析能力、任务列表、资源选择和产物。
           </div>
         )}
 
@@ -362,11 +383,11 @@ function App() {
                 />
               </Field>
               <div className="grid gap-3 md:grid-cols-4">
-                <Field label="发现方式">
+                <Field label="解析方式">
                   <Select
                     value={form.discovery}
                     onChange={(event) => setForm({ ...form, discovery: event.target.value as DiscoveryMode })}
-                    options={["direct", "external", "browser", "auto"]}
+                    options={["auto", "external", "browser", "direct"]}
                     labelFor={discoveryLabel}
                   />
                 </Field>
@@ -439,29 +460,29 @@ function App() {
             action={<Button variant="secondary" onClick={refreshJobs}><ListRestart size={16} /> 刷新</Button>}
           >
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[720px] text-left text-sm">
+              <table className="w-full min-w-[720px] table-fixed text-left text-sm">
                 <thead className="text-xs uppercase text-zinc-500">
                   <tr>
-                    <th className="px-2 py-2">状态</th>
+                    <th className="w-24 px-2 py-2">状态</th>
                     <th className="px-2 py-2">来源</th>
-                    <th className="px-2 py-2">发现方式</th>
-                    <th className="px-2 py-2">更新时间</th>
+                    <th className="w-36 px-2 py-2">解析方式</th>
+                    <th className="w-36 px-2 py-2">更新时间</th>
                   </tr>
                 </thead>
                 <tbody>
                   {jobs.map((job) => (
                     <tr
                       key={job.id}
-                      className={`cursor-pointer border-t border-zinc-900 hover:bg-zinc-900/70 ${job.id === selectedJobId ? "bg-zinc-900" : ""}`}
+                      className={`cursor-pointer border-t border-zinc-900 hover:bg-zinc-900/70 ${job.id === selectedJobId ? "bg-zinc-900 ring-1 ring-inset ring-cyan-500/25" : ""}`}
                       onClick={() => setSelectedJobId(job.id)}
                     >
                       <td className="px-2 py-3"><Badge status={job.status} /></td>
-                      <td className="max-w-md px-2 py-3">
-                        <div className="truncate text-zinc-200">{job.source_url}</div>
-                        {job.error && <div className="truncate text-xs text-red-300">{job.error}</div>}
+                      <td className="min-w-0 px-2 py-3">
+                        <div className="truncate text-zinc-100">{sourceTitle(job.source_url)}</div>
+                        <div className="truncate text-xs text-zinc-500">{job.error ? friendlyError(job.error) : job.source_url}</div>
                       </td>
                       <td className="px-2 py-3 text-zinc-400">{discoveryLabel(job.discovery)}/{platformLabel(job.platform_hint)}</td>
-                      <td className="px-2 py-3 text-zinc-500">{formatDate(job.updated_at)}</td>
+                      <td className="px-2 py-3 text-zinc-500">{formatShortDate(job.updated_at)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -473,9 +494,10 @@ function App() {
             {selectedJob ? (
               <div className="grid gap-3 text-sm">
                 <Info label="ID" value={selectedJob.id} />
-                <Info label="状态" value={statusLabel(selectedJob.status)} />
+                <Info label="状态" value={statusLabel(selectedJob.status)} tone={selectedJob.status === "error" ? "danger" : "normal"} />
                 <Info label="输出类型" value={selectedJob.outputs.map(outputLabel).join(", ")} />
-                <Info label="媒体 URL" value={selectedJob.media_url ?? "-"} copyable />
+                {selectedJob.error && <Info label="错误摘要" value={friendlyError(selectedJob.error)} tone="danger" />}
+                <Info label="播放地址" value={selectedJob.media_url ?? "-"} copyable />
                 {selectedJob.media_url && <Player url={selectedJob.media_url} />}
               </div>
             ) : (
@@ -486,37 +508,40 @@ function App() {
 
         <section className="grid gap-4 xl:grid-cols-2">
           <Card
-            title="候选资源"
+            title="资源选择"
             icon={<FileAudio size={16} />}
-            action={<Button onClick={selectCandidates} disabled={!selectedJob || selectedCandidates.size === 0 || busy}>提交</Button>}
+            action={
+              <Button
+                onClick={selectCandidates}
+                disabled={!selectedJob || (!selectedCandidates.size && !defaultCandidate) || busy}
+              >
+                {busy ? <Loader2 className="animate-spin" size={16} /> : <Play size={16} />}
+                {selectedCandidates.size ? "转换选中资源" : "转换推荐资源"}
+              </Button>
+            }
           >
             {candidates.length ? (
-              <div className="grid gap-2">
-                {candidates.map((candidate) => (
-                  <label key={candidate.id} className="grid gap-2 rounded-md border border-zinc-800 bg-zinc-950 p-3 text-sm md:grid-cols-[24px_1fr_auto]">
-                    <input
-                      type="checkbox"
-                      checked={selectedCandidates.has(candidate.id)}
-                      onChange={() => toggleCandidate(candidate.id)}
-                    />
-                    <div className="min-w-0">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="font-medium text-zinc-100">{candidateKindLabel(candidate.kind)}</span>
-                        <span className="text-zinc-500">{candidate.extractor}</span>
-                        <span className="text-zinc-500">{candidate.resource_type ?? candidate.method}</span>
-                        <span className="text-zinc-500">评分 {candidate.score}</span>
-                      </div>
-                      <div className="truncate text-xs text-zinc-500">{candidate.url}</div>
-                    </div>
-                    <div className="text-right text-xs text-zinc-500">
-                      <div>{candidate.quality_label ?? "-"}</div>
-                      <div>{candidate.content_type ?? "-"}</div>
-                    </div>
-                  </label>
+              <div className="grid gap-3">
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-zinc-500">
+                  <span>已找到 {candidates.length} 个资源，默认只显示适合当前输出的前 {visibleCandidates.length} 个。</span>
+                  <Button type="button" variant="secondary" className="h-8" onClick={() => setShowAllCandidates(!showAllCandidates)}>
+                    {showAllCandidates ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                    {showAllCandidates ? "收起低价值资源" : "显示全部资源"}
+                  </Button>
+                </div>
+                {visibleCandidates.map((candidate, index) => (
+                  <CandidateRow
+                    key={candidate.id}
+                    candidate={candidate}
+                    recommended={!selectedCandidates.size && candidate.id === defaultCandidate?.id}
+                    index={index}
+                    selected={selectedCandidates.has(candidate.id)}
+                    onToggle={() => toggleCandidate(candidate.id)}
+                  />
                 ))}
               </div>
             ) : (
-              <Empty label="暂无候选资源" />
+              <Empty label={selectedJob?.status === "error" ? "解析失败，没有可用资源" : "还没有发现可用资源"} />
             )}
           </Card>
 
@@ -565,7 +590,7 @@ function App() {
               />
               <Info label="公网基址" value={health?.public_base_url ?? "-"} />
               <Info label="ffmpeg" value={health?.ffmpeg_path ?? "-"} />
-              <Info label="yt-dlp" value={capabilities?.yt_dlp_path ?? (apiKey ? "-" : "需要 API Key")} />
+              <Info label="yt-dlp" value={capabilities?.yt_dlp_path ?? (apiKey ? "-" : "需要管理密钥")} />
               <Info label="下载上限" value={formatBytes(health?.max_download_bytes)} />
             </div>
           </Card>
@@ -623,12 +648,61 @@ function Button(props: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant
   return <button className={`button ${variant} ${className}`} {...rest} />;
 }
 
-function Info(props: { label: string; value: string | number | null | undefined; copyable?: boolean }) {
+function CandidateRow(props: {
+  candidate: Candidate;
+  index: number;
+  selected: boolean;
+  recommended: boolean;
+  onToggle: () => void;
+}) {
+  const meta = candidateMeta(props.candidate);
+  return (
+    <label
+      className={`grid cursor-pointer gap-3 rounded-md border p-3 text-sm transition-colors md:grid-cols-[24px_1fr_auto] ${
+        props.selected || props.recommended
+          ? "border-cyan-500/50 bg-cyan-500/10"
+          : "border-zinc-800 bg-zinc-950 hover:border-zinc-700"
+      }`}
+    >
+      <input
+        className="mt-1 h-4 w-4"
+        type="checkbox"
+        checked={props.selected}
+        onChange={props.onToggle}
+      />
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="font-medium text-zinc-100">
+            {props.recommended ? "推荐 " : ""}
+            {candidateKindLabel(props.candidate.kind)}
+          </span>
+          <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-xs text-zinc-300">{meta}</span>
+          {props.candidate.requires_authorization && (
+            <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-xs text-amber-200">需要页面授权</span>
+          )}
+        </div>
+        <div className="mt-1 truncate text-xs text-zinc-500">{compactUrl(props.candidate.url)}</div>
+      </div>
+      <div className="text-left text-xs text-zinc-500 md:text-right">
+        <div>{props.candidate.quality_label ?? `第 ${props.index + 1} 项`}</div>
+        <div>{formatBytes(props.candidate.content_length)}</div>
+      </div>
+    </label>
+  );
+}
+
+function Info(props: {
+  label: string;
+  value: string | number | null | undefined;
+  copyable?: boolean;
+  tone?: "normal" | "danger";
+}) {
   const value = String(props.value ?? "-");
+  const valueTone = props.tone === "danger" ? "text-red-200" : "text-zinc-200";
   return (
     <div className="grid gap-1 rounded-md border border-zinc-800 bg-zinc-950 px-3 py-2">
       <span className="text-xs uppercase text-zinc-500">{props.label}</span>
-      <span className="break-all text-zinc-200">
+      <span className={`break-all ${valueTone}`}>
         {value}
         {props.copyable && value !== "-" && (
           <button className="ml-2 text-cyan-300" onClick={() => copy(value)} type="button">复制</button>
@@ -658,7 +732,7 @@ function Badge(props: { status: string }) {
       : props.status === "candidates_ready"
         ? "bg-cyan-500/15 text-cyan-300"
         : "bg-zinc-700 text-zinc-200";
-  return <span className={`rounded-full px-2 py-1 text-xs font-medium ${tone}`}>{statusLabel(props.status)}</span>;
+  return <span className={`inline-flex h-6 min-w-16 items-center justify-center rounded-full px-2 text-xs font-medium ${tone}`}>{statusLabel(props.status)}</span>;
 }
 
 function Empty(props: { label: string }) {
@@ -678,11 +752,16 @@ function apiHeaders(apiKey: string): Record<string, string> {
 }
 
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  return friendlyError(error instanceof Error ? error.message : String(error));
 }
 
-function formatDate(value: string): string {
-  return new Date(value).toLocaleString();
+function formatShortDate(value: string): string {
+  return new Date(value).toLocaleString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 function formatBytes(value: number | null | undefined): string {
@@ -700,22 +779,22 @@ function formatBytes(value: number | null | undefined): string {
 function capabilityStatus(value: boolean | undefined, apiKey: string): string {
   if (value === true) return "已配置";
   if (value === false) return "未配置";
-  return apiKey ? "读取中" : "需要 API Key";
+  return apiKey ? "读取中" : "需要管理密钥";
 }
 
 function statusLabel(value: string): string {
   return ({
     queued: "排队中",
     resolving: "解析中",
-    candidates_ready: "候选就绪",
-    candidate_selected: "已选候选",
+    candidates_ready: "待选择",
+    candidate_selected: "已提交",
     downloading: "下载中",
     capturing: "捕获中",
     probing: "探测中",
     transcoding: "转码中",
     remuxing: "封装中",
-    ready: "完成",
-    error: "错误",
+    ready: "已完成",
+    error: "失败",
   } as Record<string, string>)[value] ?? value;
 }
 
@@ -724,7 +803,7 @@ function discoveryLabel(value: string): string {
     direct: "直链",
     external: "外部解析",
     browser: "浏览器探测",
-    auto: "自动",
+    auto: "自动解析",
   } as Record<string, string>)[value] ?? value;
 }
 
@@ -754,6 +833,71 @@ function outputLabel(value: string): string {
   } as Record<string, string>)[value] ?? value;
 }
 
+function candidateDisplayList(candidates: Candidate[], job: JobView | null, showAll: boolean): Candidate[] {
+  const ranked = [...candidates].sort((left, right) => candidateRank(right, job) - candidateRank(left, job));
+  if (showAll) return ranked;
+
+  const wantedKinds = preferredCandidateKinds(job);
+  const primary = ranked.filter((candidate) => wantedKinds.has(candidate.kind));
+  const usable = primary.length ? primary : ranked.filter((candidate) => candidate.kind !== "image" && candidate.kind !== "html");
+  return usable.slice(0, 8);
+}
+
+function bestCandidate(candidates: Candidate[], job: JobView | null): Candidate | null {
+  return candidateDisplayList(candidates, job, false)[0] ?? null;
+}
+
+function candidateRank(candidate: Candidate, job: JobView | null): number {
+  let rank = candidate.score;
+  const outputs = new Set(job?.outputs ?? ["audio"]);
+
+  if (outputs.has("audio")) {
+    if (candidate.kind === "audio") rank += 1000;
+    if (candidate.kind === "manifest") rank += 650;
+    if (candidate.kind === "video") rank += 450;
+    if (candidate.kind === "image" || candidate.kind === "html") rank -= 1000;
+  }
+
+  if (outputs.has("video")) {
+    if (candidate.kind === "video" || candidate.kind === "manifest") rank += 1000;
+    if (candidate.kind === "audio") rank += 200;
+  }
+
+  if (outputs.has("image") && candidate.kind === "image") rank += 900;
+  if (candidate.requires_authorization) rank -= 50;
+  return rank;
+}
+
+function preferredCandidateKinds(job: JobView | null): Set<string> {
+  const outputs = new Set(job?.outputs ?? ["audio"]);
+  if (outputs.has("audio") && !outputs.has("video")) {
+    return new Set(["audio", "manifest", "video"]);
+  }
+  if (outputs.has("video")) {
+    return new Set(["video", "manifest"]);
+  }
+  if (outputs.has("image")) {
+    return new Set(["image"]);
+  }
+  return new Set(["audio", "video", "manifest"]);
+}
+
+function candidateMeta(candidate: Candidate): string {
+  return [
+    extractorLabel(candidate.extractor),
+    candidate.quality_label,
+    candidate.content_type,
+    candidate.resource_type,
+  ].filter(Boolean).join(" / ") || "媒体资源";
+}
+
+function extractorLabel(value: string): string {
+  return ({
+    browser_probe: "浏览器抓取",
+    yt_dlp: "站点解析",
+  } as Record<string, string>)[value] ?? value;
+}
+
 function candidateKindLabel(value: string): string {
   return ({
     audio: "音频",
@@ -763,6 +907,49 @@ function candidateKindLabel(value: string): string {
     html: "HTML",
     unknown: "未知",
   } as Record<string, string>)[value] ?? value;
+}
+
+function sourceTitle(value: string): string {
+  try {
+    const url = new URL(value);
+    return `${url.hostname}${url.pathname === "/" ? "" : url.pathname}`;
+  } catch {
+    return value;
+  }
+}
+
+function compactUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    return `${url.hostname}${url.pathname}${url.search ? "?" : ""}`;
+  } catch {
+    return value;
+  }
+}
+
+function friendlyError(value: string): string {
+  if (!value) return "-";
+  const lower = value.toLowerCase();
+
+  if (lower.includes("browser probe did not find media candidates")) {
+    return "浏览器探测没有发现可用媒体资源";
+  }
+  if (lower.includes("deprecated feature")) {
+    return "yt-dlp 站点规则过期，需要更新 yt-dlp 或更换解析方式";
+  }
+  if (lower.includes("[bilibili]") && (lower.includes("412") || lower.includes("error"))) {
+    return "哔哩哔哩拒绝外部解析请求，建议改用浏览器探测";
+  }
+  if (lower.includes("yt-dlp probe exited")) {
+    return "外部解析失败，建议更新 yt-dlp 或改用浏览器探测";
+  }
+  if (lower.includes("timed out")) {
+    return "解析超时";
+  }
+  if (lower.includes("requires headers") || lower.includes("requires authorization")) {
+    return "资源需要登录态或页面授权";
+  }
+  return value.length > 140 ? `${value.slice(0, 140)}...` : value;
 }
 
 async function copy(value: string) {
