@@ -427,8 +427,62 @@ impl AppState {
         if should_build_image_slideshow(&job, &selected) {
             self.process_image_slideshow(&job, &selected).await?;
         } else {
-            for candidate in &selected {
-                self.process_candidate(&job, candidate, &candidates).await?;
+            let attempts = candidate_attempt_order(&job, &selected, &candidates);
+            let mut failures = Vec::new();
+            let mut success_count = 0usize;
+
+            for candidate in attempts {
+                match self.process_candidate(&job, candidate, &candidates).await {
+                    Ok(()) => {
+                        success_count += 1;
+                        self.job_store
+                            .set_candidate_validation_status(candidate.id, "ok")
+                            .await
+                            .ok();
+                        if job.outputs.contains(&OutputKind::Audio)
+                            || job.outputs.contains(&OutputKind::Video)
+                        {
+                            break;
+                        }
+                    }
+                    Err(error) => {
+                        let message = friendly_candidate_failure(&error);
+                        failures.push(format!(
+                            "{} {}: {}",
+                            candidate.kind.as_str(),
+                            candidate.quality_label.as_deref().unwrap_or("-"),
+                            message
+                        ));
+                        self.job_store
+                            .set_candidate_validation_status(
+                                candidate.id,
+                                &format!("failed: {message}"),
+                            )
+                            .await
+                            .ok();
+                        self.record_event(PipelineEvent::new(
+                            job.id,
+                            "candidate_failed",
+                            candidate.extractor.clone(),
+                            PipelineEventType::Error,
+                            serde_json::json!({
+                                "candidate_id": candidate.id,
+                                "url": candidate.url,
+                                "kind": candidate.kind.as_str(),
+                                "quality": candidate.quality_label,
+                                "error": error.to_string(),
+                            }),
+                        ))
+                        .await;
+                    }
+                }
+            }
+
+            if success_count == 0 {
+                return Err(RkError::Source(format!(
+                    "all selected candidates failed: {}",
+                    failures.join(" | ")
+                )));
             }
         }
 
@@ -540,6 +594,12 @@ impl AppState {
                 if job.outputs.contains(&OutputKind::Audio)
                     && !job.outputs.contains(&OutputKind::Video)
                 {
+                    let stream_info = Transcoder::new(self.config.ffmpeg_path.clone())
+                        .probe_url_with_headers(&candidate.url, &headers)
+                        .await?;
+                    if !stream_info.has_audio {
+                        return Err(RkError::Source("candidate has no audio stream".to_string()));
+                    }
                     self.update_status(job.id, JobStatus::Transcoding).await?;
                     let output_path = job_dir.join(format!("audio-{}.mp3", candidate.id));
                     Transcoder::new(self.config.ffmpeg_path.clone())
@@ -553,6 +613,12 @@ impl AppState {
                     self.insert_artifact(job.id, OutputKind::Audio, output_path, "audio/mpeg")
                         .await?;
                 } else {
+                    let stream_info = Transcoder::new(self.config.ffmpeg_path.clone())
+                        .probe_url_with_headers(&candidate.url, &headers)
+                        .await?;
+                    if !stream_info.has_video {
+                        return Err(RkError::Source("candidate has no video stream".to_string()));
+                    }
                     self.update_status(job.id, JobStatus::Remuxing).await?;
                     let output_path = job_dir.join(format!("video-{}.mp4", candidate.id));
                     if let Some(audio_candidate) =
@@ -709,6 +775,130 @@ impl AppState {
 
 fn validate_candidate_url(url: &str) -> Result<()> {
     reflection_core::url_policy::parse_and_validate_url(url).map(|_| ())
+}
+
+fn candidate_attempt_order<'a>(
+    job: &JobRecord,
+    selected: &'a [MediaCandidate],
+    all: &'a [MediaCandidate],
+) -> Vec<&'a MediaCandidate> {
+    let mut out = selected.iter().collect::<Vec<_>>();
+    if selected.len() == 1 {
+        let selected_id = selected[0].id;
+        let selected_kind = selected[0].kind;
+        out.extend(
+            all.iter()
+                .filter(|candidate| candidate.id != selected_id)
+                .filter(|candidate| {
+                    candidate.kind == selected_kind || is_compatible_fallback(job, candidate)
+                }),
+        );
+    }
+    out.sort_by_key(|candidate| -candidate_attempt_rank(job, candidate));
+    out
+}
+
+fn is_compatible_fallback(job: &JobRecord, candidate: &MediaCandidate) -> bool {
+    if job.outputs.contains(&OutputKind::Audio) && !job.outputs.contains(&OutputKind::Video) {
+        return matches!(
+            candidate.kind,
+            CandidateKind::Audio | CandidateKind::Video | CandidateKind::Manifest
+        );
+    }
+    if job.outputs.contains(&OutputKind::Video) {
+        return matches!(
+            candidate.kind,
+            CandidateKind::Video | CandidateKind::Manifest
+        );
+    }
+    job.outputs.contains(&OutputKind::Image) && candidate.kind == CandidateKind::Image
+}
+
+fn candidate_attempt_rank(job: &JobRecord, candidate: &MediaCandidate) -> i64 {
+    let mut rank = candidate.score;
+    if job.selected_candidate_ids.contains(&candidate.id) {
+        rank += 10_000;
+    }
+
+    if job.outputs.contains(&OutputKind::Audio) && !job.outputs.contains(&OutputKind::Video) {
+        rank += match candidate.kind {
+            CandidateKind::Audio => 2_000,
+            CandidateKind::Manifest => 1_000,
+            CandidateKind::Video => 700,
+            _ => -3_000,
+        };
+    }
+
+    if job.outputs.contains(&OutputKind::Video) {
+        rank += match candidate.kind {
+            CandidateKind::Video => 2_000,
+            CandidateKind::Manifest => 1_600,
+            CandidateKind::Audio => -1_500,
+            CandidateKind::Image => -2_000,
+            _ => -3_000,
+        };
+    }
+
+    rank += candidate_quality_height(candidate).unwrap_or_default() / 2;
+    rank += audio_rank(candidate) / 1000;
+
+    if candidate.requires_authorization {
+        rank -= 100;
+    }
+    if is_likely_ad_or_tracking_candidate(candidate) {
+        rank -= 5_000;
+    }
+    rank
+}
+
+fn candidate_quality_height(candidate: &MediaCandidate) -> Option<i64> {
+    candidate
+        .quality_label
+        .as_deref()
+        .and_then(|label| label.trim_end_matches('p').parse::<i64>().ok())
+        .or_else(|| candidate_metadata_number(candidate, "height"))
+}
+
+fn is_likely_ad_or_tracking_candidate(candidate: &MediaCandidate) -> bool {
+    let value = format!(
+        "{} {}",
+        candidate.url.to_ascii_lowercase(),
+        candidate
+            .resource_type
+            .clone()
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+    );
+    [
+        "trafficjunky",
+        "doubleclick",
+        "googlesyndication",
+        "adservice",
+        "pre-roll",
+        "preroll",
+        "vast",
+        "vpaid",
+        "tracking",
+        "tracker",
+        "pixel",
+    ]
+    .iter()
+    .any(|needle| value.contains(needle))
+}
+
+fn friendly_candidate_failure(error: &RkError) -> String {
+    let message = error.to_string();
+    if message.contains("has no audio stream") {
+        "没有音频流".to_string()
+    } else if message.contains("has no video stream") {
+        "没有视频流".to_string()
+    } else if message.contains("matches no streams") {
+        "没有匹配的媒体流".to_string()
+    } else if message.len() > 180 {
+        format!("{}...", &message[..180])
+    } else {
+        message
+    }
 }
 
 fn should_build_image_slideshow(job: &JobRecord, selected: &[MediaCandidate]) -> bool {

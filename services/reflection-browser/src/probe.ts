@@ -9,6 +9,27 @@ const MEDIA_EXTENSIONS = [".mp4", ".m4s", ".m4a", ".mp3", ".aac", ".wav", ".webm
 const IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif"];
 const BILIBILI_AUDIO_QUALITY_IDS = new Set(["30216", "30232", "30280"]);
 const URL_PATTERN = /https?:\/\/[^\s"'<>\\]+|(?:\/|\.\.?\/)[^\s"'<>\\]+\.(?:m3u8|mpd|mp4|m4s|m4a|mp3|aac|wav|webm|flv|mov|mkv)(?:\?[^\s"'<>\\]*)?/gi;
+const AD_HOST_PARTS = [
+  "trafficjunky",
+  "doubleclick",
+  "googlesyndication",
+  "googleadservices",
+  "adservice.google",
+  "adsystem",
+  "adnxs",
+  "exoclick",
+  "popads",
+  "taboola",
+  "outbrain",
+  "imasdk",
+  "adform",
+  "pubmatic",
+  "rubiconproject",
+  "openx",
+  "smartadserver",
+  "scorecardresearch",
+];
+const AD_PATH_PATTERN = /(?:^|[/?&._-])(ads?|adserver|advert|advertising|banner|creative|pre[-_]?roll|mid[-_]?roll|post[-_]?roll|vast|vpaid|ima|tracking|tracker|pixel)(?:$|[/?&._=-])/i;
 
 interface ContextEntry {
   context: BrowserContext;
@@ -362,7 +383,10 @@ function scoreCandidate(kind: CandidateKind, contentType: string | undefined, ur
   if (kind === "html") score += 10;
   if (contentType) score += 5;
   if (/(\.m3u8|\.mpd|\.mp4|\.m4s|\.m4a|\.mp3)$/i.test(path)) score += 10;
+  const height = qualityHeight(url);
+  if (height) score += Math.min(Math.floor(height / 12), 140);
   if (/(\.ts|segment|chunk|frag)/i.test(path)) score -= 25;
+  if (isLikelyAdOrTrackingUrl(url)) score -= 500;
   return score;
 }
 
@@ -379,6 +403,15 @@ function qualityLabel(url: string, contentType?: string): string | undefined {
     return `${match[1]}p`;
   }
   return contentType;
+}
+
+function qualityHeight(url: string): number | undefined {
+  const match = url.match(/(?:^|[^\d])([1-9]\d{2,3})p(?:[^\d]|$)/i);
+  if (!match) {
+    return undefined;
+  }
+  const height = Number(match[1]);
+  return Number.isFinite(height) ? height : undefined;
 }
 
 async function bilibiliCandidatesFromPage(page: Page, pageUrl: string): Promise<BrowserCandidate[]> {
@@ -763,10 +796,42 @@ function isRejectedCandidate(candidate: BrowserCandidate): boolean {
     if (isYouTubeHost(host) && pathname.startsWith("/s/search/audio/")) {
       return true;
     }
+    if (isLikelyAdOrTrackingUrl(candidate.url) && !isAllowedMainMediaHost(host)) {
+      return true;
+    }
+    if (
+      candidate.kind === "image" &&
+      /(?:avatar|sprite|logo|icon|badge|emoji|thumbnail|thumb|poster|banner)/i.test(pathname)
+    ) {
+      return true;
+    }
   } catch {
     return true;
   }
   return false;
+}
+
+function isLikelyAdOrTrackingUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    const host = url.hostname.toLowerCase();
+    const pathAndQuery = `${url.pathname}${url.search}`.toLowerCase();
+    return AD_HOST_PARTS.some((part) => host.includes(part)) || AD_PATH_PATTERN.test(pathAndQuery);
+  } catch {
+    return true;
+  }
+}
+
+function isAllowedMainMediaHost(host: string): boolean {
+  return (
+    host.endsWith("googlevideo.com") ||
+    host.endsWith("bilivideo.com") ||
+    host.endsWith("bilibili.com") ||
+    host.endsWith("sndcdn.com") ||
+    host.endsWith("douyinvod.com") ||
+    host.endsWith("douyinpic.com") ||
+    host.endsWith("phncdn.com")
+  );
 }
 
 function hasExtension(pathname: string, extensions: string[]): boolean {

@@ -534,6 +534,19 @@ impl JobStore {
         Ok(())
     }
 
+    pub async fn set_candidate_validation_status(
+        &self,
+        candidate_id: Uuid,
+        status: &str,
+    ) -> Result<()> {
+        sqlx::query("UPDATE source_candidates SET validation_status = ? WHERE id = ?")
+            .bind(status)
+            .bind(candidate_id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     // --- Observability writers -------------------------------------------------
 
     /// Persist one outbound request record. Headers are expected to be redacted

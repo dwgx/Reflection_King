@@ -89,6 +89,10 @@ interface Candidate {
   quality_label?: string;
   score: number;
   requires_authorization: boolean;
+  metadata_json?: unknown;
+  selected?: boolean;
+  selection_reason?: string | null;
+  validation_status?: string | null;
 }
 
 interface Artifact {
@@ -544,15 +548,16 @@ function App() {
           </Card>
         </section>
 
-        <section className="grid items-start gap-4 xl:grid-cols-[0.95fr_1.05fr]">
+        <section className="grid items-stretch gap-4 xl:grid-cols-2">
           <Card
             title="任务列表"
             icon={<Activity size={16} />}
             action={<Button variant="secondary" onClick={refreshJobs}><ListRestart size={16} /> 刷新</Button>}
-            className="h-full"
+            className="h-[520px]"
+            bodyClassName="h-[455px]"
           >
-            <div className="grid h-full gap-3">
-              <div className="grid gap-2">
+            <div className="flex h-full flex-col gap-3">
+              <div className="grid flex-1 auto-rows-fr gap-2 overflow-hidden">
                 {pagedJobs.items.map((job) => (
                   <button
                     key={job.id}
@@ -595,8 +600,7 @@ function App() {
             </div>
           </Card>
 
-          <div className="grid gap-4">
-            <Card title="任务详情" icon={<Settings size={16} />}>
+          <Card title="任务详情" icon={<Settings size={16} />} className="h-[520px]" bodyClassName="h-[455px] overflow-auto">
               {selectedJob ? (
                 <div className="grid gap-3 text-sm">
                   <Info label="ID" value={selectedJob.id} />
@@ -609,34 +613,39 @@ function App() {
               ) : (
                 <Empty label="请选择一个任务" />
               )}
-            </Card>
+          </Card>
+        </section>
 
-            <Card
-              title="资源选择"
-              icon={<FileAudio size={16} />}
-              action={
-                <Button
-                  onClick={selectCandidates}
-                  disabled={!selectedJob || (!selectedCandidates.size && defaultCandidateIds.length === 0) || busy}
-                >
-                  {busy ? <Loader2 className="animate-spin" size={16} /> : <Play size={16} />}
-                  {selectedCandidates.size
-                    ? "转换选中资源"
-                    : defaultCandidateIds.length > 1
-                      ? `转换推荐资源 (${defaultCandidateIds.length})`
-                      : "转换推荐资源"}
-                </Button>
-              }
-            >
-              {candidates.length ? (
-                <div className="grid gap-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-zinc-500">
-                    <span>已找到 {candidates.length} 个资源，当前显示 {pagedCandidates.items.length} 个。</span>
-                    <Button type="button" variant="secondary" className="h-8" onClick={() => setShowAllCandidates(!showAllCandidates)}>
-                      {showAllCandidates ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-                      {showAllCandidates ? "收起低价值资源" : "显示全部资源"}
-                    </Button>
-                  </div>
+        <section className="grid gap-4 xl:grid-cols-2">
+          <Card
+            title="资源选择"
+            icon={<FileAudio size={16} />}
+            className="h-[620px]"
+            bodyClassName="h-[555px]"
+            action={
+              <Button
+                onClick={selectCandidates}
+                disabled={!selectedJob || (!selectedCandidates.size && defaultCandidateIds.length === 0) || busy}
+              >
+                {busy ? <Loader2 className="animate-spin" size={16} /> : <Play size={16} />}
+                {selectedCandidates.size
+                  ? "转换选中资源"
+                  : defaultCandidateIds.length > 1
+                    ? `转换推荐资源 (${defaultCandidateIds.length})`
+                    : "转换推荐资源"}
+              </Button>
+            }
+          >
+            {candidates.length ? (
+              <div className="flex h-full flex-col gap-3">
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-zinc-500">
+                  <span>找到 {candidates.length} 个资源，当前显示 {pagedCandidates.items.length} 个。</span>
+                  <Button type="button" variant="secondary" className="h-8" onClick={() => setShowAllCandidates(!showAllCandidates)}>
+                    {showAllCandidates ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                    {showAllCandidates ? "只看推荐" : "显示全部"}
+                  </Button>
+                </div>
+                <div className="grid flex-1 auto-rows-fr gap-2 overflow-hidden">
                   {pagedCandidates.items.map((candidate, index) => (
                     <CandidateRow
                       key={candidate.id}
@@ -647,25 +656,23 @@ function App() {
                       onToggle={() => toggleCandidate(candidate.id)}
                     />
                   ))}
-                  <Pager
-                    page={pagedCandidates.page}
-                    pageSize={candidatePageSize}
-                    total={visibleCandidates.length}
-                    onPageChange={setCandidatePage}
-                    onPageSizeChange={(value) => {
-                      setCandidatePageSize(value);
-                      setCandidatePage(1);
-                    }}
-                  />
                 </div>
-              ) : (
-                <Empty label={selectedJob?.status === "error" ? "解析失败，没有可用资源" : "还没有发现可用资源"} />
-              )}
-            </Card>
-          </div>
-        </section>
+                <Pager
+                  page={pagedCandidates.page}
+                  pageSize={candidatePageSize}
+                  total={visibleCandidates.length}
+                  onPageChange={setCandidatePage}
+                  onPageSizeChange={(value) => {
+                    setCandidatePageSize(value);
+                    setCandidatePage(1);
+                  }}
+                />
+              </div>
+            ) : (
+              <Empty label={selectedJob?.status === "error" ? "解析失败，没有可用资源" : "还没有发现可用资源"} />
+            )}
+          </Card>
 
-        <section className="grid gap-4 xl:grid-cols-2">
           <Card title="产物" icon={<ExternalLink size={16} />}>
             {artifacts.length ? (
               <div className="grid gap-3">
@@ -725,14 +732,21 @@ function App() {
   );
 }
 
-function Card(props: { title: string; icon: React.ReactNode; action?: React.ReactNode; children: React.ReactNode; className?: string }) {
+function Card(props: {
+  title: string;
+  icon: React.ReactNode;
+  action?: React.ReactNode;
+  children: React.ReactNode;
+  className?: string;
+  bodyClassName?: string;
+}) {
   return (
     <section className={`rounded-lg border border-zinc-800 bg-zinc-900/80 ${props.className ?? ""}`}>
       <div className="flex items-center justify-between gap-3 border-b border-zinc-800 px-4 py-3">
         <h2 className="flex items-center gap-2 text-sm font-semibold text-zinc-100">{props.icon}{props.title}</h2>
         {props.action}
       </div>
-      <div className="p-4">{props.children}</div>
+      <div className={`p-4 ${props.bodyClassName ?? ""}`}>{props.children}</div>
     </section>
   );
 }
@@ -776,11 +790,15 @@ function CandidateRow(props: {
   recommended: boolean;
   onToggle: () => void;
 }) {
-  const meta = candidateMeta(props.candidate);
+  const summary = candidateSummary(props.candidate);
+  const validation = props.candidate.validation_status;
+  const isBad = Boolean(validation?.startsWith("failed"));
   return (
     <label
-      className={`grid cursor-pointer gap-3 rounded-md border p-3 text-sm transition-colors md:grid-cols-[24px_1fr_auto] ${
-        props.selected || props.recommended
+      className={`grid cursor-pointer gap-3 rounded-md border p-3 text-sm transition-colors md:grid-cols-[24px_1fr] ${
+        isBad
+          ? "border-red-500/30 bg-red-500/5"
+          : props.selected || props.recommended
           ? "border-cyan-500/50 bg-cyan-500/10"
           : "border-zinc-800 bg-zinc-950 hover:border-zinc-700"
       }`}
@@ -792,21 +810,40 @@ function CandidateRow(props: {
         onChange={props.onToggle}
       />
       <div className="min-w-0">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="font-medium text-zinc-100">
-            {props.recommended ? "推荐 " : ""}
-            {candidateKindLabel(props.candidate.kind)}
-          </span>
-          <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-xs text-zinc-300">{meta}</span>
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-medium text-zinc-100">
+              {props.recommended ? "推荐 " : ""}
+              {candidateKindLabel(props.candidate.kind)}
+            </span>
+            <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-xs text-zinc-300">{summary.quality}</span>
+            <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-xs text-zinc-300">{summary.source}</span>
+          </div>
+          <div className="text-xs text-zinc-500">
+            {formatBytes(props.candidate.content_length)}
+          </div>
+        </div>
+        <div className="mt-2 grid gap-1 text-xs text-zinc-400 sm:grid-cols-3">
+          <span>类型：{summary.kindDetail}</span>
+          <span>来源：{extractorLabel(props.candidate.extractor)}</span>
+          <span>评分：{props.candidate.score}</span>
+        </div>
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {props.recommended && <span className="rounded bg-cyan-500/15 px-1.5 py-0.5 text-xs text-cyan-200">自动推荐</span>}
+          {props.candidate.kind === "manifest" && <span className="rounded bg-blue-500/15 px-1.5 py-0.5 text-xs text-blue-200">清单流</span>}
           {props.candidate.requires_authorization && (
             <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-xs text-amber-200">需要页面授权</span>
           )}
+          {summary.adRisk && <span className="rounded bg-red-500/15 px-1.5 py-0.5 text-xs text-red-200">广告/跟踪嫌疑</span>}
+          {validation && (
+            <span className={`rounded px-1.5 py-0.5 text-xs ${isBad ? "bg-red-500/15 text-red-200" : "bg-emerald-500/15 text-emerald-200"}`}>
+              {validationLabel(validation)}
+            </span>
+          )}
         </div>
-        <div className="mt-1 truncate text-xs text-zinc-500">{compactUrl(props.candidate.url)}</div>
-      </div>
-      <div className="text-left text-xs text-zinc-500 md:text-right">
-        <div>{props.candidate.quality_label ?? `第 ${props.index + 1} 项`}</div>
-        <div>{formatBytes(props.candidate.content_length)}</div>
+        <div className="mt-2 line-clamp-2 break-all text-xs text-zinc-500">
+          第 {props.index + 1} 项 · {compactUrl(props.candidate.url)}
+        </div>
       </div>
     </label>
   );
@@ -1039,10 +1076,20 @@ function defaultCandidatesForJob(
 ): Candidate[] {
   const outputs = new Set(job?.outputs ?? ["audio"]);
   if (outputs.has("video")) {
-    const mediaCandidates = candidates.filter((candidate) => candidate.kind === "video" || candidate.kind === "manifest");
+    const mediaCandidates = candidateDisplayList(candidates, job, false)
+      .filter((candidate) => candidate.kind === "video" || candidate.kind === "manifest")
+      .filter((candidate) => !isLikelyAdCandidate(candidate) && !candidate.validation_status?.startsWith("failed"));
     if (!mediaCandidates.length) {
       const imageCandidates = candidates.filter((candidate) => candidate.kind === "image");
       if (imageCandidates.length) return imageCandidates;
+    }
+    return mediaCandidates.slice(0, 1);
+  }
+  if (outputs.has("audio") && !outputs.has("video")) {
+    const audioCandidate = candidateDisplayList(candidates, job, false)
+      .find((candidate) => candidate.kind === "audio" && !candidate.validation_status?.startsWith("failed"));
+    if (audioCandidate) {
+      return [audioCandidate];
     }
   }
   return fallback ? [fallback] : [];
@@ -1067,6 +1114,11 @@ function candidateRank(candidate: Candidate, job: JobView | null): number {
 
   if (outputs.has("image") && candidate.kind === "image") rank += 900;
   if (candidate.requires_authorization) rank -= 50;
+  const height = qualityFromUrl(candidate.url) ?? candidate.quality_label;
+  const parsedHeight = height?.match(/([1-9]\d{2,3})p/i)?.[1];
+  if (parsedHeight) rank += Math.min(Number(parsedHeight), 2160) / 2;
+  if (isLikelyAdCandidate(candidate)) rank -= 5000;
+  if (candidate.validation_status?.startsWith("failed")) rank -= 4000;
   return rank;
 }
 
@@ -1091,6 +1143,73 @@ function candidateMeta(candidate: Candidate): string {
     candidate.content_type,
     candidate.resource_type,
   ].filter(Boolean).join(" / ") || "媒体资源";
+}
+
+function candidateSummary(candidate: Candidate): {
+  quality: string;
+  source: string;
+  kindDetail: string;
+  adRisk: boolean;
+} {
+  const url = safeUrl(candidate.url);
+  const path = url?.pathname.toLowerCase() ?? candidate.url.toLowerCase();
+  const host = url?.hostname ?? "-";
+  const quality = candidate.quality_label ?? qualityFromUrl(candidate.url) ?? "未知质量";
+  const source = candidate.resource_type?.replace(/^inline_/, "页面脚本/")
+    .replace(/^performance_/, "页面请求/")
+    .replace(/^dom_/, "页面元素/")
+    ?? host;
+  const format = candidate.content_type ?? extensionFromPath(path) ?? "未知格式";
+  const kindDetail = candidate.kind === "manifest"
+    ? `流媒体清单 / ${format}`
+    : `${candidateKindLabel(candidate.kind)} / ${format}`;
+  return {
+    quality,
+    source,
+    kindDetail,
+    adRisk: isLikelyAdCandidate(candidate),
+  };
+}
+
+function safeUrl(value: string): URL | null {
+  try {
+    return new URL(value);
+  } catch {
+    return null;
+  }
+}
+
+function qualityFromUrl(value: string): string | null {
+  const match = value.match(/(?:^|[^\d])([1-9]\d{2,3})p(?:[^\d]|$)/i);
+  return match ? `${match[1]}p` : null;
+}
+
+function extensionFromPath(path: string): string | null {
+  const match = path.match(/\.([a-z0-9]{2,5})$/i);
+  return match ? match[1].toUpperCase() : null;
+}
+
+function isLikelyAdCandidate(candidate: Candidate): boolean {
+  const value = `${candidate.url} ${candidate.resource_type ?? ""}`.toLowerCase();
+  return [
+    "trafficjunky",
+    "doubleclick",
+    "googlesyndication",
+    "adservice",
+    "preroll",
+    "pre-roll",
+    "vast",
+    "vpaid",
+    "tracking",
+    "tracker",
+    "pixel",
+  ].some((needle) => value.includes(needle));
+}
+
+function validationLabel(value: string): string {
+  if (value === "ok") return "已验证可用";
+  if (value.startsWith("failed:")) return `不可用：${friendlyError(value.slice("failed:".length).trim())}`;
+  return value;
 }
 
 function extractorLabel(value: string): string {

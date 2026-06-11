@@ -13,6 +13,12 @@ pub struct Transcoder {
     ffmpeg_path: PathBuf,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MediaStreamInfo {
+    pub has_audio: bool,
+    pub has_video: bool,
+}
+
 impl Transcoder {
     pub fn new(ffmpeg_path: impl Into<PathBuf>) -> Self {
         Self {
@@ -45,6 +51,15 @@ impl Transcoder {
     pub async fn media_url_to_mp4(&self, input_url: &str, output: &Path) -> Result<()> {
         self.media_url_to_mp4_with_headers(input_url, output, &HeaderMap::new())
             .await
+    }
+
+    pub async fn probe_url_with_headers(
+        &self,
+        input_url: &str,
+        headers: &HeaderMap,
+    ) -> Result<MediaStreamInfo> {
+        let input_args = ffmpeg_http_args(headers);
+        self.probe_input(input_url, &input_args).await
     }
 
     pub async fn media_url_to_mp4_with_headers(
@@ -282,6 +297,59 @@ impl Transcoder {
             stderr
         }))
     }
+
+    async fn probe_input(
+        &self,
+        input: impl AsRef<std::ffi::OsStr>,
+        input_args: &[OsString],
+    ) -> Result<MediaStreamInfo> {
+        let mut command = Command::new(ffprobe_path(&self.ffmpeg_path));
+        command
+            .arg("-v")
+            .arg("error")
+            .arg("-show_entries")
+            .arg("stream=codec_type")
+            .arg("-of")
+            .arg("csv=p=0");
+
+        for arg in input_args {
+            command.arg(arg);
+        }
+
+        let output = command.arg("-i").arg(input).output().await?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            return Err(RkError::Transcode(if stderr.is_empty() {
+                "ffprobe exited with failure".to_string()
+            } else {
+                stderr
+            }));
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        Ok(MediaStreamInfo {
+            has_audio: stdout.lines().any(|line| line.trim() == "audio"),
+            has_video: stdout.lines().any(|line| line.trim() == "video"),
+        })
+    }
+}
+
+fn ffprobe_path(ffmpeg_path: &Path) -> PathBuf {
+    let file_name = ffmpeg_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let probe_name = if file_name.ends_with(".exe") {
+        "ffprobe.exe"
+    } else {
+        "ffprobe"
+    };
+
+    ffmpeg_path
+        .parent()
+        .map(|parent| parent.join(probe_name))
+        .unwrap_or_else(|| PathBuf::from(probe_name))
 }
 
 fn normalize_audio_bitrate(value: &str) -> &str {
