@@ -1035,8 +1035,57 @@ async function triggerPlayback(page: Page, warnings: string[]): Promise<boolean>
     warnings.push("no play control found");
   }
 
-  await page.waitForTimeout(5_000);
+  await page.waitForTimeout(1_500);
+  await dismissPlaybackAds(page, warnings);
+  await page.waitForTimeout(4_000);
   return clicked;
+}
+
+async function dismissPlaybackAds(page: Page, warnings: string[]): Promise<void> {
+  const deadline = Date.now() + 12_000;
+  let clicked = false;
+
+  while (Date.now() < deadline) {
+    const skipped = await clickFirstVisible(page, [
+      "button[aria-label*='Skip' i]",
+      "button[title*='Skip' i]",
+      "button:has-text('Skip Ad')",
+      "button:has-text('Skip Ads')",
+      "button:has-text('Skip')",
+      "button:has-text('跳过广告')",
+      "button:has-text('跳过')",
+      "button:has-text('跳過廣告')",
+      "button:has-text('跳過')",
+      ".ytp-ad-skip-button",
+      ".ytp-ad-skip-button-modern",
+    ]);
+    if (skipped) {
+      clicked = true;
+      await page.waitForTimeout(1_000);
+      continue;
+    }
+
+    const closedOverlay = await clickFirstVisible(page, [
+      "button[aria-label*='Close' i]",
+      "button[title*='Close' i]",
+      "button:has-text('Close')",
+      "button:has-text('关闭')",
+      "button:has-text('關閉')",
+      ".close",
+      ".modal-close",
+    ]);
+    if (closedOverlay) {
+      clicked = true;
+      await page.waitForTimeout(1_000);
+      continue;
+    }
+
+    await page.waitForTimeout(1_000);
+  }
+
+  if (clicked) {
+    warnings.push("ad overlay skipped or closed");
+  }
 }
 
 async function dismissAgeGate(page: Page): Promise<void> {
