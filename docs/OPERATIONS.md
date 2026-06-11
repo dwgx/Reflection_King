@@ -48,6 +48,44 @@ set `RK_BROWSER_HEADED=1` to manually log into the persistent
 `admin_default` profile. On headless Linux, put the sidecar behind an Xvfb/noVNC
 wrapper before using headed login.
 
+## External Adapters
+
+The API can aggregate candidates from multiple adapter routes when a job uses
+`discovery=auto` or `discovery=external`:
+
+```text
+RK_YTDLP_PATH=yt-dlp
+RK_YOU_GET_PATH=you-get
+RK_LUX_PATH=lux
+RK_STREAMLINK_PATH=streamlink
+RK_EXTERNAL_PROBE_TIMEOUT_SECONDS=45
+```
+
+`yt-dlp` remains the broadest first external adapter. `you-get` is useful for
+some Chinese video sites, `streamlink` is useful for live/manifest workflows,
+and `lux` can be configured manually when its Go binary is installed. The
+resolver deduplicates URLs across routes and records protection, route,
+confidence, ad-risk, and validation hints for the dashboard.
+
+## Windows Helper Protocol
+
+Run this once on a Windows desktop user that will operate the dashboard:
+
+```powershell
+.\scripts\dev\install-protocol.ps1 -Force
+```
+
+The `reflection-king://` handler supports two local helper actions:
+
+- login: opens the local Playwright login helper and imports captured cookies to
+  the server profile.
+- paste: reads the local Windows clipboard and submits it to a short-lived
+  server token.
+
+Chrome/Edge generally allow direct clipboard reads only on HTTPS or localhost.
+On public HTTP, the dashboard first tries the browser API, then falls back to
+the helper protocol, then to manual Ctrl+V into the focused URL field.
+
 ## Linux Deployment
 
 If the repository is public, the server can update without a GitHub login:
@@ -76,7 +114,7 @@ sudo RK_PUBLIC_BASE_URL=http://your-server-or-domain \
 ```
 
 The install script keeps the API and browser sidecar bound to localhost and
-configures nginx on port 80 as the public reverse proxy.
+configures nginx on the requested public port as the reverse proxy.
 
 Verify the deployment:
 

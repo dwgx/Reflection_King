@@ -13,7 +13,8 @@ use axum::{
 use reflection_core::{
     models::{
         normalize_bitrate, normalize_outputs, normalize_profile_id, ApiKeyRecord, ApiKeyRole,
-        ApiKeyView, AuthMode, BrowserLoginTokenResponse, ClearJobsResponse, CreateJobRequest,
+        ApiKeyView, AuthMode, BrowserLoginTokenResponse, ClearJobsResponse,
+        ClipboardPasteTokenResponse, ClipboardPasteValueResponse, CreateJobRequest,
         CreateUserKeyRequest, CreatedUserKeyResponse, DiscoveryMode, HiddenJobBatchView,
         JobCreateOptions, JobRecord, JobView, PlatformHint, RestoreJobsResponse,
         SelectCandidatesRequest,
@@ -93,6 +94,15 @@ fn build_router(state: Arc<AppState>) -> Router {
             "/api/browser-login-tokens/cookies/import",
             post(import_profile_cookies_with_token),
         )
+        .route("/api/clipboard-paste-tokens", post(create_clipboard_paste_token))
+        .route(
+            "/api/clipboard-paste-tokens/{token}",
+            get(get_clipboard_paste_value),
+        )
+        .route(
+            "/api/clipboard-paste-tokens/{token}/submit",
+            post(submit_clipboard_paste_value),
+        )
         .route(
             "/api/admin/browser-profiles/{profile_id}/login-session",
             post(start_login_session),
@@ -148,14 +158,21 @@ async fn capabilities(
     let principal = authorize(&state, &headers).await?;
     let allow_browser_probe = principal.allow_browser_probe && state.browser_probe_configured();
     let allow_ytdlp = principal.allow_ytdlp && state.yt_dlp_configured();
+    let allow_external_adapters =
+        principal.allow_external_adapters && (state.yt_dlp_configured() || state.external_tools_configured());
 
     Ok(Json(serde_json::json!({
         "service": "reflection-king",
         "version": env!("CARGO_PKG_VERSION"),
         "browser_probe_configured": allow_browser_probe,
         "yt_dlp_configured": allow_ytdlp,
+        "external_adapters_configured": allow_external_adapters,
+        "external_tools": state.configured_external_tool_names(),
         "ffmpeg_path": state.config.ffmpeg_path.display().to_string(),
         "yt_dlp_path": state.config.yt_dlp_path.as_ref().map(|path| path.display().to_string()),
+        "you_get_path": state.config.you_get_path.as_ref().map(|path| path.display().to_string()),
+        "lux_path": state.config.lux_path.as_ref().map(|path| path.display().to_string()),
+        "streamlink_path": state.config.streamlink_path.as_ref().map(|path| path.display().to_string()),
         "public_base_url": state.config.public_base_url,
         "max_download_bytes": state.config.max_download_bytes,
         "max_concurrent_jobs": state.config.max_concurrent_jobs,
@@ -164,13 +181,18 @@ async fn capabilities(
         "yt_dlp_max_json_bytes": state.config.yt_dlp_max_json_bytes,
         "download_timeout_seconds": state.config.download_timeout.as_secs(),
         "supported_discovery": supported_discovery_modes(&principal),
-        "supported_platform_hints": ["auto", "bilibili", "youtube", "soundcloud", "douyin", "kuaishou", "pornhub"],
+        "supported_platform_hints": [
+            "auto", "bilibili", "youtube", "soundcloud", "douyin", "kuaishou", "pornhub",
+            "acfun", "iqiyi", "youku", "tiktok", "vimeo", "live", "generic"
+        ],
         "supported_outputs": ["audio", "video", "image", "page_html"],
         "auth": {
             "role": principal.role.as_str(),
             "label": principal.label,
             "allow_browser_probe": principal.allow_browser_probe,
             "allow_ytdlp": principal.allow_ytdlp,
+            "allow_external_adapters": principal.allow_external_adapters,
+            "allow_login_profile": principal.allow_login_profile,
         },
     })))
 }
@@ -487,6 +509,43 @@ async fn import_profile_cookies_with_token(
     ))
 }
 
+async fn create_clipboard_paste_token(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<ClipboardPasteTokenResponse>, ApiError> {
+    let principal = authorize(&state, &headers).await?;
+    Ok(Json(
+        state.create_clipboard_paste_token(principal.key_id).await?,
+    ))
+}
+
+#[derive(Debug, Deserialize)]
+struct ClipboardPasteSubmitRequest {
+    text: String,
+}
+
+async fn submit_clipboard_paste_value(
+    State(state): State<Arc<AppState>>,
+    Path(token): Path<String>,
+    Json(request): Json<ClipboardPasteSubmitRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let ok = state
+        .submit_clipboard_paste_token(&token, &request.text)
+        .await?;
+    if ok {
+        Ok(Json(serde_json::json!({ "ok": true })))
+    } else {
+        Err(RkError::NotFound("clipboard paste token".to_string()).into())
+    }
+}
+
+async fn get_clipboard_paste_value(
+    State(state): State<Arc<AppState>>,
+    Path(token): Path<String>,
+) -> Result<Json<ClipboardPasteValueResponse>, ApiError> {
+    Ok(Json(state.consume_clipboard_paste_token(&token).await?))
+}
+
 #[derive(Debug, Deserialize)]
 struct LoginSessionRequest {
     headed: Option<bool>,
@@ -566,6 +625,8 @@ struct AuthPrincipal {
     role: ApiKeyRole,
     allow_browser_probe: bool,
     allow_ytdlp: bool,
+    allow_external_adapters: bool,
+    allow_login_profile: bool,
 }
 
 async fn authorize(state: &AppState, headers: &HeaderMap) -> Result<AuthPrincipal, RkError> {
@@ -595,6 +656,8 @@ fn principal_from_record(record: ApiKeyRecord) -> AuthPrincipal {
         role: record.role,
         allow_browser_probe: record.role == ApiKeyRole::Admin || record.allow_browser_probe,
         allow_ytdlp: record.role == ApiKeyRole::Admin || record.allow_ytdlp,
+        allow_external_adapters: record.role == ApiKeyRole::Admin || record.allow_external_adapters,
+        allow_login_profile: record.role == ApiKeyRole::Admin || record.allow_login_profile,
     }
 }
 
@@ -630,13 +693,20 @@ fn authorized_discovery(
 ) -> Result<DiscoveryMode, RkError> {
     match requested {
         DiscoveryMode::Direct => Ok(DiscoveryMode::Direct),
-        DiscoveryMode::External if principal.allow_ytdlp => Ok(DiscoveryMode::External),
+        DiscoveryMode::External if principal.allow_ytdlp || principal.allow_external_adapters => {
+            Ok(DiscoveryMode::External)
+        }
         DiscoveryMode::Browser if principal.allow_browser_probe => Ok(DiscoveryMode::Browser),
-        DiscoveryMode::Auto if principal.allow_browser_probe && principal.allow_ytdlp => {
+        DiscoveryMode::Auto
+            if principal.allow_browser_probe
+                && (principal.allow_ytdlp || principal.allow_external_adapters) =>
+        {
             Ok(DiscoveryMode::Auto)
         }
         DiscoveryMode::Auto if principal.allow_browser_probe => Ok(DiscoveryMode::Browser),
-        DiscoveryMode::Auto if principal.allow_ytdlp => Ok(DiscoveryMode::External),
+        DiscoveryMode::Auto if principal.allow_ytdlp || principal.allow_external_adapters => {
+            Ok(DiscoveryMode::External)
+        }
         DiscoveryMode::Auto => Ok(DiscoveryMode::Direct),
         DiscoveryMode::External => Err(RkError::Unauthorized),
         DiscoveryMode::Browser => Err(RkError::Unauthorized),
@@ -645,13 +715,13 @@ fn authorized_discovery(
 
 fn supported_discovery_modes(principal: &AuthPrincipal) -> Vec<&'static str> {
     let mut modes = vec!["direct"];
-    if principal.allow_ytdlp {
+    if principal.allow_ytdlp || principal.allow_external_adapters {
         modes.push("external");
     }
     if principal.allow_browser_probe {
         modes.push("browser");
     }
-    if principal.allow_ytdlp || principal.allow_browser_probe {
+    if principal.allow_ytdlp || principal.allow_external_adapters || principal.allow_browser_probe {
         modes.push("auto");
     }
     modes
@@ -735,6 +805,18 @@ fn infer_platform(source_url: &str) -> PlatformHint {
         PlatformHint::Kuaishou
     } else if host.contains("pornhub.") || host.contains("phncdn.com") {
         PlatformHint::Pornhub
+    } else if host.contains("acfun.cn") {
+        PlatformHint::Acfun
+    } else if host.contains("iqiyi.com") || host.contains("qiyi.com") {
+        PlatformHint::Iqiyi
+    } else if host.contains("youku.com") {
+        PlatformHint::Youku
+    } else if host.contains("tiktok.com") || host.contains("tiktokcdn.com") {
+        PlatformHint::Tiktok
+    } else if host.contains("vimeo.com") || host.contains("vimeocdn.com") {
+        PlatformHint::Vimeo
+    } else if host.contains("m3u8") || source_url.contains(".m3u8") || source_url.contains(".mpd") {
+        PlatformHint::Live
     } else {
         PlatformHint::Auto
     }

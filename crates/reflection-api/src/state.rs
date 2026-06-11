@@ -4,13 +4,15 @@ use reflection_core::{
     browser_probe::BrowserProbeClient,
     download::Downloader,
     external_probe::YtDlpProbe,
+    external_tools::{ExternalToolKind, ExternalToolProbe},
     extractors::{ExtractContext, SourceResolver},
     job_store::JobStore,
     models::{
-        ApiKeyRecord, ApiKeyView, ArtifactView, BrowserLoginTokenResponse, CandidateKind,
-        ClearJobsResponse, CreateUserKeyRequest, CreatedUserKeyResponse, DiscoveryMode,
-        HiddenJobBatchView, JobRecord, JobStatus, JobView, MediaCandidate, OutputKind,
-        RestoreJobsResponse, RotatedAdminKeyResponse,
+        ApiKeyRecord, ApiKeyView, ArtifactView, BrowserLoginTokenResponse,
+        ClipboardPasteTokenResponse, ClipboardPasteValueResponse, CandidateKind, ClearJobsResponse,
+        CreateUserKeyRequest, CreatedUserKeyResponse, DiscoveryMode, HiddenJobBatchView,
+        JobRecord, JobStatus, JobView, MediaCandidate, OutputKind, RestoreJobsResponse,
+        RotatedAdminKeyResponse,
     },
     observability::{ErrorClass, JobTrace, PipelineEvent, PipelineEventType},
     paths::StoragePaths,
@@ -70,6 +72,7 @@ pub struct AppState {
     job_store: JobStore,
     browser_probe: Option<BrowserProbeClient>,
     yt_dlp_probe: Option<YtDlpProbe>,
+    external_tool_probes: Vec<ExternalToolProbe>,
     queue_tx: mpsc::Sender<Uuid>,
     queue_rx: Mutex<mpsc::Receiver<Uuid>>,
     worker_slots: Arc<Semaphore>,
@@ -92,6 +95,31 @@ impl AppState {
             .yt_dlp_path
             .clone()
             .map(|path| YtDlpProbe::new(path, config.yt_dlp_timeout, config.yt_dlp_max_json_bytes));
+        let mut external_tool_probes = Vec::new();
+        if let Some(path) = config.you_get_path.clone() {
+            external_tool_probes.push(ExternalToolProbe::new(
+                ExternalToolKind::YouGet,
+                path,
+                config.external_probe_timeout,
+                config.yt_dlp_max_json_bytes,
+            ));
+        }
+        if let Some(path) = config.lux_path.clone() {
+            external_tool_probes.push(ExternalToolProbe::new(
+                ExternalToolKind::Lux,
+                path,
+                config.external_probe_timeout,
+                config.yt_dlp_max_json_bytes,
+            ));
+        }
+        if let Some(path) = config.streamlink_path.clone() {
+            external_tool_probes.push(ExternalToolProbe::new(
+                ExternalToolKind::Streamlink,
+                path,
+                config.external_probe_timeout,
+                config.yt_dlp_max_json_bytes,
+            ));
+        }
 
         let pending_jobs = job_store.recover_pending().await?;
         let queue_capacity = pending_jobs.len().max(512);
@@ -104,6 +132,7 @@ impl AppState {
             job_store,
             browser_probe,
             yt_dlp_probe,
+            external_tool_probes,
             queue_tx,
             queue_rx: Mutex::new(queue_rx),
             worker_slots,
@@ -262,6 +291,42 @@ impl AppState {
         })
     }
 
+    pub async fn create_clipboard_paste_token(
+        &self,
+        created_by_key_id: Option<Uuid>,
+    ) -> Result<ClipboardPasteTokenResponse> {
+        let (token, expires_at) = self
+            .job_store
+            .create_clipboard_paste_token(created_by_key_id, 120)
+            .await?;
+        let mut protocol_url = url::Url::parse("reflection-king://paste")
+            .map_err(|error| RkError::Source(format!("failed to build paste url: {error}")))?;
+        protocol_url
+            .query_pairs_mut()
+            .append_pair("base", self.config.public_base_url.as_str())
+            .append_pair("token", &token);
+        Ok(ClipboardPasteTokenResponse {
+            token,
+            expires_at,
+            protocol_url: protocol_url.to_string(),
+        })
+    }
+
+    pub async fn submit_clipboard_paste_token(&self, token: &str, text: &str) -> Result<bool> {
+        self.job_store.submit_clipboard_paste_token(token, text).await
+    }
+
+    pub async fn consume_clipboard_paste_token(
+        &self,
+        token: &str,
+    ) -> Result<ClipboardPasteValueResponse> {
+        let text = self.job_store.consume_clipboard_paste_token(token).await?;
+        Ok(ClipboardPasteValueResponse {
+            ready: text.is_some(),
+            text,
+        })
+    }
+
     pub async fn import_browser_profile_cookies_with_login_token(
         &self,
         profile_id: &str,
@@ -291,6 +356,17 @@ impl AppState {
 
     pub fn yt_dlp_configured(&self) -> bool {
         self.yt_dlp_probe.is_some()
+    }
+
+    pub fn external_tools_configured(&self) -> bool {
+        !self.external_tool_probes.is_empty()
+    }
+
+    pub fn configured_external_tool_names(&self) -> Vec<&'static str> {
+        self.external_tool_probes
+            .iter()
+            .map(|probe| probe.kind().as_str())
+            .collect()
     }
 
     pub async fn import_browser_profile_cookies(
@@ -462,9 +538,11 @@ impl AppState {
     async fn resolve_candidates(&self, job: JobRecord) -> Result<()> {
         // Explicit modes require their backing service.
         match job.discovery {
-            DiscoveryMode::External if self.yt_dlp_probe.is_none() => {
+            DiscoveryMode::External
+                if self.yt_dlp_probe.is_none() && self.external_tool_probes.is_empty() =>
+            {
                 return Err(RkError::Source(
-                    "RK_YTDLP_PATH is required for external discovery".to_string(),
+                    "configure RK_YTDLP_PATH, RK_YOU_GET_PATH, RK_LUX_PATH, or RK_STREAMLINK_PATH for external discovery".to_string(),
                 ));
             }
             DiscoveryMode::Browser if self.browser_probe.is_none() => {
@@ -484,9 +562,11 @@ impl AppState {
             url,
             outputs: job.outputs.clone(),
             profile_id: job.profile_id.clone(),
+            discovery: job.discovery,
             platform_hint: job.platform_hint,
             auth_mode: job.auth_mode,
             yt_dlp: self.yt_dlp_probe.clone(),
+            external_tools: self.external_tool_probes.clone(),
             browser: self.browser_probe.clone(),
         };
 
@@ -1202,6 +1282,9 @@ fn normalize_login_platform(value: &str) -> Result<&'static str> {
         "douyin" => Ok("douyin"),
         "kuaishou" => Ok("kuaishou"),
         "pornhub" => Ok("pornhub"),
+        "acfun" => Ok("acfun"),
+        "iqiyi" => Ok("iqiyi"),
+        "youku" => Ok("youku"),
         other => Err(RkError::BadRequest(format!(
             "unsupported login platform `{other}`"
         ))),

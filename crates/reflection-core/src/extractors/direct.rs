@@ -10,7 +10,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::{
-    models::{CandidateKind, MediaCandidate},
+    models::{CandidateKind, CandidateProtection, CandidateValidationState, MediaCandidate},
     Result,
 };
 
@@ -68,6 +68,17 @@ impl SourceExtractor for DirectExtractor {
             quality_label: None,
             score: base_score(kind),
             requires_authorization: false,
+            platform: Some(ctx.platform_hint),
+            route: Some("direct".to_string()),
+            extractor_confidence: Some(95),
+            protection: Some(CandidateProtection::None),
+            requires_profile: false,
+            ttl_hint_seconds: None,
+            ad_risk: false,
+            evidence_count: 1,
+            paired_candidate_ids: Vec::new(),
+            failure_reason: None,
+            validation_state: Some(CandidateValidationState::Untested),
             metadata_json: json!({ "source": "direct", "ext": ext }),
             created_at: OffsetDateTime::now_utc(),
             score_breakdown_json: json!({

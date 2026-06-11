@@ -28,7 +28,21 @@ import {
 import "./styles.css";
 
 type DiscoveryMode = "direct" | "external" | "browser" | "auto";
-type PlatformHint = "auto" | "bilibili" | "youtube" | "soundcloud" | "douyin" | "kuaishou" | "pornhub";
+type PlatformHint =
+  | "auto"
+  | "bilibili"
+  | "youtube"
+  | "soundcloud"
+  | "douyin"
+  | "kuaishou"
+  | "pornhub"
+  | "acfun"
+  | "iqiyi"
+  | "youku"
+  | "tiktok"
+  | "vimeo"
+  | "live"
+  | "generic";
 type OutputKind = "audio" | "video" | "image" | "page_html";
 type OutputMode = "auto" | "video" | "audio" | "image" | "page_html";
 type ViewMode = "console" | "history" | "admin" | "help";
@@ -49,8 +63,13 @@ interface Capabilities {
   version: string;
   browser_probe_configured: boolean;
   yt_dlp_configured: boolean;
+  external_adapters_configured?: boolean;
+  external_tools?: string[];
   ffmpeg_path: string;
   yt_dlp_path: string | null;
+  you_get_path?: string | null;
+  lux_path?: string | null;
+  streamlink_path?: string | null;
   public_base_url: string;
   max_download_bytes: number;
   max_concurrent_jobs: number;
@@ -66,6 +85,8 @@ interface Capabilities {
     label: string;
     allow_browser_probe: boolean;
     allow_ytdlp: boolean;
+    allow_external_adapters?: boolean;
+    allow_login_profile?: boolean;
   };
 }
 
@@ -103,6 +124,17 @@ interface Candidate {
   quality_label?: string;
   score: number;
   requires_authorization: boolean;
+  platform?: PlatformHint | null;
+  route?: string | null;
+  extractor_confidence?: number | null;
+  protection?: string | null;
+  requires_profile?: boolean;
+  ttl_hint_seconds?: number | null;
+  ad_risk?: boolean;
+  evidence_count?: number;
+  paired_candidate_ids?: string[];
+  failure_reason?: string | null;
+  validation_state?: string | null;
   metadata_json?: unknown;
   selected?: boolean;
   selection_reason?: string | null;
@@ -136,6 +168,8 @@ interface UserKeyView {
   role: "admin" | "user";
   allow_browser_probe: boolean;
   allow_ytdlp: boolean;
+  allow_external_adapters?: boolean;
+  allow_login_profile?: boolean;
   created_at: string;
   revoked_at: string | null;
 }
@@ -180,6 +214,17 @@ interface BrowserLoginTokenResponse {
   protocol_url: string;
 }
 
+interface ClipboardPasteTokenResponse {
+  token: string;
+  expires_at: string;
+  protocol_url: string;
+}
+
+interface ClipboardPasteValueResponse {
+  ready: boolean;
+  text: string | null;
+}
+
 interface NotificationItem {
   id: number;
   tone: "info" | "success" | "error" | "warn";
@@ -203,6 +248,9 @@ const LOGIN_PLATFORMS = [
   { value: "douyin", label: "抖音" },
   { value: "kuaishou", label: "快手" },
   { value: "pornhub", label: "Pornhub" },
+  { value: "acfun", label: "AcFun" },
+  { value: "iqiyi", label: "爱奇艺" },
+  { value: "youku", label: "优酷" },
 ];
 
 function App() {
@@ -238,6 +286,8 @@ function App() {
     label: "普通用户",
     allow_browser_probe: true,
     allow_ytdlp: true,
+    allow_external_adapters: true,
+    allow_login_profile: false,
   });
   const [profileId, setProfileId] = useState("admin_default");
   const [cookieJson, setCookieJson] = useState("");
@@ -343,6 +393,15 @@ function App() {
     window.addEventListener("paste", onPaste);
     return () => window.removeEventListener("paste", onPaste);
   }, [waitingForPaste, form]);
+
+  useEffect(() => {
+    const onCopyResult = (event: Event) => {
+      const detail = (event as CustomEvent<{ ok: boolean }>).detail;
+      notify(detail?.ok ? "已复制到剪贴板" : "复制失败，请手动选择文本", detail?.ok ? "success" : "error");
+    };
+    window.addEventListener("reflection-copy-result", onCopyResult);
+    return () => window.removeEventListener("reflection-copy-result", onCopyResult);
+  }, []);
 
   async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const response = await fetch(path, {
@@ -483,7 +542,7 @@ function App() {
   async function pasteFromClipboard() {
     try {
       if (!navigator.clipboard?.readText) {
-        focusForManualPaste("浏览器不允许直接读取剪贴板，已聚焦来源 URL；按 Ctrl+V 会自动填入。");
+        await pasteViaLocalHelper("浏览器不允许直接读取剪贴板，正在尝试打开本机剪贴板助手。");
         return;
       }
       const text = await navigator.clipboard.readText();
@@ -494,8 +553,51 @@ function App() {
       }
       applyPastedUrl(text);
     } catch {
-      focusForManualPaste("浏览器拦截剪贴板读取，已聚焦来源 URL；按 Ctrl+V 会自动填入。");
+      await pasteViaLocalHelper("浏览器拦截剪贴板读取，正在尝试打开本机剪贴板助手。");
     }
+  }
+
+  async function pasteViaLocalHelper(reason: string) {
+    if (!apiKey) {
+      focusForManualPaste("需要先填写密钥才能创建本机剪贴板令牌；已聚焦来源 URL，可按 Ctrl+V。");
+      return;
+    }
+    notify(reason, "warn");
+    setWaitingForPaste(true);
+    setPasteOpen(true);
+    try {
+      const response = await request<ClipboardPasteTokenResponse>("/api/clipboard-paste-tokens", {
+        method: "POST",
+      });
+      window.location.href = response.protocol_url;
+      const pasted = await waitForClipboardPasteToken(response.token);
+      if (pasted) {
+        applyPastedUrl(pasted);
+      } else {
+        focusForManualPaste("没有收到本机剪贴板助手返回，已聚焦来源 URL；按 Ctrl+V 会自动填入。");
+      }
+    } catch (error) {
+      notify(errorMessage(error), "error");
+      focusForManualPaste("本机剪贴板助手不可用；已聚焦来源 URL，按 Ctrl+V 会自动填入。");
+    }
+  }
+
+  async function waitForClipboardPasteToken(token: string): Promise<string | null> {
+    const deadline = Date.now() + 12_000;
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => window.setTimeout(resolve, 850));
+      try {
+        const value = await requestWithoutAuth<ClipboardPasteValueResponse>(
+          `/api/clipboard-paste-tokens/${encodeURIComponent(token)}`,
+        );
+        if (value.ready && value.text?.trim()) {
+          return value.text;
+        }
+      } catch {
+        return null;
+      }
+    }
+    return null;
   }
 
   function openPasteBox(reason: string) {
@@ -845,9 +947,11 @@ function App() {
               />
             </ControlGroup>
             <ControlGroup label="站点">
-              <SegmentedControl
+              <Dropdown
                 value={form.platform_hint}
-                options={["auto", "bilibili", "youtube", "soundcloud", "douyin", "kuaishou", "pornhub"]}
+                options={capabilities?.supported_platform_hints?.length
+                  ? capabilities.supported_platform_hints
+                  : ["auto", "bilibili", "youtube", "soundcloud", "douyin", "kuaishou", "pornhub", "acfun", "iqiyi", "youku", "tiktok", "vimeo", "live", "generic"]}
                 labelFor={platformLabel}
                 onChange={(value) => setForm({ ...form, platform_hint: value as PlatformHint })}
               />
@@ -1108,6 +1212,16 @@ function App() {
                 label="允许 yt-dlp"
                 onChange={(checked) => setKeyForm({ ...keyForm, allow_ytdlp: checked })}
               />
+              <Toggle
+                checked={keyForm.allow_external_adapters}
+                label="允许外部适配器"
+                onChange={(checked) => setKeyForm({ ...keyForm, allow_external_adapters: checked })}
+              />
+              <Toggle
+                checked={keyForm.allow_login_profile}
+                label="允许登录 Profile"
+                onChange={(checked) => setKeyForm({ ...keyForm, allow_login_profile: checked })}
+              />
             </div>
             <Button type="submit" disabled={busy}>创建用户密钥</Button>
           </form>
@@ -1130,6 +1244,8 @@ function App() {
                 <div className="key-flags">
                   <em>浏览器：{key.allow_browser_probe ? "允许" : "禁止"}</em>
                   <em>yt-dlp：{key.allow_ytdlp ? "允许" : "禁止"}</em>
+                  <em>外部：{key.allow_external_adapters ? "允许" : "禁止"}</em>
+                  <em>Profile：{key.allow_login_profile ? "允许" : "禁止"}</em>
                   {key.revoked_at && <em className="danger">已撤销</em>}
                 </div>
                 <Button className="h-8" variant="secondary" disabled={Boolean(key.revoked_at) || busy} onClick={() => revokeUserKey(key.id)}>
@@ -1300,6 +1416,11 @@ function App() {
             label="yt-dlp"
             ok={capabilities?.yt_dlp_configured}
             value={capabilityStatus(capabilities?.yt_dlp_configured, apiKey)}
+          />
+          <StatusLine
+            label="外部适配器"
+            ok={capabilities?.external_adapters_configured}
+            value={capabilityStatus(capabilities?.external_adapters_configured, apiKey)}
           />
         </div>
 
@@ -1569,8 +1690,11 @@ function CandidateRow(props: {
   onToggle: () => void;
 }) {
   const summary = candidateSummary(props.candidate);
-  const validation = props.candidate.validation_status;
-  const isBad = Boolean(validation?.startsWith("failed"));
+  const validation = props.candidate.validation_state ?? props.candidate.validation_status;
+  const isBad = Boolean(
+    validation?.startsWith("failed") ||
+      ["drm", "expired", "region_blocked"].includes(validation ?? ""),
+  );
   return (
     <label
       className={`candidate-row ${
@@ -1595,15 +1719,21 @@ function CandidateRow(props: {
         <div className="candidate-meta">
           <span>类型：{summary.kindDetail}</span>
           <span>来源：{extractorLabel(props.candidate.extractor)}</span>
+          <span>路线：{routeLabel(props.candidate.route ?? props.candidate.extractor)}</span>
           <span>评分：{props.candidate.score}</span>
           <span>大小：{formatBytes(props.candidate.content_length)}</span>
         </div>
         <div className="candidate-flags">
           {props.recommended && <em>自动推荐</em>}
           {props.candidate.kind === "manifest" && <em>清单流</em>}
-          {props.candidate.requires_authorization && <em className="warn">需要页面授权</em>}
+          {(props.candidate.requires_authorization || props.candidate.requires_profile) && <em className="warn">需要页面授权</em>}
+          {props.candidate.protection && props.candidate.protection !== "none" && (
+            <em className={props.candidate.protection === "drm" ? "danger" : "warn"}>{protectionLabel(props.candidate.protection)}</em>
+          )}
+          {(props.candidate.evidence_count ?? 1) > 1 && <em>{props.candidate.evidence_count} 路证据</em>}
           {summary.adRisk && <em className="danger">广告/跟踪嫌疑</em>}
-          {validation && <em className={isBad ? "danger" : "ok"}>{validationLabel(validation)}</em>}
+          {validation && validation !== "untested" && <em className={isBad ? "danger" : "ok"}>{validationLabel(validation)}</em>}
+          {props.candidate.failure_reason && <em className="danger">{friendlyError(props.candidate.failure_reason)}</em>}
         </div>
         <div className="candidate-url">第 {props.index + 1} 项 · {compactUrl(props.candidate.url)}</div>
       </div>
@@ -1807,6 +1937,13 @@ function platformLabel(value: string): string {
     douyin: "抖音",
     kuaishou: "快手",
     pornhub: "Pornhub",
+    acfun: "AcFun",
+    iqiyi: "爱奇艺",
+    youku: "优酷",
+    tiktok: "TikTok",
+    vimeo: "Vimeo",
+    live: "直播/清单",
+    generic: "通用",
   } as Record<string, string>)[value] ?? value;
 }
 
@@ -1887,7 +2024,7 @@ function defaultCandidatesForJob(
   if (outputs.has("video")) {
     const mediaCandidates = candidateDisplayList(candidates, job, false)
       .filter((candidate) => candidate.kind === "video" || candidate.kind === "manifest")
-      .filter((candidate) => !isLikelyAdCandidate(candidate) && !candidate.validation_status?.startsWith("failed"));
+      .filter(isUsableCandidate);
     if (!mediaCandidates.length) {
       const imageCandidates = candidates.filter((candidate) => candidate.kind === "image");
       if (imageCandidates.length) return imageCandidates;
@@ -1896,7 +2033,7 @@ function defaultCandidatesForJob(
   }
   if (outputs.has("audio") && !outputs.has("video")) {
     const audioCandidate = candidateDisplayList(candidates, job, false)
-      .find((candidate) => candidate.kind === "audio" && !candidate.validation_status?.startsWith("failed"));
+      .find((candidate) => candidate.kind === "audio" && isUsableCandidate(candidate));
     if (audioCandidate) {
       return [audioCandidate];
     }
@@ -1927,8 +2064,21 @@ function candidateRank(candidate: Candidate, job: JobView | null): number {
   const parsedHeight = height?.match(/([1-9]\d{2,3})p/i)?.[1];
   if (parsedHeight) rank += Math.min(Number(parsedHeight), 2160) / 2;
   if (isLikelyAdCandidate(candidate)) rank -= 5000;
+  if (candidate.validation_state === "usable") rank += 500;
+  if (candidate.protection === "drm" || candidate.validation_state === "drm") rank -= 8000;
+  if (candidate.validation_state === "expired" || candidate.validation_state === "region_blocked") rank -= 6000;
+  if ((candidate.evidence_count ?? 1) > 1) rank += Math.min((candidate.evidence_count ?? 1) * 25, 150);
   if (candidate.validation_status?.startsWith("failed")) rank -= 4000;
   return rank;
+}
+
+function isUsableCandidate(candidate: Candidate): boolean {
+  if (isLikelyAdCandidate(candidate)) return false;
+  if (candidate.validation_status?.startsWith("failed")) return false;
+  if (candidate.failure_reason) return false;
+  if (["drm", "expired", "region_blocked"].includes(candidate.validation_state ?? "")) return false;
+  if (["drm", "region_blocked"].includes(candidate.protection ?? "")) return false;
+  return true;
 }
 
 function preferredCandidateKinds(job: JobView | null): Set<string> {
@@ -1999,6 +2149,7 @@ function extensionFromPath(path: string): string | null {
 }
 
 function isLikelyAdCandidate(candidate: Candidate): boolean {
+  if (candidate.ad_risk) return true;
   const value = `${candidate.url} ${candidate.resource_type ?? ""}`.toLowerCase();
   return [
     "trafficjunky",
@@ -2016,9 +2167,36 @@ function isLikelyAdCandidate(candidate: Candidate): boolean {
 }
 
 function validationLabel(value: string): string {
+  if (value === "usable") return "已验证可用";
+  if (value === "needs_profile") return "需要授权";
+  if (value === "suspect_ad") return "疑似广告";
+  if (value === "expired") return "已过期";
+  if (value === "drm") return "DRM/受保护";
+  if (value === "region_blocked") return "地区限制";
+  if (value === "untested") return "未验证";
   if (value === "ok") return "已验证可用";
   if (value.startsWith("failed:")) return `不可用：${friendlyError(value.slice("failed:".length).trim())}`;
   return value;
+}
+
+function protectionLabel(value: string): string {
+  return ({
+    needs_profile: "需要 Profile",
+    signed_url: "签名链接",
+    drm: "DRM",
+    region_blocked: "地区限制",
+    unknown: "保护未知",
+  } as Record<string, string>)[value] ?? value;
+}
+
+function routeLabel(value: string): string {
+  return value
+    .replace(/^external:/, "外部/")
+    .replace("browser_probe", "浏览器")
+    .replace("yt_dlp", "yt-dlp")
+    .replace("you_get", "you-get")
+    .replace("streamlink", "Streamlink")
+    .replace("direct", "直链");
 }
 
 function qualityAvailabilityLabel(candidates: Candidate[], preference: string): string {
@@ -2108,12 +2286,28 @@ function friendlyError(value: string): string {
 }
 
 async function copy(value: string): Promise<boolean> {
+  let ok = false;
   try {
     await navigator.clipboard.writeText(value);
-    return true;
+    ok = true;
   } catch {
-    return false;
+    const textarea = document.createElement("textarea");
+    textarea.value = value;
+    textarea.setAttribute("readonly", "true");
+    textarea.style.position = "fixed";
+    textarea.style.left = "-9999px";
+    textarea.style.top = "0";
+    document.body.appendChild(textarea);
+    textarea.select();
+    textarea.setSelectionRange(0, textarea.value.length);
+    try {
+      ok = document.execCommand("copy");
+    } finally {
+      textarea.remove();
+    }
   }
+  window.dispatchEvent(new CustomEvent("reflection-copy-result", { detail: { ok } }));
+  return ok;
 }
 
 createRoot(document.getElementById("root")!).render(<App />);

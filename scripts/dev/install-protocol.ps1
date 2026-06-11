@@ -23,7 +23,7 @@ if ((Test-Path $protocolKey) -and -not $Force) {
 }
 
 New-Item -Path $protocolKey -Force | Out-Null
-New-ItemProperty -Path $protocolKey -Name "(default)" -Value "URL:Reflection King Login Protocol" -Force | Out-Null
+New-ItemProperty -Path $protocolKey -Name "(default)" -Value "URL:Reflection King Helper Protocol" -Force | Out-Null
 New-ItemProperty -Path $protocolKey -Name "URL Protocol" -Value "" -Force | Out-Null
 New-Item -Path $commandKey -Force | Out-Null
 New-ItemProperty -Path $commandKey -Name "(default)" -Value $command -Force | Out-Null

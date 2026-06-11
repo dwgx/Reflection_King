@@ -43,6 +43,7 @@ RK_BROWSER_HEADED=0
 RK_YTDLP_PATH=${YTDLP_VENV}/bin/yt-dlp
 RK_YTDLP_TIMEOUT_SECONDS=45
 RK_YTDLP_MAX_JSON_MB=8
+RK_EXTERNAL_PROBE_TIMEOUT_SECONDS=45
 RK_API_KEY=${API_KEY}
 EOF
 fi
@@ -64,8 +65,15 @@ if [[ ! -x "${YTDLP_VENV}/bin/yt-dlp" ]]; then
   "${YTDLP_VENV}/bin/python" -m pip install --upgrade pip
 fi
 "${YTDLP_VENV}/bin/python" -m pip install --upgrade yt-dlp
+"${YTDLP_VENV}/bin/python" -m pip install --upgrade you-get streamlink || true
 if ! grep -q '^RK_YTDLP_PATH=' "${ENV_DIR}/reflection.env"; then
   printf '\nRK_YTDLP_PATH=%s\n' "${YTDLP_VENV}/bin/yt-dlp" >> "${ENV_DIR}/reflection.env"
+fi
+if [[ -x "${YTDLP_VENV}/bin/you-get" ]] && ! grep -q '^RK_YOU_GET_PATH=' "${ENV_DIR}/reflection.env"; then
+  printf 'RK_YOU_GET_PATH=%s\n' "${YTDLP_VENV}/bin/you-get" >> "${ENV_DIR}/reflection.env"
+fi
+if [[ -x "${YTDLP_VENV}/bin/streamlink" ]] && ! grep -q '^RK_STREAMLINK_PATH=' "${ENV_DIR}/reflection.env"; then
+  printf 'RK_STREAMLINK_PATH=%s\n' "${YTDLP_VENV}/bin/streamlink" >> "${ENV_DIR}/reflection.env"
 fi
 
 cd "${APP_DIR}"

@@ -1,7 +1,7 @@
 param(
     [string]$BaseUrl = "http://154.40.36.22:8780",
     [string]$ProfileId = "admin_default",
-    [ValidateSet("bilibili", "youtube", "douyin", "kuaishou", "pornhub")]
+    [ValidateSet("bilibili", "youtube", "douyin", "kuaishou", "pornhub", "acfun", "iqiyi", "youku")]
     [string]$Platform = "bilibili",
     [string]$ApiKey = "",
     [string]$ApiKeyFile = "",

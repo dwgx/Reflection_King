@@ -17,9 +17,10 @@ The implemented slice has two paths:
 5. Transcode audio to MP3 with `ffmpeg`.
 6. Serve a public direct `audio/mpeg` URL under `/media/...` with HTTP Range support.
 
-The browser path is intended for authorized Bilibili, YouTube, SoundCloud, and
-similar public page workflows. It does not bypass DRM, captchas, paywalls,
-login walls, or access controls.
+The browser path is intended for authorized Bilibili, YouTube, SoundCloud,
+Douyin, Kuaishou, Pornhub, AcFun, iQIYI, Youku, TikTok, Vimeo, and similar
+public page workflows. It does not bypass DRM, captchas, paywalls, login walls,
+or access controls.
 
 ## Layout
 
@@ -40,6 +41,8 @@ tests/                     Integration test notes and future fixtures
 - Visual Studio C++ Build Tools on Windows for the default MSVC Rust target
 - `ffmpeg` on `PATH`, or set `RK_FFMPEG_PATH`
 - `yt-dlp` on `PATH`, or set `RK_YTDLP_PATH`, for external discovery
+- Optional external probes: `you-get` (`RK_YOU_GET_PATH`), `lux`
+  (`RK_LUX_PATH`), and `streamlink` (`RK_STREAMLINK_PATH`)
 - Node.js for the Playwright browser sidecar
 
 Run `.\scripts\dev\bootstrap.ps1` on a fresh Windows machine to install Rust,
@@ -82,6 +85,13 @@ Invoke-RestMethod `
 ```
 
 Poll the returned `status_url`. When the job is `ready`, paste `media_url` into the VRC player.
+
+With `discovery = "auto"`, the resolver aggregates every configured route that
+is allowed by the current key: direct URL detection, yt-dlp, optional external
+adapters, and browser probing. Candidates are deduplicated and scored with
+quality, output type, signature/protection hints, ad risk, route confidence, and
+basic validation state. The dashboard shows the recommended resource first, but
+still lets an operator inspect or override the selection.
 
 Create an external extractor job:
 
@@ -138,6 +148,18 @@ Invoke-RestMethod `
   -ContentType "application/json" `
   -Body $selection
 ```
+
+Optional Windows desktop helpers:
+
+```powershell
+.\scripts\dev\install-protocol.ps1 -Force
+```
+
+This registers `reflection-king://` for the current Windows user. The dashboard
+uses it to open a local browser login helper and, when Chrome/Edge block
+clipboard reads on public HTTP, to ask the local machine to submit the current
+clipboard text back to a one-time server token. Public HTTPS or localhost still
+uses the normal browser clipboard API first.
 
 ## Public URLs
 

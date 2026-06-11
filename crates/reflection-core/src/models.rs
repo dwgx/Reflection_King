@@ -64,6 +64,8 @@ pub struct ApiKeyRecord {
     pub role: ApiKeyRole,
     pub allow_browser_probe: bool,
     pub allow_ytdlp: bool,
+    pub allow_external_adapters: bool,
+    pub allow_login_profile: bool,
     pub created_at: OffsetDateTime,
     pub revoked_at: Option<OffsetDateTime>,
 }
@@ -76,6 +78,8 @@ pub struct ApiKeyView {
     pub role: ApiKeyRole,
     pub allow_browser_probe: bool,
     pub allow_ytdlp: bool,
+    pub allow_external_adapters: bool,
+    pub allow_login_profile: bool,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
     #[serde(with = "time::serde::rfc3339::option")]
@@ -87,6 +91,10 @@ pub struct CreateUserKeyRequest {
     pub label: Option<String>,
     pub allow_browser_probe: bool,
     pub allow_ytdlp: bool,
+    #[serde(default)]
+    pub allow_external_adapters: bool,
+    #[serde(default)]
+    pub allow_login_profile: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -138,6 +146,20 @@ pub struct BrowserLoginTokenResponse {
     pub protocol_url: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct ClipboardPasteTokenResponse {
+    pub token: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub expires_at: OffsetDateTime,
+    pub protocol_url: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ClipboardPasteValueResponse {
+    pub ready: bool,
+    pub text: Option<String>,
+}
+
 impl From<ApiKeyRecord> for ApiKeyView {
     fn from(value: ApiKeyRecord) -> Self {
         Self {
@@ -147,6 +169,8 @@ impl From<ApiKeyRecord> for ApiKeyView {
             role: value.role,
             allow_browser_probe: value.allow_browser_probe,
             allow_ytdlp: value.allow_ytdlp,
+            allow_external_adapters: value.allow_external_adapters,
+            allow_login_profile: value.allow_login_profile,
             created_at: value.created_at,
             revoked_at: value.revoked_at,
         }
@@ -427,6 +451,13 @@ pub enum PlatformHint {
     Douyin,
     Kuaishou,
     Pornhub,
+    Acfun,
+    Iqiyi,
+    Youku,
+    Tiktok,
+    Vimeo,
+    Live,
+    Generic,
 }
 
 impl PlatformHint {
@@ -439,6 +470,13 @@ impl PlatformHint {
             Self::Douyin => "douyin",
             Self::Kuaishou => "kuaishou",
             Self::Pornhub => "pornhub",
+            Self::Acfun => "acfun",
+            Self::Iqiyi => "iqiyi",
+            Self::Youku => "youku",
+            Self::Tiktok => "tiktok",
+            Self::Vimeo => "vimeo",
+            Self::Live => "live",
+            Self::Generic => "generic",
         }
     }
 
@@ -451,6 +489,13 @@ impl PlatformHint {
             "douyin" => Some(Self::Douyin),
             "kuaishou" => Some(Self::Kuaishou),
             "pornhub" => Some(Self::Pornhub),
+            "acfun" => Some(Self::Acfun),
+            "iqiyi" => Some(Self::Iqiyi),
+            "youku" => Some(Self::Youku),
+            "tiktok" => Some(Self::Tiktok),
+            "vimeo" => Some(Self::Vimeo),
+            "live" => Some(Self::Live),
+            "generic" => Some(Self::Generic),
             _ => None,
         }
     }
@@ -510,6 +555,84 @@ impl AuthMode {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+pub enum CandidateProtection {
+    None,
+    NeedsProfile,
+    SignedUrl,
+    Drm,
+    RegionBlocked,
+    Unknown,
+}
+
+impl CandidateProtection {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::NeedsProfile => "needs_profile",
+            Self::SignedUrl => "signed_url",
+            Self::Drm => "drm",
+            Self::RegionBlocked => "region_blocked",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "none" => Some(Self::None),
+            "needs_profile" => Some(Self::NeedsProfile),
+            "signed_url" => Some(Self::SignedUrl),
+            "drm" => Some(Self::Drm),
+            "region_blocked" => Some(Self::RegionBlocked),
+            "unknown" => Some(Self::Unknown),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CandidateValidationState {
+    Untested,
+    Usable,
+    NeedsProfile,
+    SuspectAd,
+    Expired,
+    Drm,
+    RegionBlocked,
+    Failed,
+}
+
+impl CandidateValidationState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Untested => "untested",
+            Self::Usable => "usable",
+            Self::NeedsProfile => "needs_profile",
+            Self::SuspectAd => "suspect_ad",
+            Self::Expired => "expired",
+            Self::Drm => "drm",
+            Self::RegionBlocked => "region_blocked",
+            Self::Failed => "failed",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "untested" => Some(Self::Untested),
+            "usable" => Some(Self::Usable),
+            "needs_profile" => Some(Self::NeedsProfile),
+            "suspect_ad" => Some(Self::SuspectAd),
+            "expired" => Some(Self::Expired),
+            "drm" => Some(Self::Drm),
+            "region_blocked" => Some(Self::RegionBlocked),
+            "failed" => Some(Self::Failed),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum CandidateKind {
     Audio,
     Video,
@@ -560,6 +683,27 @@ pub struct MediaCandidate {
     pub quality_label: Option<String>,
     pub score: i64,
     pub requires_authorization: bool,
+    #[serde(default)]
+    pub platform: Option<PlatformHint>,
+    #[serde(default)]
+    pub route: Option<String>,
+    #[serde(default)]
+    pub extractor_confidence: Option<i64>,
+    #[serde(default)]
+    pub protection: Option<CandidateProtection>,
+    #[serde(default)]
+    pub requires_profile: bool,
+    #[serde(default)]
+    pub ttl_hint_seconds: Option<i64>,
+    #[serde(default)]
+    pub ad_risk: bool,
+    #[serde(default)]
+    pub evidence_count: i64,
+    #[serde(default)]
+    pub paired_candidate_ids: Vec<Uuid>,
+    pub failure_reason: Option<String>,
+    #[serde(default)]
+    pub validation_state: Option<CandidateValidationState>,
     pub metadata_json: serde_json::Value,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,

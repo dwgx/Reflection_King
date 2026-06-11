@@ -802,6 +802,7 @@
     grid-template-columns: 24px minmax(0, 1fr);
     gap: 10px;
     align-items: start;
+    min-height: 118px;
     border: 1px solid #242a34;
     border-radius: 8px;
     background: #0a0c10;
@@ -859,7 +860,8 @@
 
   .candidate-meta {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(120px, 1fr));
+    gap: 5px 10px;
     color: #9ba6b5;
     font-size: 11px;
   }
@@ -887,12 +889,26 @@
   }
 
   .candidate-url {
-    max-height: 34px;
+    max-height: 38px;
     overflow: hidden;
     color: #6f7a8b;
     font-size: 11px;
     line-height: 17px;
     overflow-wrap: anywhere;
+  }
+
+  .resource-panel .panel-scroll-layout {
+    overflow: hidden;
+  }
+
+  .resource-panel .resource-list {
+    max-height: 100%;
+    overflow-y: auto;
+  }
+
+  .candidate-flags {
+    max-height: 48px;
+    overflow: hidden;
   }
 
   .artifact-list {

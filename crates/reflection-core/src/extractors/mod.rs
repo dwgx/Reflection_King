@@ -11,13 +11,16 @@
 
 mod browser;
 mod direct;
+mod external_tool;
 mod yt_dlp;
 
 pub use browser::BrowserExtractor;
 pub use direct::DirectExtractor;
+pub use external_tool::ExternalToolExtractor;
 pub use yt_dlp::YtDlpExtractor;
 
 use async_trait::async_trait;
+use std::collections::HashSet;
 use time::OffsetDateTime;
 use url::Url;
 use uuid::Uuid;
@@ -25,6 +28,7 @@ use uuid::Uuid;
 use crate::{
     browser_probe::BrowserProbeClient,
     external_probe::YtDlpProbe,
+    external_tools::{ExternalToolKind, ExternalToolProbe},
     models::{AuthMode, DiscoveryMode, MediaCandidate, OutputKind, PlatformHint},
     observability::{BrowserSession, ErrorClass},
     Result,
@@ -40,9 +44,11 @@ pub struct ExtractContext {
     pub url: Url,
     pub outputs: Vec<OutputKind>,
     pub profile_id: String,
+    pub discovery: DiscoveryMode,
     pub platform_hint: PlatformHint,
     pub auth_mode: AuthMode,
     pub yt_dlp: Option<YtDlpProbe>,
+    pub external_tools: Vec<ExternalToolProbe>,
     pub browser: Option<BrowserProbeClient>,
 }
 
@@ -150,17 +156,22 @@ impl SourceResolver {
             DiscoveryMode::Direct | DiscoveryMode::Auto => vec![
                 Box::new(DirectExtractor),
                 Box::new(YtDlpExtractor),
+                Box::new(ExternalToolExtractor::new(ExternalToolKind::YouGet)),
+                Box::new(ExternalToolExtractor::new(ExternalToolKind::Lux)),
+                Box::new(ExternalToolExtractor::new(ExternalToolKind::Streamlink)),
                 Box::new(BrowserExtractor),
             ],
         };
         Self::new(extractors)
     }
 
-    /// Run the chain. The first extractor that matches and returns a non-empty
-    /// candidate list wins; matched extractors that error or return nothing are
-    /// recorded and the chain falls through to the next.
+    /// Run the chain. Explicit modes keep the first extractor that yields
+    /// candidates. `Auto` aggregates all matched extractors so platform-specific
+    /// browser evidence and external JSON extractors can reinforce each other.
     pub async fn resolve(&self, ctx: &ExtractContext) -> ResolveOutcome {
         let mut outcome = ResolveOutcome::default();
+        let aggregate = ctx.discovery == DiscoveryMode::Auto;
+        let mut seen_urls = HashSet::new();
 
         for extractor in &self.extractors {
             if !extractor.matches(ctx) {
@@ -190,9 +201,28 @@ impl SourceResolver {
                     outcome.warnings.extend(result.warnings);
 
                     if candidate_count > 0 {
-                        outcome.candidates = result.candidates;
-                        outcome.winner = Some(name);
-                        break;
+                        if outcome.winner.is_none() {
+                            outcome.winner = Some(name.clone());
+                        }
+                        if aggregate {
+                            for mut candidate in result.candidates {
+                                let key = candidate.url.clone();
+                                if seen_urls.insert(key) {
+                                    candidate.evidence_count = candidate.evidence_count.max(1);
+                                    outcome.candidates.push(candidate);
+                                } else if let Some(existing) = outcome
+                                    .candidates
+                                    .iter_mut()
+                                    .find(|existing| existing.url == candidate.url)
+                                {
+                                    existing.evidence_count += 1;
+                                    existing.score = existing.score.max(candidate.score) + 5;
+                                }
+                            }
+                        } else {
+                            outcome.candidates = result.candidates;
+                            break;
+                        }
                     }
                 }
                 Err(error) => {
@@ -208,6 +238,8 @@ impl SourceResolver {
             }
         }
 
+        outcome.candidates.sort_by_key(|candidate| -candidate.score);
+        outcome.candidates.truncate(80);
         outcome
     }
 }
@@ -245,19 +277,25 @@ fn classify(error: &crate::RkError) -> ErrorClass {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::CandidateKind;
+    use crate::models::{CandidateKind, CandidateProtection, CandidateValidationState};
     use crate::RkError;
 
     fn ctx(url: &str) -> ExtractContext {
+        ctx_with_discovery(url, DiscoveryMode::Auto)
+    }
+
+    fn ctx_with_discovery(url: &str, discovery: DiscoveryMode) -> ExtractContext {
         ExtractContext {
             job_id: Uuid::new_v4(),
             source_url: url.to_string(),
             url: Url::parse(url).unwrap(),
             outputs: vec![OutputKind::Audio],
             profile_id: "p".to_string(),
+            discovery,
             platform_hint: PlatformHint::Auto,
             auth_mode: AuthMode::None,
             yt_dlp: None,
+            external_tools: Vec::new(),
             browser: None,
         }
     }
@@ -278,6 +316,17 @@ mod tests {
             quality_label: None,
             score: 1,
             requires_authorization: false,
+            platform: None,
+            route: Some("mock".to_string()),
+            extractor_confidence: Some(50),
+            protection: Some(CandidateProtection::None),
+            requires_profile: false,
+            ttl_hint_seconds: None,
+            ad_risk: false,
+            evidence_count: 1,
+            paired_candidate_ids: Vec::new(),
+            failure_reason: None,
+            validation_state: Some(CandidateValidationState::Untested),
             metadata_json: serde_json::Value::Null,
             created_at: OffsetDateTime::now_utc(),
             score_breakdown_json: serde_json::Value::Null,
@@ -338,7 +387,14 @@ mod tests {
         );
         assert_eq!(
             names(&SourceResolver::for_discovery(DiscoveryMode::Auto)),
-            vec!["direct", "yt_dlp", "browser_probe"]
+            vec![
+                "direct",
+                "yt_dlp",
+                "you_get",
+                "lux",
+                "streamlink",
+                "browser_probe"
+            ]
         );
     }
 
@@ -367,7 +423,9 @@ mod tests {
             }),
         ]);
 
-        let outcome = resolver.resolve(&ctx("https://example.com/page")).await;
+        let outcome = resolver
+            .resolve(&ctx_with_discovery("https://example.com/page", DiscoveryMode::Direct))
+            .await;
 
         assert_eq!(outcome.winner.as_deref(), Some("winner"));
         assert_eq!(outcome.candidates.len(), 2);
@@ -380,6 +438,29 @@ mod tests {
             .unwrap()
             .contains("boom"));
         assert_eq!(outcome.attempts[1].error_class, ErrorClass::Blocked);
+    }
+
+    #[tokio::test]
+    async fn auto_resolver_aggregates_candidates() {
+        let resolver = SourceResolver::new(vec![
+            Box::new(Mock {
+                name: "first",
+                count: 1,
+                fail: false,
+            }),
+            Box::new(Mock {
+                name: "second",
+                count: 1,
+                fail: false,
+            }),
+        ]);
+
+        let outcome = resolver.resolve(&ctx("https://example.com/page")).await;
+
+        assert_eq!(outcome.winner.as_deref(), Some("first"));
+        assert_eq!(outcome.chain, vec!["first", "second"]);
+        assert_eq!(outcome.candidates.len(), 1);
+        assert_eq!(outcome.candidates[0].evidence_count, 2);
     }
 
     #[tokio::test]

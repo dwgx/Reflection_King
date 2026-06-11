@@ -17,6 +17,10 @@ pub struct AppConfig {
     pub yt_dlp_path: Option<PathBuf>,
     pub yt_dlp_timeout: Duration,
     pub yt_dlp_max_json_bytes: usize,
+    pub you_get_path: Option<PathBuf>,
+    pub lux_path: Option<PathBuf>,
+    pub streamlink_path: Option<PathBuf>,
+    pub external_probe_timeout: Duration,
     pub api_key: Option<String>,
 }
 
@@ -75,6 +79,23 @@ impl AppConfig {
         let api_key = env::var("RK_API_KEY")
             .ok()
             .filter(|value| !value.is_empty());
+        let you_get_path = env::var("RK_YOU_GET_PATH")
+            .ok()
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from);
+        let lux_path = env::var("RK_LUX_PATH")
+            .ok()
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from);
+        let streamlink_path = env::var("RK_STREAMLINK_PATH")
+            .ok()
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from);
+        let external_probe_timeout_secs = env_value("RK_EXTERNAL_PROBE_TIMEOUT_SECONDS", "45")
+            .parse::<u64>()
+            .map_err(|error| {
+                RkError::BadRequest(format!("invalid RK_EXTERNAL_PROBE_TIMEOUT_SECONDS: {error}"))
+            })?;
 
         Ok(Self {
             bind_address,
@@ -90,6 +111,10 @@ impl AppConfig {
             yt_dlp_path,
             yt_dlp_timeout: Duration::from_secs(yt_dlp_timeout_secs),
             yt_dlp_max_json_bytes: yt_dlp_max_json_mb.saturating_mul(1024).saturating_mul(1024),
+            you_get_path,
+            lux_path,
+            streamlink_path,
+            external_probe_timeout: Duration::from_secs(external_probe_timeout_secs),
             api_key,
         })
     }

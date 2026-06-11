@@ -6,7 +6,9 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::{
-    models::{CandidateKind, MediaCandidate, PlatformHint},
+    models::{
+        CandidateKind, CandidateProtection, CandidateValidationState, MediaCandidate, PlatformHint,
+    },
     url_policy::parse_and_validate_url,
     Result, RkError,
 };
@@ -160,7 +162,7 @@ impl BrowserProbeClient {
             .iter()
             .filter(|candidate| parse_and_validate_url(&candidate.url).is_ok())
             .cloned()
-            .map(|candidate| candidate.into_media_candidate(job_id, &metadata))
+            .map(|candidate| candidate.into_media_candidate(job_id, platform_hint, &metadata))
             .collect::<Vec<_>>();
 
         Ok(BrowserProbeOutcome {
@@ -268,7 +270,21 @@ impl BrowserProbeClient {
 }
 
 impl BrowserCandidate {
-    fn into_media_candidate(self, job_id: Uuid, metadata: &ProbeMetadata) -> MediaCandidate {
+    fn into_media_candidate(
+        self,
+        job_id: Uuid,
+        platform_hint: PlatformHint,
+        metadata: &ProbeMetadata,
+    ) -> MediaCandidate {
+        let ad_risk = is_likely_ad_or_tracking_url(&self.url);
+        let signed = is_signed_url(&self.url);
+        let protection = if self.requires_authorization {
+            CandidateProtection::NeedsProfile
+        } else if signed {
+            CandidateProtection::SignedUrl
+        } else {
+            CandidateProtection::None
+        };
         MediaCandidate {
             id: Uuid::new_v4(),
             job_id,
@@ -284,6 +300,25 @@ impl BrowserCandidate {
             quality_label: self.quality_label,
             score: self.score,
             requires_authorization: self.requires_authorization,
+            platform: if platform_hint == PlatformHint::Auto {
+                None
+            } else {
+                Some(platform_hint)
+            },
+            route: Some("browser_probe".to_string()),
+            extractor_confidence: Some(70),
+            protection: Some(protection),
+            requires_profile: self.requires_authorization,
+            ttl_hint_seconds: None,
+            ad_risk,
+            evidence_count: 1,
+            paired_candidate_ids: Vec::new(),
+            failure_reason: None,
+            validation_state: Some(if ad_risk {
+                CandidateValidationState::SuspectAd
+            } else {
+                CandidateValidationState::Untested
+            }),
             metadata_json: serde_json::json!({
                 "final_url": metadata.final_url,
                 "title": metadata.title,
@@ -303,6 +338,43 @@ impl BrowserCandidate {
             discovered_by_event_id: None,
         }
     }
+}
+
+fn is_signed_url(value: &str) -> bool {
+    let lowered = value.to_ascii_lowercase();
+    [
+        "expires=",
+        "expire=",
+        "deadline=",
+        "x-expires=",
+        "x-amz-expires=",
+        "signature=",
+        "sign=",
+        "token=",
+        "auth_key=",
+    ]
+    .iter()
+    .any(|needle| lowered.contains(needle))
+}
+
+fn is_likely_ad_or_tracking_url(value: &str) -> bool {
+    let lowered = value.to_ascii_lowercase();
+    [
+        "trafficjunky",
+        "doubleclick",
+        "googlesyndication",
+        "adservice",
+        "pre-roll",
+        "preroll",
+        "vast",
+        "vpaid",
+        "tracking",
+        "tracker",
+        "pixel",
+        "/ads/",
+    ]
+    .iter()
+    .any(|needle| lowered.contains(needle))
 }
 
 struct ProbeMetadata {

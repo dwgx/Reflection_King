@@ -11,9 +11,9 @@ use uuid::Uuid;
 use crate::{
     models::{
         ApiKeyRecord, ApiKeyRole, ApiKeyView, ArtifactView, AuthMode, CandidateKind,
-        ClearJobsResponse, CreateUserKeyRequest, CreatedUserKeyResponse, DiscoveryMode,
-        HiddenJobBatchView, JobRecord, JobStatus, MediaCandidate, OutputKind, PlatformHint,
-        RestoreJobsResponse, RotatedAdminKeyResponse,
+        CandidateProtection, CandidateValidationState, ClearJobsResponse, CreateUserKeyRequest,
+        CreatedUserKeyResponse, DiscoveryMode, HiddenJobBatchView, JobRecord, JobStatus,
+        MediaCandidate, OutputKind, PlatformHint, RestoreJobsResponse, RotatedAdminKeyResponse,
     },
     observability::{
         BrowserSession, DomainPolicy, ErrorClass, JobTrace, MediaProbe, PipelineEvent,
@@ -602,6 +602,8 @@ impl JobStore {
                    role,
                    allow_browser_probe,
                    allow_ytdlp,
+                   allow_external_adapters,
+                   allow_login_profile,
                    created_at,
                    revoked_at
             FROM api_keys
@@ -641,6 +643,8 @@ impl JobStore {
                    role,
                    allow_browser_probe,
                    allow_ytdlp,
+                   allow_external_adapters,
+                   allow_login_profile,
                    created_at,
                    revoked_at
             FROM api_keys
@@ -670,6 +674,8 @@ impl JobStore {
                 role: ApiKeyRole::User,
                 allow_browser_probe: request.allow_browser_probe,
                 allow_ytdlp: request.allow_ytdlp,
+                allow_external_adapters: request.allow_external_adapters || request.allow_ytdlp,
+                allow_login_profile: request.allow_login_profile,
                 created_at: OffsetDateTime::now_utc(),
                 revoked_at: None,
             })
@@ -695,6 +701,8 @@ impl JobStore {
             role: ApiKeyRole::Admin,
             allow_browser_probe: true,
             allow_ytdlp: true,
+            allow_external_adapters: true,
+            allow_login_profile: true,
             created_at: OffsetDateTime::now_utc(),
             revoked_at: None,
         })
@@ -713,6 +721,8 @@ impl JobStore {
             role: ApiKeyRole::Admin,
             allow_browser_probe: true,
             allow_ytdlp: true,
+            allow_external_adapters: true,
+            allow_login_profile: true,
             created_at: now,
             revoked_at: None,
         };
@@ -739,10 +749,12 @@ impl JobStore {
                 role,
                 allow_browser_probe,
                 allow_ytdlp,
+                allow_external_adapters,
+                allow_login_profile,
                 created_at,
                 revoked_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(record.id.to_string())
@@ -752,6 +764,8 @@ impl JobStore {
         .bind(record.role.as_str())
         .bind(record.allow_browser_probe)
         .bind(record.allow_ytdlp)
+        .bind(record.allow_external_adapters)
+        .bind(record.allow_login_profile)
         .bind(format_time(record.created_at)?)
         .bind(record.revoked_at.map(format_time).transpose()?)
         .execute(&mut *tx)
@@ -775,10 +789,12 @@ impl JobStore {
                 role,
                 allow_browser_probe,
                 allow_ytdlp,
+                allow_external_adapters,
+                allow_login_profile,
                 created_at,
                 revoked_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(record.id.to_string())
@@ -788,6 +804,8 @@ impl JobStore {
         .bind(record.role.as_str())
         .bind(record.allow_browser_probe)
         .bind(record.allow_ytdlp)
+        .bind(record.allow_external_adapters)
+        .bind(record.allow_login_profile)
         .bind(format_time(record.created_at)?)
         .bind(record.revoked_at.map(format_time).transpose()?)
         .execute(&self.pool)
@@ -902,6 +920,110 @@ impl JobStore {
         Ok(Some(platform))
     }
 
+    pub async fn create_clipboard_paste_token(
+        &self,
+        created_by_key_id: Option<Uuid>,
+        ttl_seconds: i64,
+    ) -> Result<(String, OffsetDateTime)> {
+        let token = format!(
+            "rk_paste_{}{}",
+            Uuid::new_v4().simple(),
+            Uuid::new_v4().simple()
+        );
+        let now = OffsetDateTime::now_utc();
+        let expires_at = now + time::Duration::seconds(ttl_seconds.max(30));
+        sqlx::query(
+            r#"
+            INSERT INTO clipboard_paste_tokens (
+                token_hash,
+                created_by_key_id,
+                created_at,
+                expires_at,
+                text,
+                used_at
+            )
+            VALUES (?, ?, ?, ?, NULL, NULL)
+            "#,
+        )
+        .bind(hash_api_key(&token))
+        .bind(created_by_key_id.map(|id| id.to_string()))
+        .bind(format_time(now)?)
+        .bind(format_time(expires_at)?)
+        .execute(&self.pool)
+        .await?;
+
+        Ok((token, expires_at))
+    }
+
+    pub async fn submit_clipboard_paste_token(&self, token: &str, text: &str) -> Result<bool> {
+        let text = text.trim();
+        if text.is_empty() {
+            return Ok(false);
+        }
+        let token_hash = hash_api_key(token);
+        let now_text = format_time(OffsetDateTime::now_utc())?;
+        let result = sqlx::query(
+            r#"
+            UPDATE clipboard_paste_tokens
+            SET text = ?
+            WHERE token_hash = ?
+              AND used_at IS NULL
+              AND expires_at > ?
+            "#,
+        )
+        .bind(text)
+        .bind(token_hash)
+        .bind(now_text)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn consume_clipboard_paste_token(&self, token: &str) -> Result<Option<String>> {
+        let token_hash = hash_api_key(token);
+        let now = OffsetDateTime::now_utc();
+        let now_text = format_time(now)?;
+        let mut tx = self.pool.begin().await?;
+        let row = sqlx::query(
+            r#"
+            SELECT text, expires_at, used_at
+            FROM clipboard_paste_tokens
+            WHERE token_hash = ?
+            "#,
+        )
+        .bind(&token_hash)
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        let Some(row) = row else {
+            tx.commit().await?;
+            return Ok(None);
+        };
+
+        let expires_at = parse_time(&row.get::<String, _>("expires_at"))?;
+        let used_at: Option<String> = row.get("used_at");
+        let text: Option<String> = row.get("text");
+        if used_at.is_some() || expires_at <= now || text.as_deref().unwrap_or("").is_empty() {
+            tx.commit().await?;
+            return Ok(None);
+        }
+
+        sqlx::query(
+            r#"
+            UPDATE clipboard_paste_tokens
+            SET used_at = ?
+            WHERE token_hash = ? AND used_at IS NULL
+            "#,
+        )
+        .bind(now_text)
+        .bind(token_hash)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+
+        Ok(text)
+    }
+
     pub async fn set_selected_candidates(&self, id: Uuid, candidate_ids: &[Uuid]) -> Result<()> {
         let values = candidate_ids
             .iter()
@@ -953,6 +1075,17 @@ impl JobStore {
                     quality_label,
                     score,
                     requires_authorization,
+                    platform,
+                    route,
+                    extractor_confidence,
+                    protection,
+                    requires_profile,
+                    ttl_hint_seconds,
+                    ad_risk,
+                    evidence_count,
+                    paired_candidate_ids_json,
+                    failure_reason,
+                    validation_state,
                     metadata_json,
                     created_at,
                     score_breakdown_json,
@@ -964,7 +1097,7 @@ impl JobStore {
                     expires_at,
                     discovered_by_event_id
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 "#,
             )
             .bind(candidate.id.to_string())
@@ -981,6 +1114,17 @@ impl JobStore {
             .bind(&candidate.quality_label)
             .bind(candidate.score)
             .bind(candidate.requires_authorization)
+            .bind(candidate.platform.map(|platform| platform.as_str().to_string()))
+            .bind(&candidate.route)
+            .bind(candidate.extractor_confidence)
+            .bind(candidate.protection.map(|protection| protection.as_str().to_string()))
+            .bind(candidate.requires_profile)
+            .bind(candidate.ttl_hint_seconds)
+            .bind(candidate.ad_risk)
+            .bind(candidate.evidence_count)
+            .bind(serde_json::to_string(&candidate.paired_candidate_ids)?)
+            .bind(&candidate.failure_reason)
+            .bind(candidate.validation_state.map(|state| state.as_str().to_string()))
             .bind(candidate.metadata_json.to_string())
             .bind(format_time(candidate.created_at)?)
             .bind(candidate.score_breakdown_json.to_string())
@@ -1016,6 +1160,17 @@ impl JobStore {
                    quality_label,
                    score,
                    requires_authorization,
+                   platform,
+                   route,
+                   extractor_confidence,
+                   protection,
+                   requires_profile,
+                   ttl_hint_seconds,
+                   ad_risk,
+                   evidence_count,
+                   paired_candidate_ids_json,
+                   failure_reason,
+                   validation_state,
                    metadata_json,
                    created_at,
                    score_breakdown_json,
@@ -1059,6 +1214,17 @@ impl JobStore {
                    quality_label,
                    score,
                    requires_authorization,
+                   platform,
+                   route,
+                   extractor_confidence,
+                   protection,
+                   requires_profile,
+                   ttl_hint_seconds,
+                   ad_risk,
+                   evidence_count,
+                   paired_candidate_ids_json,
+                   failure_reason,
+                   validation_state,
                    metadata_json,
                    created_at,
                    score_breakdown_json,
@@ -1683,12 +1849,27 @@ impl JobStore {
                 role TEXT NOT NULL,
                 allow_browser_probe INTEGER NOT NULL,
                 allow_ytdlp INTEGER NOT NULL,
+                allow_external_adapters INTEGER NOT NULL DEFAULT 1,
+                allow_login_profile INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 revoked_at TEXT
             )
             "#,
         )
         .execute(&self.pool)
+        .await?;
+
+        self.add_column_if_missing(
+            "api_keys",
+            "allow_external_adapters",
+            "INTEGER NOT NULL DEFAULT 1",
+        )
+        .await?;
+        self.add_column_if_missing(
+            "api_keys",
+            "allow_login_profile",
+            "INTEGER NOT NULL DEFAULT 0",
+        )
         .await?;
 
         sqlx::query(
@@ -1798,6 +1979,27 @@ impl JobStore {
 
         sqlx::query(
             r#"
+            CREATE TABLE IF NOT EXISTS clipboard_paste_tokens (
+                token_hash TEXT PRIMARY KEY NOT NULL,
+                created_by_key_id TEXT,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                text TEXT,
+                used_at TEXT
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_clipboard_paste_tokens_expires ON clipboard_paste_tokens(expires_at)",
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
             CREATE TABLE IF NOT EXISTS source_candidates (
                 id TEXT PRIMARY KEY NOT NULL,
                 job_id TEXT NOT NULL,
@@ -1813,6 +2015,17 @@ impl JobStore {
                 quality_label TEXT,
                 score INTEGER NOT NULL,
                 requires_authorization INTEGER NOT NULL,
+                platform TEXT,
+                route TEXT,
+                extractor_confidence INTEGER,
+                protection TEXT,
+                requires_profile INTEGER NOT NULL DEFAULT 0,
+                ttl_hint_seconds INTEGER,
+                ad_risk INTEGER NOT NULL DEFAULT 0,
+                evidence_count INTEGER NOT NULL DEFAULT 1,
+                paired_candidate_ids_json TEXT NOT NULL DEFAULT '[]',
+                failure_reason TEXT,
+                validation_state TEXT,
                 metadata_json TEXT NOT NULL,
                 created_at TEXT NOT NULL
             )
@@ -1847,6 +2060,44 @@ impl JobStore {
         self.add_column_if_missing("source_candidates", "expires_at", "TEXT")
             .await?;
         self.add_column_if_missing("source_candidates", "discovered_by_event_id", "TEXT")
+            .await?;
+        self.add_column_if_missing("source_candidates", "platform", "TEXT")
+            .await?;
+        self.add_column_if_missing("source_candidates", "route", "TEXT")
+            .await?;
+        self.add_column_if_missing("source_candidates", "extractor_confidence", "INTEGER")
+            .await?;
+        self.add_column_if_missing("source_candidates", "protection", "TEXT")
+            .await?;
+        self.add_column_if_missing(
+            "source_candidates",
+            "requires_profile",
+            "INTEGER NOT NULL DEFAULT 0",
+        )
+        .await?;
+        self.add_column_if_missing("source_candidates", "ttl_hint_seconds", "INTEGER")
+            .await?;
+        self.add_column_if_missing(
+            "source_candidates",
+            "ad_risk",
+            "INTEGER NOT NULL DEFAULT 0",
+        )
+        .await?;
+        self.add_column_if_missing(
+            "source_candidates",
+            "evidence_count",
+            "INTEGER NOT NULL DEFAULT 1",
+        )
+        .await?;
+        self.add_column_if_missing(
+            "source_candidates",
+            "paired_candidate_ids_json",
+            "TEXT NOT NULL DEFAULT '[]'",
+        )
+        .await?;
+        self.add_column_if_missing("source_candidates", "failure_reason", "TEXT")
+            .await?;
+        self.add_column_if_missing("source_candidates", "validation_state", "TEXT")
             .await?;
 
         sqlx::query(
@@ -2128,6 +2379,8 @@ fn row_to_api_key(row: sqlx::sqlite::SqliteRow) -> Result<ApiKeyRecord> {
         role: ApiKeyRole::parse(&role).unwrap_or(ApiKeyRole::User),
         allow_browser_probe: row.get::<i64, _>("allow_browser_probe") != 0,
         allow_ytdlp: row.get::<i64, _>("allow_ytdlp") != 0,
+        allow_external_adapters: row.get::<i64, _>("allow_external_adapters") != 0,
+        allow_login_profile: row.get::<i64, _>("allow_login_profile") != 0,
         created_at: parse_time(&created_at)?,
         revoked_at: parse_time_opt(row.get::<Option<String>, _>("revoked_at"))?,
     })
@@ -2175,6 +2428,28 @@ fn row_to_candidate(row: sqlx::sqlite::SqliteRow) -> Result<MediaCandidate> {
         quality_label: row.get("quality_label"),
         score: row.get("score"),
         requires_authorization: row.get::<i64, _>("requires_authorization") != 0,
+        platform: row
+            .get::<Option<String>, _>("platform")
+            .as_deref()
+            .and_then(PlatformHint::parse),
+        route: row.get("route"),
+        extractor_confidence: row.get("extractor_confidence"),
+        protection: row
+            .get::<Option<String>, _>("protection")
+            .as_deref()
+            .and_then(CandidateProtection::parse),
+        requires_profile: row.get::<i64, _>("requires_profile") != 0,
+        ttl_hint_seconds: row.get("ttl_hint_seconds"),
+        ad_risk: row.get::<i64, _>("ad_risk") != 0,
+        evidence_count: row.get("evidence_count"),
+        paired_candidate_ids: parse_uuid_list_json(&row.get::<String, _>(
+            "paired_candidate_ids_json",
+        ))?,
+        failure_reason: row.get("failure_reason"),
+        validation_state: row
+            .get::<Option<String>, _>("validation_state")
+            .as_deref()
+            .and_then(CandidateValidationState::parse),
         metadata_json: serde_json::from_str(&metadata_json)?,
         created_at: parse_time(&created_at)?,
         score_breakdown_json: serde_json::from_str(&row.get::<String, _>("score_breakdown_json"))
@@ -2567,6 +2842,8 @@ mod tests {
                 label: Some("tester".to_string()),
                 allow_browser_probe: true,
                 allow_ytdlp: false,
+                allow_external_adapters: true,
+                allow_login_profile: false,
             })
             .await
             .unwrap();
@@ -2693,6 +2970,32 @@ mod tests {
             .await
             .unwrap()
             .is_none());
+
+        drop(store);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[tokio::test]
+    async fn clipboard_paste_tokens_are_single_use() {
+        let path = temp_db_path();
+        let store = JobStore::connect(&path).await.unwrap();
+
+        let (token, expires_at) = store
+            .create_clipboard_paste_token(Some(Uuid::new_v4()), 60)
+            .await
+            .unwrap();
+        assert!(expires_at > OffsetDateTime::now_utc());
+        assert!(store.consume_clipboard_paste_token(&token).await.unwrap().is_none());
+
+        assert!(store
+            .submit_clipboard_paste_token(&token, "https://example.com/watch")
+            .await
+            .unwrap());
+        assert_eq!(
+            store.consume_clipboard_paste_token(&token).await.unwrap(),
+            Some("https://example.com/watch".to_string())
+        );
+        assert!(store.consume_clipboard_paste_token(&token).await.unwrap().is_none());
 
         drop(store);
         std::fs::remove_file(&path).ok();

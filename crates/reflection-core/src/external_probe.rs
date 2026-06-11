@@ -6,7 +6,9 @@ use tokio::{process::Command, time as tokio_time};
 use uuid::Uuid;
 
 use crate::{
-    models::{CandidateKind, MediaCandidate, OutputKind},
+    models::{
+        CandidateKind, CandidateProtection, CandidateValidationState, MediaCandidate, OutputKind,
+    },
     url_policy::parse_and_validate_url,
     Result, RkError,
 };
@@ -198,6 +200,21 @@ fn format_to_candidate(
         quality_label: quality_label(format),
         score,
         requires_authorization: has_sensitive_headers(format.http_headers.as_ref()),
+        platform: None,
+        route: Some("external:yt_dlp".to_string()),
+        extractor_confidence: Some(80),
+        protection: Some(candidate_protection(format)),
+        requires_profile: has_sensitive_headers(format.http_headers.as_ref()),
+        ttl_hint_seconds: None,
+        ad_risk: is_likely_ad_or_tracking_url(url),
+        evidence_count: 1,
+        paired_candidate_ids: Vec::new(),
+        failure_reason: None,
+        validation_state: Some(if is_likely_ad_or_tracking_url(url) {
+            CandidateValidationState::SuspectAd
+        } else {
+            CandidateValidationState::Untested
+        }),
         metadata_json: serde_json::json!({
             "source": "yt_dlp",
             "extractor": info.extractor,
@@ -412,6 +429,63 @@ fn has_sensitive_headers(headers: Option<&serde_json::Value>) -> bool {
         let key = key.to_ascii_lowercase();
         key == "cookie" || key == "authorization" || key.starts_with("x-")
     })
+}
+
+fn candidate_protection(format: &YtDlpFormat) -> CandidateProtection {
+    if has_sensitive_headers(format.http_headers.as_ref()) {
+        return CandidateProtection::NeedsProfile;
+    }
+    let protocol = format.protocol.as_deref().unwrap_or_default().to_ascii_lowercase();
+    let format_text = format.format.as_deref().unwrap_or_default().to_ascii_lowercase();
+    if protocol.contains("drm") || format_text.contains("drm") {
+        CandidateProtection::Drm
+    } else if format
+        .url
+        .as_deref()
+        .map(is_signed_url)
+        .unwrap_or(false)
+    {
+        CandidateProtection::SignedUrl
+    } else {
+        CandidateProtection::None
+    }
+}
+
+fn is_signed_url(value: &str) -> bool {
+    let lowered = value.to_ascii_lowercase();
+    [
+        "expires=",
+        "expire=",
+        "deadline=",
+        "x-expires=",
+        "x-amz-expires=",
+        "signature=",
+        "sign=",
+        "token=",
+        "auth_key=",
+    ]
+    .iter()
+    .any(|needle| lowered.contains(needle))
+}
+
+fn is_likely_ad_or_tracking_url(value: &str) -> bool {
+    let lowered = value.to_ascii_lowercase();
+    [
+        "trafficjunky",
+        "doubleclick",
+        "googlesyndication",
+        "adservice",
+        "pre-roll",
+        "preroll",
+        "vast",
+        "vpaid",
+        "tracking",
+        "tracker",
+        "pixel",
+        "/ads/",
+    ]
+    .iter()
+    .any(|needle| lowered.contains(needle))
 }
 
 fn limited_stderr(bytes: &[u8]) -> String {

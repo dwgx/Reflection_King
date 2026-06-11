@@ -3,6 +3,7 @@ pub mod config;
 pub mod download;
 pub mod error;
 pub mod external_probe;
+pub mod external_tools;
 pub mod extractors;
 pub mod job_store;
 pub mod models;

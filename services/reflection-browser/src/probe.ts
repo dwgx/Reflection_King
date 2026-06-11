@@ -178,6 +178,21 @@ export class BrowserProbeService {
     if (isAdultVideoPage(request.url) || isAdultVideoPage(finalUrl)) {
       filtered = filterAdultVideoCandidates(filtered);
     }
+    if (isAcfunUrl(request.url) || isAcfunUrl(finalUrl)) {
+      filtered = filterCnVideoPlatformCandidates(filtered, "acfun");
+    }
+    if (isIqiyiUrl(request.url) || isIqiyiUrl(finalUrl)) {
+      filtered = filterCnVideoPlatformCandidates(filtered, "iqiyi");
+    }
+    if (isYoukuUrl(request.url) || isYoukuUrl(finalUrl)) {
+      filtered = filterCnVideoPlatformCandidates(filtered, "youku");
+    }
+    if (isTikTokUrl(request.url) || isTikTokUrl(finalUrl)) {
+      filtered = filterTikTokCandidates(filtered);
+    }
+    if (isVimeoUrl(request.url) || isVimeoUrl(finalUrl)) {
+      filtered = filterVimeoCandidates(filtered);
+    }
 
     return {
       finalUrl,
@@ -949,7 +964,16 @@ function isAllowedMainMediaHost(host: string): boolean {
     host.endsWith("douyinpic.com") ||
     host.endsWith("kwaicdn.com") ||
     host.endsWith("gifshow.com") ||
-    host.endsWith("phncdn.com")
+    host.endsWith("phncdn.com") ||
+    host.endsWith("acfun.cn") ||
+    host.endsWith("aixifan.com") ||
+    host.endsWith("iqiyi.com") ||
+    host.endsWith("qiyipic.com") ||
+    host.endsWith("youku.com") ||
+    host.endsWith("ykimg.com") ||
+    host.endsWith("tiktokcdn.com") ||
+    host.endsWith("byteoversea.com") ||
+    host.endsWith("vimeocdn.com")
   );
 }
 
@@ -1133,6 +1157,189 @@ function filterAdultVideoCandidates(candidates: BrowserCandidate[]): BrowserCand
   return out;
 }
 
+type CnVideoPlatform = "acfun" | "iqiyi" | "youku";
+
+function filterCnVideoPlatformCandidates(
+  candidates: BrowserCandidate[],
+  platform: CnVideoPlatform,
+): BrowserCandidate[] {
+  const out: BrowserCandidate[] = [];
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    let host = "";
+    let pathname = "";
+    try {
+      const parsed = new URL(candidate.url);
+      host = parsed.hostname.toLowerCase();
+      pathname = parsed.pathname.toLowerCase();
+    } catch {
+      continue;
+    }
+
+    if (isLikelyAdOrTrackingUrl(candidate.url)) {
+      continue;
+    }
+    const allowed = isCnPlatformMediaHost(platform, host, pathname);
+    if (!allowed) {
+      continue;
+    }
+    if (candidate.kind === "image" && /(avatar|profile|icon|logo|emoji|sprite|badge|poster|cover)/i.test(pathname)) {
+      continue;
+    }
+    const key = `${candidate.kind}:${host}:${pathname}:${candidate.qualityLabel ?? ""}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    out.push({
+      ...candidate,
+      score: candidate.score + (candidate.kind === "manifest" ? 45 : candidate.kind === "video" ? 35 : 5),
+      metadata: { ...(candidate.metadata ?? {}), source: `${platform}_filter`, platform },
+    });
+  }
+  return out;
+}
+
+function isCnPlatformMediaHost(platform: CnVideoPlatform, host: string, pathname: string): boolean {
+  const isManifestOrMediaPath =
+    pathname.includes(".m3u8") ||
+    pathname.includes(".mpd") ||
+    pathname.includes(".mp4") ||
+    pathname.includes(".m4s") ||
+    pathname.includes(".ts") ||
+    pathname.includes("/dash") ||
+    pathname.includes("/hls") ||
+    pathname.includes("/stream");
+  if (!isManifestOrMediaPath) {
+    return false;
+  }
+  if (platform === "acfun") {
+    return host.endsWith("acfun.cn") || host.endsWith("aixifan.com") || host.includes("acfun");
+  }
+  if (platform === "iqiyi") {
+    return host.endsWith("iqiyi.com") || host.endsWith("qiyi.com") || host.endsWith("qiyipic.com") || host.includes("iqiyi");
+  }
+  return host.endsWith("youku.com") || host.endsWith("ykimg.com") || host.includes("youku");
+}
+
+function filterTikTokCandidates(candidates: BrowserCandidate[]): BrowserCandidate[] {
+  const out: BrowserCandidate[] = [];
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    let host = "";
+    let pathname = "";
+    try {
+      const parsed = new URL(candidate.url);
+      host = parsed.hostname.toLowerCase();
+      pathname = parsed.pathname.toLowerCase();
+    } catch {
+      continue;
+    }
+    const allowed =
+      host.endsWith("tiktokcdn.com") ||
+      host.endsWith("tiktokv.com") ||
+      host.endsWith("byteoversea.com") ||
+      pathname.includes("/video/tos/");
+    if (!allowed || isLikelyAdOrTrackingUrl(candidate.url)) {
+      continue;
+    }
+    if (candidate.kind === "image" && /(avatar|profile|icon|logo|emoji|sprite|badge)/i.test(pathname)) {
+      continue;
+    }
+    const key = `${candidate.kind}:${pathname}:${candidate.qualityLabel ?? ""}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    out.push({
+      ...candidate,
+      score: candidate.score + (candidate.kind === "video" || candidate.kind === "manifest" ? 35 : 8),
+      metadata: { ...(candidate.metadata ?? {}), source: "tiktok_filter", platform: "tiktok" },
+    });
+  }
+  return out;
+}
+
+function filterVimeoCandidates(candidates: BrowserCandidate[]): BrowserCandidate[] {
+  const out: BrowserCandidate[] = [];
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    let host = "";
+    let pathname = "";
+    try {
+      const parsed = new URL(candidate.url);
+      host = parsed.hostname.toLowerCase();
+      pathname = parsed.pathname.toLowerCase();
+    } catch {
+      continue;
+    }
+    const allowed =
+      host.endsWith("vimeocdn.com") ||
+      host.endsWith("vimeo.com") ||
+      pathname.includes("/video/") ||
+      pathname.includes("/play/");
+    if (!allowed || isLikelyAdOrTrackingUrl(candidate.url) || candidate.kind === "image") {
+      continue;
+    }
+    const key = `${candidate.kind}:${pathname}:${candidate.qualityLabel ?? ""}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    out.push({
+      ...candidate,
+      score: candidate.score + (candidate.kind === "manifest" ? 45 : 28),
+      metadata: { ...(candidate.metadata ?? {}), source: "vimeo_filter", platform: "vimeo" },
+    });
+  }
+  return out;
+}
+
+function isAcfunUrl(value: string): boolean {
+  try {
+    const host = new URL(value).hostname.toLowerCase();
+    return host === "acfun.cn" || host.endsWith(".acfun.cn") || host.endsWith(".aixifan.com");
+  } catch {
+    return false;
+  }
+}
+
+function isIqiyiUrl(value: string): boolean {
+  try {
+    const host = new URL(value).hostname.toLowerCase();
+    return host === "iqiyi.com" || host.endsWith(".iqiyi.com") || host.endsWith(".qiyi.com");
+  } catch {
+    return false;
+  }
+}
+
+function isYoukuUrl(value: string): boolean {
+  try {
+    const host = new URL(value).hostname.toLowerCase();
+    return host === "youku.com" || host.endsWith(".youku.com") || host.endsWith(".ykimg.com");
+  } catch {
+    return false;
+  }
+}
+
+function isTikTokUrl(value: string): boolean {
+  try {
+    const host = new URL(value).hostname.toLowerCase();
+    return host === "tiktok.com" || host.endsWith(".tiktok.com") || host.endsWith(".tiktokcdn.com");
+  } catch {
+    return false;
+  }
+}
+
+function isVimeoUrl(value: string): boolean {
+  try {
+    const host = new URL(value).hostname.toLowerCase();
+    return host === "vimeo.com" || host.endsWith(".vimeo.com") || host.endsWith(".vimeocdn.com");
+  } catch {
+    return false;
+  }
+}
+
 function isBilibiliUrl(value: string): boolean {
   try {
     const host = new URL(value).hostname.toLowerCase();
@@ -1197,6 +1404,16 @@ const PLAY_SELECTORS = [
   ".bpx-player-ctrl-play",
   ".squirtle-video-start",
   ".xgplayer-play",
+  ".xgplayer-start",
+  ".xgplayer-start-button",
+  ".iqp-btn-play",
+  ".iqp-playbutton",
+  ".kui-player-play",
+  ".yk-player-play",
+  ".youku-player-play",
+  ".txp_btn_play",
+  ".acfun-player-play",
+  ".danmaku-player .play",
   ".play-icon",
   // Common adult/video players
   ".mgp_playIcon",

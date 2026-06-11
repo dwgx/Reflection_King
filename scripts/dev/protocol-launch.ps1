@@ -29,32 +29,51 @@ $uri = [Uri]$Url
 if ($uri.Scheme -ne "reflection-king") {
     throw "Unsupported protocol: $($uri.Scheme)"
 }
-if ($uri.Host -ne "login") {
-    throw "Unsupported reflection-king action: $($uri.Host)"
-}
-
 $query = Parse-QueryString $uri.Query
 $baseUrl = $query["base"]
-$profileId = $query["profile"]
-$platform = $query["platform"]
 $token = $query["token"]
 
-if (-not $baseUrl -or -not $profileId -or -not $platform -or -not $token) {
-    throw "reflection-king login URL is missing base/profile/platform/token"
+switch ($uri.Host) {
+    "login" {
+        $profileId = $query["profile"]
+        $platform = $query["platform"]
+        if (-not $baseUrl -or -not $profileId -or -not $platform -or -not $token) {
+            throw "reflection-king login URL is missing base/profile/platform/token"
+        }
+        $script = Join-Path $PSScriptRoot "login-profile.ps1"
+        $args = @(
+            "-NoProfile",
+            "-ExecutionPolicy", "Bypass",
+            "-File", $script,
+            "-BaseUrl", $baseUrl,
+            "-ProfileId", $profileId,
+            "-Platform", $platform,
+            "-LoginToken", $token
+        )
+        if ($DryRun) {
+            $args += "-DryRun"
+        }
+        Start-Process -FilePath "powershell.exe" -ArgumentList $args -WindowStyle Normal
+    }
+    "paste" {
+        if (-not $baseUrl -or -not $token) {
+            throw "reflection-king paste URL is missing base/token"
+        }
+        $script = Join-Path $PSScriptRoot "paste-clipboard.ps1"
+        $args = @(
+            "-STA",
+            "-NoProfile",
+            "-ExecutionPolicy", "Bypass",
+            "-File", $script,
+            "-BaseUrl", $baseUrl,
+            "-Token", $token
+        )
+        if ($DryRun) {
+            $args += "-DryRun"
+        }
+        Start-Process -FilePath "powershell.exe" -ArgumentList $args -WindowStyle Hidden
+    }
+    default {
+        throw "Unsupported reflection-king action: $($uri.Host)"
+    }
 }
-
-$loginScript = Join-Path $PSScriptRoot "login-profile.ps1"
-$args = @(
-    "-NoProfile",
-    "-ExecutionPolicy", "Bypass",
-    "-File", $loginScript,
-    "-BaseUrl", $baseUrl,
-    "-ProfileId", $profileId,
-    "-Platform", $platform,
-    "-LoginToken", $token
-)
-if ($DryRun) {
-    $args += "-DryRun"
-}
-
-Start-Process -FilePath "powershell.exe" -ArgumentList $args -WindowStyle Normal

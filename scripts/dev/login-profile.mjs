@@ -12,6 +12,9 @@ const platformUrls = {
   douyin: "https://www.douyin.com/",
   kuaishou: "https://www.kuaishou.com/",
   pornhub: "https://www.pornhub.com/",
+  acfun: "https://www.acfun.cn/",
+  iqiyi: "https://www.iqiyi.com/",
+  youku: "https://www.youku.com/",
 };
 
 const baseUrl = process.env.RK_LOGIN_BASE_URL?.replace(/\/+$/, "");
