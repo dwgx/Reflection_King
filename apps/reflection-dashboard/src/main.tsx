@@ -152,14 +152,18 @@ interface RotatedAdminKeyResponse {
 const OUTPUTS: OutputKind[] = ["audio", "video", "image", "page_html"];
 const TERMINAL = new Set(["ready", "error", "candidates_ready"]);
 const PAGE_SIZE_OPTIONS = [3, 5, 10, 20, 50];
-const HIDDEN_JOBS_KEY = "reflection_hidden_job_ids";
+const LOGIN_PLATFORMS = [
+  { value: "bilibili", label: "哔哩哔哩" },
+  { value: "youtube", label: "YouTube" },
+  { value: "douyin", label: "抖音" },
+  { value: "kuaishou", label: "快手" },
+];
 
 function App() {
   const [apiKey, setApiKey] = useState(() => localStorage.getItem("reflection_api_key") ?? "");
   const [health, setHealth] = useState<Health | null>(null);
   const [capabilities, setCapabilities] = useState<Capabilities | null>(null);
   const [jobs, setJobs] = useState<JobView[]>([]);
-  const [hiddenJobIds, setHiddenJobIds] = useState<Set<string>>(() => loadHiddenJobIds());
   const [selectedJobId, setSelectedJobId] = useState<string>("");
   const [selectedJob, setSelectedJob] = useState<JobView | null>(null);
   const [candidates, setCandidates] = useState<Candidate[]>([]);
@@ -188,6 +192,7 @@ function App() {
   });
   const [profileId, setProfileId] = useState("admin_default");
   const [cookieJson, setCookieJson] = useState("");
+  const [loginCommand, setLoginCommand] = useState("");
   const [form, setForm] = useState<CreateJobPayload>({
     url: "",
     bitrate: "auto",
@@ -205,10 +210,6 @@ function App() {
   useEffect(() => {
     localStorage.setItem("reflection_api_key", apiKey);
   }, [apiKey]);
-
-  useEffect(() => {
-    localStorage.setItem(HIDDEN_JOBS_KEY, JSON.stringify(Array.from(hiddenJobIds)));
-  }, [hiddenJobIds]);
 
   useEffect(() => {
     void refreshSystem();
@@ -345,16 +346,15 @@ function App() {
     }
   }
 
-  async function refreshJobs(hiddenOverride = hiddenJobIds) {
+  async function refreshJobs() {
     try {
       const data = await request<JobView[]>("/api/jobs?limit=100");
-      const visible = data.filter((job) => !hiddenOverride.has(job.id));
-      setJobs(visible);
-      setJobPage((page) => clampPage(page, visible.length, jobPageSize));
-      if (selectedJobId && hiddenJobIds.has(selectedJobId)) {
+      setJobs(data);
+      setJobPage((page) => clampPage(page, data.length, jobPageSize));
+      if (selectedJobId && !data.some((job) => job.id === selectedJobId)) {
         clearSelection();
-      } else if (!selectedJobId && visible[0]) {
-        setSelectedJobId(visible[0].id);
+      } else if (!selectedJobId && data[0]) {
+        setSelectedJobId(data[0].id);
       }
     } catch (error) {
       setMessage(errorMessage(error));
@@ -453,27 +453,43 @@ function App() {
     setMessage("已清空来源 URL");
   }
 
-  function clearVisibleJobs() {
+  async function clearVisibleJobs() {
     if (!jobs.length) {
       setMessage("任务列表已经为空");
       return;
     }
-    const next = new Set(hiddenJobIds);
-    for (const job of jobs) {
-      next.add(job.id);
+    if (!window.confirm("清空会隐藏当前密钥可见的任务列表，但不会删除数据库历史。继续吗？")) {
+      return;
     }
-    setHiddenJobIds(next);
-    setJobs([]);
-    clearSelection();
-    setJobPage(1);
-    setMessage("已清空当前任务列表；数据库历史未删除");
+    setBusy(true);
+    try {
+      const response = await request<{ hidden: number; history_deleted: boolean }>("/api/jobs/clear", {
+        method: "POST",
+      });
+      setJobs([]);
+      clearSelection();
+      setJobPage(1);
+      setMessage(`已隐藏 ${response.hidden} 个任务；数据库历史未删除`);
+    } catch (error) {
+      setMessage(errorMessage(error));
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function restoreHiddenJobs() {
-    const empty = new Set<string>();
-    setHiddenJobIds(empty);
-    setMessage("已恢复本机隐藏的历史任务");
-    await refreshJobs(empty);
+    setBusy(true);
+    try {
+      const response = await request<{ restored: number; history_deleted: boolean }>("/api/jobs/restore", {
+        method: "POST",
+      });
+      await refreshJobs();
+      setMessage(`已恢复 ${response.restored} 个隐藏任务`);
+    } catch (error) {
+      setMessage(errorMessage(error));
+    } finally {
+      setBusy(false);
+    }
   }
 
   function clearSelection() {
@@ -580,23 +596,15 @@ function App() {
     }
   }
 
-  async function startProfileLogin(platform: string) {
-    setBusy(true);
-    try {
-      const response = await request<{ message?: string; mode?: string }>(
-        `/api/admin/browser-profiles/${encodeURIComponent(profileId)}/login-session`,
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ headed: true, platform }),
-        },
-      );
-      setMessage(response.message ?? "已准备浏览器登录会话");
-    } catch (error) {
-      setMessage(errorMessage(error));
-    } finally {
-      setBusy(false);
-    }
+  async function prepareLocalProfileLogin(platform: string) {
+    const command = localLoginCommand(platform, profileId, health?.public_base_url ?? window.location.origin);
+    setLoginCommand(command);
+    const copied = await copy(command);
+    setMessage(
+      copied
+        ? `已复制 ${platform} 本机登录命令；在 PowerShell 执行后按提示登录。`
+        : `浏览器阻止自动复制；已生成 ${platform} 本机登录命令，请手动复制。`,
+    );
   }
 
   async function importProfileCookies(event: React.FormEvent) {
@@ -759,10 +767,10 @@ function App() {
           icon={<Activity size={16} />}
           action={
             <div className="panel-actions">
-              <Button variant="secondary" onClick={restoreHiddenJobs} disabled={!hiddenJobIds.size}>
+              <Button variant="secondary" onClick={restoreHiddenJobs} disabled={busy}>
                 <Eye size={16} /> 恢复
               </Button>
-              <Button variant="secondary" onClick={clearVisibleJobs} disabled={!jobs.length}>
+              <Button variant="secondary" onClick={clearVisibleJobs} disabled={busy || !jobs.length}>
                 <X size={16} /> 清空
               </Button>
               <Button variant="secondary" onClick={() => refreshJobs()}>
@@ -1027,13 +1035,27 @@ function App() {
             <Field label="Profile ID">
               <Input value={profileId} onChange={(event) => setProfileId(event.target.value)} />
             </Field>
+            <div className="admin-note">
+              VPS 没有桌面时无法直接弹出登录窗口。点击下面按钮会复制本机登录命令，在当前仓库的 PowerShell 里执行；完成登录后脚本会把 Cookie 导入服务器 Profile。
+            </div>
             <div className="login-grid">
-              {["哔哩哔哩", "YouTube", "抖音", "快手"].map((platform) => (
-                <Button key={platform} type="button" variant="secondary" onClick={() => startProfileLogin(platform)} disabled={busy}>
-                  <Play size={16} /> 登录 {platform}
+              {LOGIN_PLATFORMS.map((platform) => (
+                <Button key={platform.value} type="button" variant="secondary" onClick={() => prepareLocalProfileLogin(platform.value)} disabled={busy}>
+                  <Play size={16} /> 复制登录命令 {platform.label}
                 </Button>
               ))}
             </div>
+            {loginCommand && (
+              <div className="command-box">
+                <div>
+                  <strong>本机登录命令</strong>
+                  <Button type="button" variant="secondary" onClick={() => copy(loginCommand)}>
+                    <Clipboard size={16} /> 复制
+                  </Button>
+                </div>
+                <textarea className="input command-text" readOnly value={loginCommand} onFocus={(event) => event.currentTarget.select()} />
+              </div>
+            )}
             <form className="admin-form" onSubmit={importProfileCookies}>
               <label className="field">
                 <span>Cookie JSON</span>
@@ -1167,6 +1189,13 @@ function App() {
           {viewMode === "admin" && isAdmin && adminView}
           {viewMode === "help" && helpView}
         </div>
+
+        <footer className="app-footer">
+          <span>Reflection King {health?.version ? `v${health.version}` : ""}</span>
+          <span>{health?.public_base_url ?? window.location.origin}</span>
+          <span>{viewModeLabel(viewMode)}</span>
+          <span>任务清空只隐藏列表，数据库历史保留</span>
+        </footer>
       </section>
     </main>
   );
@@ -1473,22 +1502,29 @@ function Player(props: { url: string }) {
   return <audio className="player" controls src={props.url} />;
 }
 
+function errorMessage(error: unknown): string {
+  return friendlyError(error instanceof Error ? error.message : String(error));
+}
+
 function apiHeaders(apiKey: string): Record<string, string> {
   return apiKey ? { "x-api-key": apiKey } : {};
 }
 
-function loadHiddenJobIds(): Set<string> {
-  try {
-    const raw = localStorage.getItem(HIDDEN_JOBS_KEY);
-    const parsed = raw ? JSON.parse(raw) : [];
-    return new Set(Array.isArray(parsed) ? parsed.filter((value) => typeof value === "string") : []);
-  } catch {
-    return new Set();
-  }
+function localLoginCommand(platform: string, profileId: string, baseUrl: string): string {
+  const safeProfile = profileId.trim() || "admin_default";
+  const safeBaseUrl = baseUrl.replace(/\/+$/, "");
+  return [
+    "powershell",
+    "-ExecutionPolicy Bypass",
+    "-File .\\scripts\\dev\\login-profile.ps1",
+    `-BaseUrl ${quotePowerShell(safeBaseUrl)}`,
+    `-ProfileId ${quotePowerShell(safeProfile)}`,
+    `-Platform ${quotePowerShell(platform)}`,
+  ].join(" ");
 }
 
-function errorMessage(error: unknown): string {
-  return friendlyError(error instanceof Error ? error.message : String(error));
+function quotePowerShell(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
 }
 
 function formatShortDate(value: string): string {
@@ -1879,8 +1915,13 @@ function friendlyError(value: string): string {
   return value.length > 140 ? `${value.slice(0, 140)}...` : value;
 }
 
-async function copy(value: string) {
-  await navigator.clipboard.writeText(value);
+async function copy(value: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(value);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 createRoot(document.getElementById("root")!).render(<App />);

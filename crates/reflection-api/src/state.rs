@@ -152,6 +152,26 @@ impl AppState {
             .map(|jobs| jobs.into_iter().map(JobView::from).collect())
     }
 
+    pub async fn hide_visible_jobs(&self) -> Result<u64> {
+        self.job_store.hide_visible_jobs().await
+    }
+
+    pub async fn hide_visible_jobs_for_key(&self, requester_key_id: Uuid) -> Result<u64> {
+        self.job_store
+            .hide_visible_jobs_for_key(requester_key_id)
+            .await
+    }
+
+    pub async fn restore_hidden_jobs(&self) -> Result<u64> {
+        self.job_store.restore_hidden_jobs().await
+    }
+
+    pub async fn restore_hidden_jobs_for_key(&self, requester_key_id: Uuid) -> Result<u64> {
+        self.job_store
+            .restore_hidden_jobs_for_key(requester_key_id)
+            .await
+    }
+
     pub async fn job_belongs_to_key(&self, id: Uuid, requester_key_id: Uuid) -> Result<bool> {
         self.job_store
             .job_belongs_to_key(id, requester_key_id)

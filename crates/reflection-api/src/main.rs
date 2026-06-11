@@ -61,6 +61,8 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/health", get(health))
         .route("/api/capabilities", get(capabilities))
         .route("/api/jobs", get(list_jobs).post(create_job))
+        .route("/api/jobs/clear", post(clear_jobs))
+        .route("/api/jobs/restore", post(restore_jobs))
         .route("/api/jobs/{id}", get(get_job))
         .route("/api/jobs/{id}/candidates", get(list_candidates))
         .route("/api/jobs/{id}/select-candidates", post(select_candidates))
@@ -177,6 +179,44 @@ async fn list_jobs(
     } else {
         Err(RkError::Unauthorized.into())
     }
+}
+
+async fn clear_jobs(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let principal = authorize(&state, &headers).await?;
+    let hidden = if principal.role == ApiKeyRole::Admin {
+        state.hide_visible_jobs().await?
+    } else if let Some(key_id) = principal.key_id {
+        state.hide_visible_jobs_for_key(key_id).await?
+    } else {
+        return Err(RkError::Unauthorized.into());
+    };
+
+    Ok(Json(serde_json::json!({
+        "hidden": hidden,
+        "history_deleted": false
+    })))
+}
+
+async fn restore_jobs(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let principal = authorize(&state, &headers).await?;
+    let restored = if principal.role == ApiKeyRole::Admin {
+        state.restore_hidden_jobs().await?
+    } else if let Some(key_id) = principal.key_id {
+        state.restore_hidden_jobs_for_key(key_id).await?
+    } else {
+        return Err(RkError::Unauthorized.into());
+    };
+
+    Ok(Json(serde_json::json!({
+        "restored": restored,
+        "history_deleted": false
+    })))
 }
 
 async fn create_job(

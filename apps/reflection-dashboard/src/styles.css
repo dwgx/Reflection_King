@@ -169,6 +169,21 @@
     padding: 18px;
   }
 
+  .app-footer {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 14px;
+    border-top: 1px solid #232833;
+    padding: 12px 18px 18px;
+    color: #667184;
+    font-size: 12px;
+  }
+
+  .app-footer span {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
   .view-stack {
     display: grid;
     gap: 16px;
@@ -294,6 +309,15 @@
     height: auto;
   }
 
+  .command-text {
+    min-height: 72px;
+    padding: 10px 11px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12px;
+    line-height: 18px;
+    resize: vertical;
+  }
+
   .key-input {
     min-width: 280px;
   }
@@ -367,6 +391,33 @@
     border-color: #725118;
     background: #241808;
     color: #ffe2a4;
+  }
+
+  .admin-note,
+  .command-box {
+    border: 1px solid #263142;
+    border-radius: 8px;
+    background: #0a0d12;
+    padding: 10px;
+    color: #95a1b1;
+    font-size: 12px;
+    line-height: 18px;
+  }
+
+  .command-box {
+    display: grid;
+    gap: 8px;
+  }
+
+  .command-box > div:first-child {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .command-box strong {
+    color: #e9eef5;
   }
 
   .paste-title {

@@ -172,6 +172,7 @@ impl JobStore {
                    started_at,
                    completed_at
             FROM jobs
+            WHERE hidden_at IS NULL
             ORDER BY created_at DESC
             LIMIT ?
             "#,
@@ -216,7 +217,7 @@ impl JobStore {
                    started_at,
                    completed_at
             FROM jobs
-            WHERE requester_key_id = ?
+            WHERE requester_key_id = ? AND hidden_at IS NULL
             ORDER BY created_at DESC
             LIMIT ?
             "#,
@@ -227,6 +228,74 @@ impl JobStore {
         .await?;
 
         rows.into_iter().map(row_to_job).collect()
+    }
+
+    pub async fn hide_visible_jobs(&self) -> Result<u64> {
+        let result = sqlx::query(
+            r#"
+            UPDATE jobs
+            SET hidden_at = ?,
+                updated_at = ?
+            WHERE hidden_at IS NULL
+            "#,
+        )
+        .bind(format_time(OffsetDateTime::now_utc())?)
+        .bind(format_time(OffsetDateTime::now_utc())?)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected())
+    }
+
+    pub async fn hide_visible_jobs_for_key(&self, requester_key_id: Uuid) -> Result<u64> {
+        let result = sqlx::query(
+            r#"
+            UPDATE jobs
+            SET hidden_at = ?,
+                updated_at = ?
+            WHERE requester_key_id = ? AND hidden_at IS NULL
+            "#,
+        )
+        .bind(format_time(OffsetDateTime::now_utc())?)
+        .bind(format_time(OffsetDateTime::now_utc())?)
+        .bind(requester_key_id.to_string())
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected())
+    }
+
+    pub async fn restore_hidden_jobs(&self) -> Result<u64> {
+        let result = sqlx::query(
+            r#"
+            UPDATE jobs
+            SET hidden_at = NULL,
+                updated_at = ?
+            WHERE hidden_at IS NOT NULL
+            "#,
+        )
+        .bind(format_time(OffsetDateTime::now_utc())?)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected())
+    }
+
+    pub async fn restore_hidden_jobs_for_key(&self, requester_key_id: Uuid) -> Result<u64> {
+        let result = sqlx::query(
+            r#"
+            UPDATE jobs
+            SET hidden_at = NULL,
+                updated_at = ?
+            WHERE requester_key_id = ? AND hidden_at IS NOT NULL
+            "#,
+        )
+        .bind(format_time(OffsetDateTime::now_utc())?)
+        .bind(requester_key_id.to_string())
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected())
     }
 
     pub async fn job_belongs_to_key(&self, id: Uuid, requester_key_id: Uuid) -> Result<bool> {
@@ -1280,9 +1349,17 @@ impl JobStore {
             .await?;
         self.add_column_if_missing("jobs", "completed_at", "TEXT")
             .await?;
+        self.add_column_if_missing("jobs", "hidden_at", "TEXT")
+            .await?;
 
         sqlx::query(
             "CREATE INDEX IF NOT EXISTS idx_jobs_status_created_at ON jobs(status, created_at)",
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_jobs_hidden_created_at ON jobs(hidden_at, created_at)",
         )
         .execute(&self.pool)
         .await?;
@@ -2060,6 +2137,58 @@ mod tests {
 
         assert!(store.revoke_api_key(created.record.id).await.unwrap());
         assert!(store.find_api_key(&created.key).await.unwrap().is_none());
+
+        drop(store);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[tokio::test]
+    async fn jobs_can_be_hidden_without_deleting_history() {
+        let path = temp_db_path();
+        let store = JobStore::connect(&path).await.unwrap();
+        let key_id = Uuid::new_v4();
+
+        let first = JobRecord::new(
+            "https://example.com/a".to_string(),
+            "auto".to_string(),
+            "http://localhost:8787",
+        )
+        .with_requester(None, None, Some("user".to_string()), Some(key_id));
+        let second = JobRecord::new(
+            "https://example.com/b".to_string(),
+            "auto".to_string(),
+            "http://localhost:8787",
+        );
+        let first_id = first.id;
+        let second_id = second.id;
+        store.insert(&first).await.unwrap();
+        store.insert(&second).await.unwrap();
+
+        assert_eq!(store.list_recent(10).await.unwrap().len(), 2);
+        assert_eq!(
+            store.list_recent_for_key(key_id, 10).await.unwrap().len(),
+            1
+        );
+
+        assert_eq!(store.hide_visible_jobs_for_key(key_id).await.unwrap(), 1);
+        assert_eq!(store.list_recent(10).await.unwrap().len(), 1);
+        assert_eq!(
+            store.list_recent_for_key(key_id, 10).await.unwrap().len(),
+            0
+        );
+        assert!(store.get(first_id).await.unwrap().is_some());
+        assert!(store.get(second_id).await.unwrap().is_some());
+
+        assert_eq!(store.restore_hidden_jobs_for_key(key_id).await.unwrap(), 1);
+        assert_eq!(store.list_recent(10).await.unwrap().len(), 2);
+
+        assert_eq!(store.hide_visible_jobs().await.unwrap(), 2);
+        assert!(store.list_recent(10).await.unwrap().is_empty());
+        assert!(store.get(first_id).await.unwrap().is_some());
+        assert!(store.get(second_id).await.unwrap().is_some());
+
+        assert_eq!(store.restore_hidden_jobs().await.unwrap(), 2);
+        assert_eq!(store.list_recent(10).await.unwrap().len(), 2);
 
         drop(store);
         std::fs::remove_file(&path).ok();

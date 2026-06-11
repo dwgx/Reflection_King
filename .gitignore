@@ -1,6 +1,7 @@
 /target/
 /storage/
 /.tmp/
+/.local/
 /.env
 /crates/reflection-api/dashboard-dist/
 /services/reflection-browser/node_modules/
