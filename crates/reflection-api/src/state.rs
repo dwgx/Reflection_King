@@ -421,6 +421,13 @@ impl AppState {
         transcoder
             .audio_to_mp3(&job_paths.input_path, &job_paths.output_path, &job.bitrate)
             .await?;
+        self.insert_artifact(
+            job_id,
+            OutputKind::Audio,
+            job_paths.output_path,
+            "audio/mpeg",
+        )
+        .await?;
 
         tokio::fs::remove_dir_all(&job_paths.temp_dir).await.ok();
         self.mark_ready(
