@@ -149,17 +149,10 @@ Invoke-RestMethod `
   -Body $selection
 ```
 
-Optional Windows desktop helpers:
-
-```powershell
-.\scripts\dev\install-protocol.ps1 -Force
-```
-
-This registers `reflection-king://` for the current Windows user. The dashboard
-uses it to open a local browser login helper and, when Chrome/Edge block
-clipboard reads on public HTTP, to ask the local machine to submit the current
-clipboard text back to a one-time server token. Public HTTPS or localhost still
-uses the normal browser clipboard API first.
+Browser Profile cookies can be imported from the admin page by pasting Cookie
+JSON exported from a browser profile. The removed local protocol/PowerShell
+helper path is intentionally unsupported; future interactive login should run as
+a server-side remote browser session behind HTTPS.
 
 ## Public URLs
 

@@ -13,11 +13,9 @@ use axum::{
 use reflection_core::{
     models::{
         normalize_bitrate, normalize_outputs, normalize_profile_id, ApiKeyRecord, ApiKeyRole,
-        ApiKeyView, AuthMode, BrowserLoginTokenResponse, ClearJobsResponse,
-        ClipboardPasteTokenResponse, ClipboardPasteValueResponse, CreateJobRequest,
-        CreateUserKeyRequest, CreatedUserKeyResponse, DiscoveryMode, HiddenJobBatchView,
-        JobCreateOptions, JobRecord, JobView, PlatformHint, RestoreJobsResponse,
-        SelectCandidatesRequest,
+        ApiKeyView, AuthMode, ClearJobsResponse, CreateJobRequest, CreateUserKeyRequest,
+        CreatedUserKeyResponse, DiscoveryMode, HiddenJobBatchView, JobCreateOptions, JobRecord,
+        JobView, PlatformHint, RestoreJobsResponse, SelectCandidatesRequest,
     },
     AppConfig, RkError,
 };
@@ -86,27 +84,6 @@ fn build_router(state: Arc<AppState>) -> Router {
             "/api/admin/browser-profiles/{profile_id}/cookies/import",
             post(import_profile_cookies),
         )
-        .route(
-            "/api/admin/browser-login-tokens",
-            post(create_browser_login_token),
-        )
-        .route(
-            "/api/browser-login-tokens/cookies/import",
-            post(import_profile_cookies_with_token),
-        )
-        .route("/api/clipboard-paste-tokens", post(create_clipboard_paste_token))
-        .route(
-            "/api/clipboard-paste-tokens/{token}",
-            get(get_clipboard_paste_value),
-        )
-        .route(
-            "/api/clipboard-paste-tokens/{token}/submit",
-            post(submit_clipboard_paste_value),
-        )
-        .route(
-            "/api/admin/browser-profiles/{profile_id}/login-session",
-            post(start_login_session),
-        )
         .route("/media/{id}/{filename}", get(get_media))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
@@ -158,8 +135,8 @@ async fn capabilities(
     let principal = authorize(&state, &headers).await?;
     let allow_browser_probe = principal.allow_browser_probe && state.browser_probe_configured();
     let allow_ytdlp = principal.allow_ytdlp && state.yt_dlp_configured();
-    let allow_external_adapters =
-        principal.allow_external_adapters && (state.yt_dlp_configured() || state.external_tools_configured());
+    let allow_external_adapters = principal.allow_external_adapters
+        && (state.yt_dlp_configured() || state.external_tools_configured());
 
     Ok(Json(serde_json::json!({
         "service": "reflection-king",
@@ -452,14 +429,6 @@ async fn rotate_admin_key(
 #[derive(Debug, Deserialize)]
 struct ImportCookiesRequest {
     cookies: Vec<serde_json::Value>,
-    profile_id: Option<String>,
-    login_token: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct CreateBrowserLoginTokenRequest {
-    profile_id: Option<String>,
-    platform: Option<String>,
 }
 
 async fn import_profile_cookies(
@@ -474,95 +443,6 @@ async fn import_profile_cookies(
     Ok(Json(
         state
             .import_browser_profile_cookies(&profile_id, request.cookies)
-            .await?,
-    ))
-}
-
-async fn create_browser_login_token(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Json(request): Json<CreateBrowserLoginTokenRequest>,
-) -> Result<Json<BrowserLoginTokenResponse>, ApiError> {
-    let principal = authorize(&state, &headers).await?;
-    ensure_admin(&principal)?;
-    let profile_id = normalize_profile_id(request.profile_id);
-    let platform = request.platform.unwrap_or_else(|| "bilibili".to_string());
-    Ok(Json(
-        state
-            .create_browser_login_token(&profile_id, &platform, principal.key_id)
-            .await?,
-    ))
-}
-
-async fn import_profile_cookies_with_token(
-    State(state): State<Arc<AppState>>,
-    Json(request): Json<ImportCookiesRequest>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    let profile_id = normalize_profile_id(request.profile_id);
-    let Some(token) = request.login_token else {
-        return Err(RkError::Unauthorized.into());
-    };
-    Ok(Json(
-        state
-            .import_browser_profile_cookies_with_login_token(&profile_id, &token, request.cookies)
-            .await?,
-    ))
-}
-
-async fn create_clipboard_paste_token(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-) -> Result<Json<ClipboardPasteTokenResponse>, ApiError> {
-    let principal = authorize(&state, &headers).await?;
-    Ok(Json(
-        state.create_clipboard_paste_token(principal.key_id).await?,
-    ))
-}
-
-#[derive(Debug, Deserialize)]
-struct ClipboardPasteSubmitRequest {
-    text: String,
-}
-
-async fn submit_clipboard_paste_value(
-    State(state): State<Arc<AppState>>,
-    Path(token): Path<String>,
-    Json(request): Json<ClipboardPasteSubmitRequest>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    let ok = state
-        .submit_clipboard_paste_token(&token, &request.text)
-        .await?;
-    if ok {
-        Ok(Json(serde_json::json!({ "ok": true })))
-    } else {
-        Err(RkError::NotFound("clipboard paste token".to_string()).into())
-    }
-}
-
-async fn get_clipboard_paste_value(
-    State(state): State<Arc<AppState>>,
-    Path(token): Path<String>,
-) -> Result<Json<ClipboardPasteValueResponse>, ApiError> {
-    Ok(Json(state.consume_clipboard_paste_token(&token).await?))
-}
-
-#[derive(Debug, Deserialize)]
-struct LoginSessionRequest {
-    headed: Option<bool>,
-}
-
-async fn start_login_session(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Path(profile_id): Path<String>,
-    Json(request): Json<LoginSessionRequest>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    let principal = authorize(&state, &headers).await?;
-    ensure_admin(&principal)?;
-    let profile_id = normalize_profile_id(Some(profile_id));
-    Ok(Json(
-        state
-            .start_browser_login_session(&profile_id, request.headed.unwrap_or(true))
             .await?,
     ))
 }

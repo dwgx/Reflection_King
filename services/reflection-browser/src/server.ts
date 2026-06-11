@@ -25,10 +25,6 @@ const headersSchema = z.object({
   referer: z.string().url().optional(),
 });
 
-const loginSessionSchema = z.object({
-  headed: z.boolean().optional(),
-});
-
 const config = loadConfig();
 const probeService = new BrowserProbeService(config);
 const app = Fastify({
@@ -70,21 +66,6 @@ app.post("/profiles/:profileId/headers-for-url", async (request, reply) => {
     return reply.status(400).send({ error: parsed.error.flatten() });
   }
   return probeService.headersForUrl(params.profileId, parsed.data.url, parsed.data.referer);
-});
-
-app.post("/profiles/:profileId/login-sessions", async (request, reply) => {
-  const params = z.object({ profileId: z.string() }).parse(request.params);
-  const parsed = loginSessionSchema.safeParse(request.body);
-  if (!parsed.success) {
-    return reply.status(400).send({ error: parsed.error.flatten() });
-  }
-
-  return {
-    profileId: params.profileId,
-    mode: parsed.data.headed ?? config.headed ? "headed" : "headless",
-    message:
-      "Persistent profile is ready. Use RK_BROWSER_HEADED=1 on a desktop host, or attach a noVNC wrapper in deployment.",
-  };
 });
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) {

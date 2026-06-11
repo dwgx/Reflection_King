@@ -136,30 +136,6 @@ pub struct RestoreJobsResponse {
     pub history_deleted: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct BrowserLoginTokenResponse {
-    pub token: String,
-    pub profile_id: String,
-    pub platform: String,
-    #[serde(with = "time::serde::rfc3339")]
-    pub expires_at: OffsetDateTime,
-    pub protocol_url: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ClipboardPasteTokenResponse {
-    pub token: String,
-    #[serde(with = "time::serde::rfc3339")]
-    pub expires_at: OffsetDateTime,
-    pub protocol_url: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ClipboardPasteValueResponse {
-    pub ready: bool,
-    pub text: Option<String>,
-}
-
 impl From<ApiKeyRecord> for ApiKeyView {
     fn from(value: ApiKeyRecord) -> Self {
         Self {

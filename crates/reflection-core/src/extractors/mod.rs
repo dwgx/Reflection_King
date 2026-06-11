@@ -424,7 +424,10 @@ mod tests {
         ]);
 
         let outcome = resolver
-            .resolve(&ctx_with_discovery("https://example.com/page", DiscoveryMode::Direct))
+            .resolve(&ctx_with_discovery(
+                "https://example.com/page",
+                DiscoveryMode::Direct,
+            ))
             .await;
 
         assert_eq!(outcome.winner.as_deref(), Some("winner"));

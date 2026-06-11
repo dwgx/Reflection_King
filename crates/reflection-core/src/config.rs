@@ -94,7 +94,9 @@ impl AppConfig {
         let external_probe_timeout_secs = env_value("RK_EXTERNAL_PROBE_TIMEOUT_SECONDS", "45")
             .parse::<u64>()
             .map_err(|error| {
-                RkError::BadRequest(format!("invalid RK_EXTERNAL_PROBE_TIMEOUT_SECONDS: {error}"))
+                RkError::BadRequest(format!(
+                    "invalid RK_EXTERNAL_PROBE_TIMEOUT_SECONDS: {error}"
+                ))
             })?;
 
         Ok(Self {

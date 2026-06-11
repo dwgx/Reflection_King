@@ -96,11 +96,6 @@ struct ImportCookiesRequest {
     cookies: Vec<serde_json::Value>,
 }
 
-#[derive(Debug, Clone, Serialize)]
-struct LoginSessionRequest {
-    headed: bool,
-}
-
 impl BrowserProbeClient {
     pub fn new(base_url: impl Into<String>, timeout: Duration) -> Result<Self> {
         let client = reqwest::Client::builder().timeout(timeout).build()?;
@@ -236,31 +231,6 @@ impl BrowserProbeClient {
         if !response.status().is_success() {
             return Err(RkError::Browser(format!(
                 "cookies/import returned HTTP {}",
-                response.status()
-            )));
-        }
-
-        Ok(response.json().await?)
-    }
-
-    pub async fn start_login_session(
-        &self,
-        profile_id: &str,
-        headed: bool,
-    ) -> Result<serde_json::Value> {
-        let response = self
-            .client
-            .post(format!(
-                "{}/profiles/{}/login-sessions",
-                self.base_url, profile_id
-            ))
-            .json(&LoginSessionRequest { headed })
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            return Err(RkError::Browser(format!(
-                "login-sessions returned HTTP {}",
                 response.status()
             )));
         }

@@ -435,16 +435,19 @@ fn candidate_protection(format: &YtDlpFormat) -> CandidateProtection {
     if has_sensitive_headers(format.http_headers.as_ref()) {
         return CandidateProtection::NeedsProfile;
     }
-    let protocol = format.protocol.as_deref().unwrap_or_default().to_ascii_lowercase();
-    let format_text = format.format.as_deref().unwrap_or_default().to_ascii_lowercase();
+    let protocol = format
+        .protocol
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let format_text = format
+        .format
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
     if protocol.contains("drm") || format_text.contains("drm") {
         CandidateProtection::Drm
-    } else if format
-        .url
-        .as_deref()
-        .map(is_signed_url)
-        .unwrap_or(false)
-    {
+    } else if format.url.as_deref().map(is_signed_url).unwrap_or(false) {
         CandidateProtection::SignedUrl
     } else {
         CandidateProtection::None

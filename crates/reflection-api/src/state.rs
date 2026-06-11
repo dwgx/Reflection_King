@@ -8,10 +8,9 @@ use reflection_core::{
     extractors::{ExtractContext, SourceResolver},
     job_store::JobStore,
     models::{
-        ApiKeyRecord, ApiKeyView, ArtifactView, BrowserLoginTokenResponse,
-        ClipboardPasteTokenResponse, ClipboardPasteValueResponse, CandidateKind, ClearJobsResponse,
-        CreateUserKeyRequest, CreatedUserKeyResponse, DiscoveryMode, HiddenJobBatchView,
-        JobRecord, JobStatus, JobView, MediaCandidate, OutputKind, RestoreJobsResponse,
+        ApiKeyRecord, ApiKeyView, ArtifactView, CandidateKind, ClearJobsResponse,
+        CreateUserKeyRequest, CreatedUserKeyResponse, DiscoveryMode, HiddenJobBatchView, JobRecord,
+        JobStatus, JobView, MediaCandidate, OutputKind, RestoreJobsResponse,
         RotatedAdminKeyResponse,
     },
     observability::{ErrorClass, JobTrace, PipelineEvent, PipelineEventType},
@@ -260,92 +259,6 @@ impl AppState {
         self.job_store.revoke_api_key(id).await
     }
 
-    pub async fn create_browser_login_token(
-        &self,
-        profile_id: &str,
-        platform: &str,
-        created_by_key_id: Option<Uuid>,
-    ) -> Result<BrowserLoginTokenResponse> {
-        let profile_id =
-            reflection_core::models::normalize_profile_id(Some(profile_id.to_string()));
-        let platform = normalize_login_platform(platform)?;
-        let (token, expires_at) = self
-            .job_store
-            .create_browser_login_token(&profile_id, platform, created_by_key_id, 900)
-            .await?;
-        let mut protocol_url = url::Url::parse("reflection-king://login")
-            .map_err(|error| RkError::Source(format!("failed to build login url: {error}")))?;
-        protocol_url
-            .query_pairs_mut()
-            .append_pair("base", self.config.public_base_url.as_str())
-            .append_pair("profile", &profile_id)
-            .append_pair("platform", platform)
-            .append_pair("token", &token);
-
-        Ok(BrowserLoginTokenResponse {
-            token,
-            profile_id,
-            platform: platform.to_string(),
-            expires_at,
-            protocol_url: protocol_url.to_string(),
-        })
-    }
-
-    pub async fn create_clipboard_paste_token(
-        &self,
-        created_by_key_id: Option<Uuid>,
-    ) -> Result<ClipboardPasteTokenResponse> {
-        let (token, expires_at) = self
-            .job_store
-            .create_clipboard_paste_token(created_by_key_id, 120)
-            .await?;
-        let mut protocol_url = url::Url::parse("reflection-king://paste")
-            .map_err(|error| RkError::Source(format!("failed to build paste url: {error}")))?;
-        protocol_url
-            .query_pairs_mut()
-            .append_pair("base", self.config.public_base_url.as_str())
-            .append_pair("token", &token);
-        Ok(ClipboardPasteTokenResponse {
-            token,
-            expires_at,
-            protocol_url: protocol_url.to_string(),
-        })
-    }
-
-    pub async fn submit_clipboard_paste_token(&self, token: &str, text: &str) -> Result<bool> {
-        self.job_store.submit_clipboard_paste_token(token, text).await
-    }
-
-    pub async fn consume_clipboard_paste_token(
-        &self,
-        token: &str,
-    ) -> Result<ClipboardPasteValueResponse> {
-        let text = self.job_store.consume_clipboard_paste_token(token).await?;
-        Ok(ClipboardPasteValueResponse {
-            ready: text.is_some(),
-            text,
-        })
-    }
-
-    pub async fn import_browser_profile_cookies_with_login_token(
-        &self,
-        profile_id: &str,
-        token: &str,
-        cookies: Vec<serde_json::Value>,
-    ) -> Result<serde_json::Value> {
-        let profile_id =
-            reflection_core::models::normalize_profile_id(Some(profile_id.to_string()));
-        let Some(_platform) = self
-            .job_store
-            .consume_browser_login_token(token, &profile_id)
-            .await?
-        else {
-            return Err(RkError::Unauthorized);
-        };
-        self.import_browser_profile_cookies(&profile_id, cookies)
-            .await
-    }
-
     pub async fn list_candidates(&self, id: Uuid) -> Result<Vec<MediaCandidate>> {
         self.job_store.list_candidates(id).await
     }
@@ -380,19 +293,6 @@ impl AppState {
             ));
         };
         browser_probe.import_cookies(profile_id, cookies).await
-    }
-
-    pub async fn start_browser_login_session(
-        &self,
-        profile_id: &str,
-        headed: bool,
-    ) -> Result<serde_json::Value> {
-        let Some(browser_probe) = &self.browser_probe else {
-            return Err(RkError::Browser(
-                "RK_BROWSER_PROBE_URL is required for browser profile management".to_string(),
-            ));
-        };
-        browser_probe.start_login_session(profile_id, headed).await
     }
 
     pub async fn list_artifacts(&self, id: Uuid) -> Result<Vec<ArtifactView>> {
@@ -1273,20 +1173,4 @@ fn candidate_metadata_number(candidate: &MediaCandidate, key: &str) -> Option<i6
                 .as_i64()
                 .or_else(|| value.as_f64().map(|number| number as i64))
         })
-}
-
-fn normalize_login_platform(value: &str) -> Result<&'static str> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "bilibili" => Ok("bilibili"),
-        "youtube" => Ok("youtube"),
-        "douyin" => Ok("douyin"),
-        "kuaishou" => Ok("kuaishou"),
-        "pornhub" => Ok("pornhub"),
-        "acfun" => Ok("acfun"),
-        "iqiyi" => Ok("iqiyi"),
-        "youku" => Ok("youku"),
-        other => Err(RkError::BadRequest(format!(
-            "unsupported login platform `{other}`"
-        ))),
-    }
 }

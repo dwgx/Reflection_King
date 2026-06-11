@@ -67,24 +67,18 @@ and `lux` can be configured manually when its Go binary is installed. The
 resolver deduplicates URLs across routes and records protection, route,
 confidence, ad-risk, and validation hints for the dashboard.
 
-## Windows Helper Protocol
+## Browser Profile Cookies
 
-Run this once on a Windows desktop user that will operate the dashboard:
+The supported Profile path is direct Cookie JSON import from the admin page.
+Export cookies from a browser profile and paste the JSON array into
+`管理 -> 浏览器账号配置 -> Cookie JSON`, then import it into the target Profile
+ID.
 
-```powershell
-.\scripts\dev\install-protocol.ps1 -Force
-```
-
-The `reflection-king://` handler supports two local helper actions:
-
-- login: opens the local Playwright login helper and imports captured cookies to
-  the server profile.
-- paste: reads the local Windows clipboard and submits it to a short-lived
-  server token.
-
-Chrome/Edge generally allow direct clipboard reads only on HTTPS or localhost.
-On public HTTP, the dashboard first tries the browser API, then falls back to
-the helper protocol, then to manual Ctrl+V into the focused URL field.
+Local protocol handlers and PowerShell desktop helpers are intentionally not
+supported. They are hard to trust, fail in common browser security contexts, and
+do not work reliably for a remote VPS dashboard. Future interactive login should
+be implemented as a server-side remote browser session behind HTTPS, such as a
+noVNC/CDP gateway bound to admin-only access.
 
 ## Linux Deployment
 

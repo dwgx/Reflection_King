@@ -829,201 +829,6 @@ impl JobStore {
         Ok(result.rows_affected() > 0)
     }
 
-    pub async fn create_browser_login_token(
-        &self,
-        profile_id: &str,
-        platform: &str,
-        created_by_key_id: Option<Uuid>,
-        ttl_seconds: i64,
-    ) -> Result<(String, OffsetDateTime)> {
-        let token = format!(
-            "rk_login_{}{}",
-            Uuid::new_v4().simple(),
-            Uuid::new_v4().simple()
-        );
-        let now = OffsetDateTime::now_utc();
-        let expires_at = now + time::Duration::seconds(ttl_seconds.max(60));
-        sqlx::query(
-            r#"
-            INSERT INTO browser_login_tokens (
-                token_hash,
-                profile_id,
-                platform,
-                created_by_key_id,
-                created_at,
-                expires_at,
-                used_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, NULL)
-            "#,
-        )
-        .bind(hash_api_key(&token))
-        .bind(profile_id)
-        .bind(platform)
-        .bind(created_by_key_id.map(|id| id.to_string()))
-        .bind(format_time(now)?)
-        .bind(format_time(expires_at)?)
-        .execute(&self.pool)
-        .await?;
-
-        Ok((token, expires_at))
-    }
-
-    pub async fn consume_browser_login_token(
-        &self,
-        token: &str,
-        profile_id: &str,
-    ) -> Result<Option<String>> {
-        let token_hash = hash_api_key(token);
-        let now = OffsetDateTime::now_utc();
-        let now_text = format_time(now)?;
-        let mut tx = self.pool.begin().await?;
-        let row = sqlx::query(
-            r#"
-            SELECT platform, expires_at, used_at
-            FROM browser_login_tokens
-            WHERE token_hash = ? AND profile_id = ?
-            "#,
-        )
-        .bind(&token_hash)
-        .bind(profile_id)
-        .fetch_optional(&mut *tx)
-        .await?;
-
-        let Some(row) = row else {
-            tx.commit().await?;
-            return Ok(None);
-        };
-
-        let expires_at = parse_time(&row.get::<String, _>("expires_at"))?;
-        let used_at: Option<String> = row.get("used_at");
-        if used_at.is_some() || expires_at < now {
-            tx.commit().await?;
-            return Ok(None);
-        }
-
-        let platform: String = row.get("platform");
-        sqlx::query(
-            r#"
-            UPDATE browser_login_tokens
-            SET used_at = ?
-            WHERE token_hash = ? AND profile_id = ? AND used_at IS NULL
-            "#,
-        )
-        .bind(&now_text)
-        .bind(&token_hash)
-        .bind(profile_id)
-        .execute(&mut *tx)
-        .await?;
-        tx.commit().await?;
-
-        Ok(Some(platform))
-    }
-
-    pub async fn create_clipboard_paste_token(
-        &self,
-        created_by_key_id: Option<Uuid>,
-        ttl_seconds: i64,
-    ) -> Result<(String, OffsetDateTime)> {
-        let token = format!(
-            "rk_paste_{}{}",
-            Uuid::new_v4().simple(),
-            Uuid::new_v4().simple()
-        );
-        let now = OffsetDateTime::now_utc();
-        let expires_at = now + time::Duration::seconds(ttl_seconds.max(30));
-        sqlx::query(
-            r#"
-            INSERT INTO clipboard_paste_tokens (
-                token_hash,
-                created_by_key_id,
-                created_at,
-                expires_at,
-                text,
-                used_at
-            )
-            VALUES (?, ?, ?, ?, NULL, NULL)
-            "#,
-        )
-        .bind(hash_api_key(&token))
-        .bind(created_by_key_id.map(|id| id.to_string()))
-        .bind(format_time(now)?)
-        .bind(format_time(expires_at)?)
-        .execute(&self.pool)
-        .await?;
-
-        Ok((token, expires_at))
-    }
-
-    pub async fn submit_clipboard_paste_token(&self, token: &str, text: &str) -> Result<bool> {
-        let text = text.trim();
-        if text.is_empty() {
-            return Ok(false);
-        }
-        let token_hash = hash_api_key(token);
-        let now_text = format_time(OffsetDateTime::now_utc())?;
-        let result = sqlx::query(
-            r#"
-            UPDATE clipboard_paste_tokens
-            SET text = ?
-            WHERE token_hash = ?
-              AND used_at IS NULL
-              AND expires_at > ?
-            "#,
-        )
-        .bind(text)
-        .bind(token_hash)
-        .bind(now_text)
-        .execute(&self.pool)
-        .await?;
-        Ok(result.rows_affected() > 0)
-    }
-
-    pub async fn consume_clipboard_paste_token(&self, token: &str) -> Result<Option<String>> {
-        let token_hash = hash_api_key(token);
-        let now = OffsetDateTime::now_utc();
-        let now_text = format_time(now)?;
-        let mut tx = self.pool.begin().await?;
-        let row = sqlx::query(
-            r#"
-            SELECT text, expires_at, used_at
-            FROM clipboard_paste_tokens
-            WHERE token_hash = ?
-            "#,
-        )
-        .bind(&token_hash)
-        .fetch_optional(&mut *tx)
-        .await?;
-
-        let Some(row) = row else {
-            tx.commit().await?;
-            return Ok(None);
-        };
-
-        let expires_at = parse_time(&row.get::<String, _>("expires_at"))?;
-        let used_at: Option<String> = row.get("used_at");
-        let text: Option<String> = row.get("text");
-        if used_at.is_some() || expires_at <= now || text.as_deref().unwrap_or("").is_empty() {
-            tx.commit().await?;
-            return Ok(None);
-        }
-
-        sqlx::query(
-            r#"
-            UPDATE clipboard_paste_tokens
-            SET used_at = ?
-            WHERE token_hash = ? AND used_at IS NULL
-            "#,
-        )
-        .bind(now_text)
-        .bind(token_hash)
-        .execute(&mut *tx)
-        .await?;
-        tx.commit().await?;
-
-        Ok(text)
-    }
-
     pub async fn set_selected_candidates(&self, id: Uuid, candidate_ids: &[Uuid]) -> Result<()> {
         let values = candidate_ids
             .iter()
@@ -1957,49 +1762,6 @@ impl JobStore {
 
         sqlx::query(
             r#"
-            CREATE TABLE IF NOT EXISTS browser_login_tokens (
-                token_hash TEXT PRIMARY KEY NOT NULL,
-                profile_id TEXT NOT NULL,
-                platform TEXT NOT NULL,
-                created_by_key_id TEXT,
-                created_at TEXT NOT NULL,
-                expires_at TEXT NOT NULL,
-                used_at TEXT
-            )
-            "#,
-        )
-        .execute(&self.pool)
-        .await?;
-
-        sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_browser_login_tokens_expires ON browser_login_tokens(expires_at)",
-        )
-        .execute(&self.pool)
-        .await?;
-
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS clipboard_paste_tokens (
-                token_hash TEXT PRIMARY KEY NOT NULL,
-                created_by_key_id TEXT,
-                created_at TEXT NOT NULL,
-                expires_at TEXT NOT NULL,
-                text TEXT,
-                used_at TEXT
-            )
-            "#,
-        )
-        .execute(&self.pool)
-        .await?;
-
-        sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_clipboard_paste_tokens_expires ON clipboard_paste_tokens(expires_at)",
-        )
-        .execute(&self.pool)
-        .await?;
-
-        sqlx::query(
-            r#"
             CREATE TABLE IF NOT EXISTS source_candidates (
                 id TEXT PRIMARY KEY NOT NULL,
                 job_id TEXT NOT NULL,
@@ -2077,12 +1839,8 @@ impl JobStore {
         .await?;
         self.add_column_if_missing("source_candidates", "ttl_hint_seconds", "INTEGER")
             .await?;
-        self.add_column_if_missing(
-            "source_candidates",
-            "ad_risk",
-            "INTEGER NOT NULL DEFAULT 0",
-        )
-        .await?;
+        self.add_column_if_missing("source_candidates", "ad_risk", "INTEGER NOT NULL DEFAULT 0")
+            .await?;
         self.add_column_if_missing(
             "source_candidates",
             "evidence_count",
@@ -2442,9 +2200,9 @@ fn row_to_candidate(row: sqlx::sqlite::SqliteRow) -> Result<MediaCandidate> {
         ttl_hint_seconds: row.get("ttl_hint_seconds"),
         ad_risk: row.get::<i64, _>("ad_risk") != 0,
         evidence_count: row.get("evidence_count"),
-        paired_candidate_ids: parse_uuid_list_json(&row.get::<String, _>(
-            "paired_candidate_ids_json",
-        ))?,
+        paired_candidate_ids: parse_uuid_list_json(
+            &row.get::<String, _>("paired_candidate_ids_json"),
+        )?,
         failure_reason: row.get("failure_reason"),
         validation_state: row
             .get::<Option<String>, _>("validation_state")
@@ -2970,32 +2728,6 @@ mod tests {
             .await
             .unwrap()
             .is_none());
-
-        drop(store);
-        std::fs::remove_file(&path).ok();
-    }
-
-    #[tokio::test]
-    async fn clipboard_paste_tokens_are_single_use() {
-        let path = temp_db_path();
-        let store = JobStore::connect(&path).await.unwrap();
-
-        let (token, expires_at) = store
-            .create_clipboard_paste_token(Some(Uuid::new_v4()), 60)
-            .await
-            .unwrap();
-        assert!(expires_at > OffsetDateTime::now_utc());
-        assert!(store.consume_clipboard_paste_token(&token).await.unwrap().is_none());
-
-        assert!(store
-            .submit_clipboard_paste_token(&token, "https://example.com/watch")
-            .await
-            .unwrap());
-        assert_eq!(
-            store.consume_clipboard_paste_token(&token).await.unwrap(),
-            Some("https://example.com/watch".to_string())
-        );
-        assert!(store.consume_clipboard_paste_token(&token).await.unwrap().is_none());
 
         drop(store);
         std::fs::remove_file(&path).ok();

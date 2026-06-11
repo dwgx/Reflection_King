@@ -7,7 +7,6 @@ import {
   ChevronUp,
   CheckCircle2,
   Clipboard,
-  ClipboardPaste,
   Database,
   Eye,
   ExternalLink,
@@ -214,25 +213,6 @@ interface RestoreJobsResponse {
   history_deleted: boolean;
 }
 
-interface BrowserLoginTokenResponse {
-  token: string;
-  profile_id: string;
-  platform: string;
-  expires_at: string;
-  protocol_url: string;
-}
-
-interface ClipboardPasteTokenResponse {
-  token: string;
-  expires_at: string;
-  protocol_url: string;
-}
-
-interface ClipboardPasteValueResponse {
-  ready: boolean;
-  text: string | null;
-}
-
 interface NotificationItem {
   id: number;
   tone: "info" | "success" | "error" | "warn";
@@ -250,16 +230,6 @@ interface ConfirmDialogState {
 const OUTPUTS: OutputKind[] = ["audio", "video", "image", "page_html"];
 const TERMINAL = new Set(["ready", "error", "candidates_ready"]);
 const PAGE_SIZE_OPTIONS = [3, 5, 10, 20, 50];
-const LOGIN_PLATFORMS = [
-  { value: "bilibili", label: "哔哩哔哩" },
-  { value: "youtube", label: "YouTube" },
-  { value: "douyin", label: "抖音" },
-  { value: "kuaishou", label: "快手" },
-  { value: "pornhub", label: "Pornhub" },
-  { value: "acfun", label: "AcFun" },
-  { value: "iqiyi", label: "爱奇艺" },
-  { value: "youku", label: "优酷" },
-];
 
 function App() {
   const [apiKey, setApiKey] = useState(() => localStorage.getItem("reflection_api_key") ?? "");
@@ -282,11 +252,6 @@ function App() {
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
   const notificationIdRef = useRef(0);
-  const [pasteOpen, setPasteOpen] = useState(false);
-  const [pasteText, setPasteText] = useState("");
-  const [waitingForPaste, setWaitingForPaste] = useState(false);
-  const pasteInputRef = useRef<HTMLInputElement | null>(null);
-  const sourceInputRef = useRef<HTMLInputElement | null>(null);
   const [userKeys, setUserKeys] = useState<UserKeyView[]>([]);
   const [newUserKey, setNewUserKey] = useState("");
   const [newAdminKey, setNewAdminKey] = useState("");
@@ -383,24 +348,6 @@ function App() {
   useEffect(() => {
     setCandidatePage((page) => clampPage(page, visibleCandidates.length, candidatePageSize));
   }, [visibleCandidates.length, candidatePageSize]);
-
-  useEffect(() => {
-    if (!pasteOpen) return;
-    window.setTimeout(() => pasteInputRef.current?.focus(), 0);
-  }, [pasteOpen]);
-
-  useEffect(() => {
-    if (!waitingForPaste) return;
-    const onPaste = (event: ClipboardEvent) => {
-      const text = event.clipboardData?.getData("text/plain") ?? "";
-      if (!text.trim()) return;
-      event.preventDefault();
-      applyPastedUrl(text);
-      setWaitingForPaste(false);
-    };
-    window.addEventListener("paste", onPaste);
-    return () => window.removeEventListener("paste", onPaste);
-  }, [waitingForPaste, form]);
 
   useEffect(() => {
     const onCopyResult = (event: Event) => {
@@ -545,94 +492,6 @@ function App() {
     } finally {
       setBusy(false);
     }
-  }
-
-  async function pasteFromClipboard() {
-    try {
-      if (!navigator.clipboard?.readText) {
-        await pasteViaLocalHelper("浏览器不允许直接读取剪贴板，正在尝试打开本机剪贴板助手。");
-        return;
-      }
-      const text = await navigator.clipboard.readText();
-      if (!text.trim()) {
-        notify("剪贴板为空", "warn");
-        focusForManualPaste("剪贴板为空，已聚焦来源 URL；按 Ctrl+V 会自动填入。");
-        return;
-      }
-      applyPastedUrl(text);
-    } catch {
-      await pasteViaLocalHelper("浏览器拦截剪贴板读取，正在尝试打开本机剪贴板助手。");
-    }
-  }
-
-  async function pasteViaLocalHelper(reason: string) {
-    if (!apiKey) {
-      focusForManualPaste("需要先填写密钥才能创建本机剪贴板令牌；已聚焦来源 URL，可按 Ctrl+V。");
-      return;
-    }
-    notify(reason, "warn");
-    setWaitingForPaste(true);
-    setPasteOpen(true);
-    try {
-      const response = await request<ClipboardPasteTokenResponse>("/api/clipboard-paste-tokens", {
-        method: "POST",
-      });
-      window.location.href = response.protocol_url;
-      const pasted = await waitForClipboardPasteToken(response.token);
-      if (pasted) {
-        applyPastedUrl(pasted);
-      } else {
-        focusForManualPaste("没有收到本机剪贴板助手返回，已聚焦来源 URL；按 Ctrl+V 会自动填入。");
-      }
-    } catch (error) {
-      notify(errorMessage(error), "error");
-      focusForManualPaste("本机剪贴板助手不可用；已聚焦来源 URL，按 Ctrl+V 会自动填入。");
-    }
-  }
-
-  async function waitForClipboardPasteToken(token: string): Promise<string | null> {
-    const deadline = Date.now() + 12_000;
-    while (Date.now() < deadline) {
-      await new Promise((resolve) => window.setTimeout(resolve, 850));
-      try {
-        const value = await requestWithoutAuth<ClipboardPasteValueResponse>(
-          `/api/clipboard-paste-tokens/${encodeURIComponent(token)}`,
-        );
-        if (value.ready && value.text?.trim()) {
-          return value.text;
-        }
-      } catch {
-        return null;
-      }
-    }
-    return null;
-  }
-
-  function openPasteBox(reason: string) {
-    setPasteText("");
-    setPasteOpen(true);
-    notify(reason, "info");
-  }
-
-  function focusForManualPaste(reason: string) {
-    setWaitingForPaste(true);
-    setPasteOpen(true);
-    setPasteText("");
-    notify(reason, reason.includes("拦截") || reason.includes("不允许") ? "warn" : "info");
-    window.setTimeout(() => sourceInputRef.current?.focus(), 0);
-  }
-
-  function applyPastedUrl(text = pasteText) {
-    const value = text.trim();
-    if (!value) {
-      notify("未粘贴内容", "warn");
-      return;
-    }
-    setForm({ ...form, url: value });
-    setPasteText("");
-    setPasteOpen(false);
-    setWaitingForPaste(false);
-    notify("已填入粘贴内容", "success");
   }
 
   function clearForm() {
@@ -811,23 +670,6 @@ function App() {
     });
   }
 
-  async function openLocalProfileLogin(platform: string) {
-    setBusy(true);
-    try {
-      const response = await request<BrowserLoginTokenResponse>("/api/admin/browser-login-tokens", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ profile_id: profileId, platform }),
-      });
-      window.location.href = response.protocol_url;
-      notify(`已请求打开本机登录助手：${platformLabel(platform)}`, "success");
-    } catch (error) {
-      notify(errorMessage(error), "error");
-    } finally {
-      setBusy(false);
-    }
-  }
-
   async function importProfileCookies(event: React.FormEvent) {
     event.preventDefault();
     setBusy(true);
@@ -875,7 +717,6 @@ function App() {
             <label className="url-field">
               <span>来源 URL</span>
               <Input
-                ref={sourceInputRef}
                 required
                 type="url"
                 placeholder="https://example.com/watch/123"
@@ -883,9 +724,6 @@ function App() {
                 onChange={(event) => setForm({ ...form, url: event.target.value })}
               />
             </label>
-            <Button type="button" variant="secondary" onClick={pasteFromClipboard} disabled={busy}>
-              <ClipboardPaste size={16} /> 粘贴
-            </Button>
             <Button type="button" variant="secondary" onClick={clearForm} disabled={busy}>
               <X size={16} /> 清空
             </Button>
@@ -894,48 +732,6 @@ function App() {
               创建任务
             </Button>
           </div>
-
-          {pasteOpen && (
-            <div className="paste-panel">
-              <div className="paste-title">
-                <span>{waitingForPaste ? "等待粘贴" : "手动粘贴"}</span>
-                <button
-                  className="icon-button"
-                  type="button"
-                  onClick={() => {
-                    setPasteOpen(false);
-                    setWaitingForPaste(false);
-                  }}
-                >
-                  <X size={16} />
-                </button>
-              </div>
-              <div className="paste-grid">
-                <Input
-                  ref={pasteInputRef}
-                  value={pasteText}
-                  placeholder={waitingForPaste ? "已聚焦来源 URL，也可在这里 Ctrl+V" : "在这里按 Ctrl+V"}
-                  onPaste={(event) => {
-                    const text = event.clipboardData.getData("text/plain");
-                    if (text.trim()) {
-                      event.preventDefault();
-                      applyPastedUrl(text);
-                    }
-                  }}
-                  onChange={(event) => setPasteText(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") {
-                      event.preventDefault();
-                      applyPastedUrl();
-                    }
-                  }}
-                />
-                <Button type="button" onClick={() => applyPastedUrl()}>
-                  填入
-                </Button>
-              </div>
-            </div>
-          )}
 
           <div className="parameter-grid">
             <ControlGroup label="解析方式">
@@ -1271,14 +1067,7 @@ function App() {
               <Input value={profileId} onChange={(event) => setProfileId(event.target.value)} />
             </Field>
             <div className="admin-note">
-              先在本机安装一次协议处理器：运行 scripts/dev/install-protocol.ps1。之后点击按钮会直接打开本机浏览器登录助手，完成登录后自动把 Cookie 导入服务器 Profile。
-            </div>
-            <div className="login-grid">
-              {LOGIN_PLATFORMS.map((platform) => (
-                <Button key={platform.value} type="button" variant="secondary" onClick={() => openLocalProfileLogin(platform.value)} disabled={busy}>
-                  <Play size={16} /> 打开本机登录 {platform.label}
-                </Button>
-              ))}
+              当前支持粘贴浏览器导出的 Cookie JSON 导入 Profile。交互式登录后续改为服务端远程浏览器代理。
             </div>
             <form className="admin-form" onSubmit={importProfileCookies}>
               <label className="field">

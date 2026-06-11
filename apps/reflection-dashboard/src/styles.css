@@ -268,7 +268,7 @@
 
   .url-command-row {
     display: grid;
-    grid-template-columns: minmax(260px, 1fr) auto auto minmax(130px, auto);
+    grid-template-columns: minmax(260px, 1fr) auto minmax(130px, auto);
     gap: 10px;
     align-items: end;
   }
@@ -387,7 +387,6 @@
     color: #dbe3ed;
   }
 
-  .paste-panel,
   .notice-strip {
     border: 1px solid #265a65;
     border-radius: 8px;
@@ -427,22 +426,6 @@
 
   .command-box strong {
     color: #e9eef5;
-  }
-
-  .paste-title {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    font-size: 13px;
-    font-weight: 750;
-  }
-
-  .paste-grid {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 8px;
-    margin-top: 10px;
   }
 
   .parameter-grid {
@@ -1090,8 +1073,7 @@
     line-height: 21px;
   }
 
-  .permission-grid,
-  .login-grid {
+  .permission-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 8px;
@@ -1417,10 +1399,8 @@
     .topbar,
     .topbar-actions,
     .url-command-row,
-    .paste-grid,
     .parameter-grid,
     .permission-grid,
-    .login-grid,
     .meta-list,
     .key-row {
       grid-template-columns: 1fr;

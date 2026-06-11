@@ -294,9 +294,7 @@ fn classify_url(url: &str, kind_hint: Option<&str>, ext: Option<&str>) -> Candid
     match ext.as_str() {
         "m3u8" | "mpd" => CandidateKind::Manifest,
         "mp3" | "m4a" | "aac" | "opus" | "ogg" | "wav" | "flac" => CandidateKind::Audio,
-        "mp4" | "m4v" | "webm" | "mov" | "mkv" | "flv" | "ts" | "m4s" => {
-            CandidateKind::Video
-        }
+        "mp4" | "m4v" | "webm" | "mov" | "mkv" | "flv" | "ts" | "m4s" => CandidateKind::Video,
         "jpg" | "jpeg" | "png" | "webp" | "gif" | "avif" => CandidateKind::Image,
         _ if url.to_ascii_lowercase().contains(".m3u8") => CandidateKind::Manifest,
         _ => CandidateKind::Unknown,
@@ -488,7 +486,10 @@ mod tests {
 
         assert_eq!(candidates.len(), 2);
         assert_eq!(candidates[0].kind, CandidateKind::Video);
-        assert_eq!(candidates[0].protection, Some(CandidateProtection::SignedUrl));
+        assert_eq!(
+            candidates[0].protection,
+            Some(CandidateProtection::SignedUrl)
+        );
         assert!(candidates.iter().any(|candidate| candidate.ad_risk));
     }
 
