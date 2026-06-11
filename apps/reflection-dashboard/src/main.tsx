@@ -141,6 +141,14 @@ interface Candidate {
   validation_status?: string | null;
 }
 
+interface CandidateMetadata {
+  candidate?: {
+    higherQualityRequiresProfile?: boolean;
+    highestAdvertisedHeight?: number;
+    acceptDescription?: string[];
+  };
+}
+
 interface Artifact {
   id: string;
   job_id: string;
@@ -1691,6 +1699,7 @@ function CandidateRow(props: {
 }) {
   const summary = candidateSummary(props.candidate);
   const validation = props.candidate.validation_state ?? props.candidate.validation_status;
+  const availability = candidateAvailability(props.candidate);
   const isBad = Boolean(
     validation?.startsWith("failed") ||
       ["drm", "expired", "region_blocked"].includes(validation ?? ""),
@@ -1727,6 +1736,9 @@ function CandidateRow(props: {
           {props.recommended && <em>自动推荐</em>}
           {props.candidate.kind === "manifest" && <em>清单流</em>}
           {(props.candidate.requires_authorization || props.candidate.requires_profile) && <em className="warn">需要页面授权</em>}
+          {availability.higherQualityRequiresProfile && (
+            <em className="warn">高质量需 Profile{availability.highestAdvertisedHeight ? `（最高 ${availability.highestAdvertisedHeight}p）` : ""}</em>
+          )}
           {props.candidate.protection && props.candidate.protection !== "none" && (
             <em className={props.candidate.protection === "drm" ? "danger" : "warn"}>{protectionLabel(props.candidate.protection)}</em>
           )}
@@ -2211,6 +2223,11 @@ function qualityAvailabilityLabel(candidates: Candidate[], preference: string): 
   if (!qualities.length) {
     return "未识别清晰度，将按可用媒体排序。";
   }
+  const advertised = Math.max(0, ...candidates.map((candidate) => candidateAvailability(candidate).highestAdvertisedHeight ?? 0));
+  const highestVisible = qualityNumber(qualities[0]);
+  if (advertised > highestVisible) {
+    return `当前可用最高 ${qualities[0]}；站点提示最高 ${advertised}p，通常需要登录 Profile。`;
+  }
   if (preference === "auto") {
     return `自动选择最高可用：${qualities[0]}。`;
   }
@@ -2222,6 +2239,21 @@ function qualityAvailabilityLabel(candidates: Candidate[], preference: string): 
 
 function qualityNumber(value: string): number {
   return Number(value.match(/(\d{3,4})p/i)?.[1] ?? 0);
+}
+
+function candidateAvailability(candidate: Candidate): {
+  higherQualityRequiresProfile: boolean;
+  highestAdvertisedHeight?: number;
+} {
+  const metadata = candidate.metadata_json as CandidateMetadata | undefined;
+  const raw = metadata?.candidate;
+  const highestAdvertisedHeight = Number(raw?.highestAdvertisedHeight ?? 0);
+  return {
+    higherQualityRequiresProfile: Boolean(raw?.higherQualityRequiresProfile),
+    highestAdvertisedHeight: Number.isFinite(highestAdvertisedHeight) && highestAdvertisedHeight > 0
+      ? highestAdvertisedHeight
+      : undefined,
+  };
 }
 
 function extractorLabel(value: string): string {

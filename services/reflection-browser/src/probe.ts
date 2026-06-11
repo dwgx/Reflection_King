@@ -457,16 +457,17 @@ function candidatesFromBilibiliPlayInfo(playInfo: unknown, pageUrl: string): Bro
   const root = unwrapBilibiliPlayInfo(playInfo);
   const dash = asRecord(root?.dash);
   const candidates: BrowserCandidate[] = [];
+  const availability = bilibiliAvailability(root);
 
   for (const entry of asArray(dash?.video)) {
-    const candidate = candidateFromBilibiliDashEntry(entry, "video", pageUrl);
+    const candidate = candidateFromBilibiliDashEntry(entry, "video", pageUrl, availability);
     if (candidate) {
       candidates.push(candidate);
     }
   }
 
   for (const entry of asArray(dash?.audio)) {
-    const candidate = candidateFromBilibiliDashEntry(entry, "audio", pageUrl);
+    const candidate = candidateFromBilibiliDashEntry(entry, "audio", pageUrl, availability);
     if (candidate) {
       candidates.push(candidate);
     }
@@ -490,7 +491,55 @@ function unwrapBilibiliPlayInfo(playInfo: unknown): Record<string, unknown> | un
   return asRecord(record.data) ?? asRecord(record.result) ?? record;
 }
 
-function candidateFromBilibiliDashEntry(entry: unknown, kind: "audio" | "video", pageUrl: string): BrowserCandidate | undefined {
+interface BilibiliAvailability {
+  acceptQuality: number[];
+  acceptDescription: string[];
+  highestAdvertisedHeight?: number;
+}
+
+function bilibiliAvailability(root: Record<string, unknown> | undefined): BilibiliAvailability | undefined {
+  if (!root) {
+    return undefined;
+  }
+  const acceptQuality = asArray(root.accept_quality)
+    .map((value) => asNumber(value))
+    .filter((value): value is number => Boolean(value));
+  const acceptDescription = asArray(root.accept_description)
+    .map((value) => firstString(value))
+    .filter((value): value is string => Boolean(value));
+  const highestAdvertisedHeight = Math.max(
+    0,
+    ...acceptQuality.map(bilibiliQualityToHeight),
+    ...acceptDescription.map((value) => qualityHeight(value) ?? 0),
+  );
+  if (!acceptQuality.length && !acceptDescription.length) {
+    return undefined;
+  }
+  return {
+    acceptQuality,
+    acceptDescription,
+    highestAdvertisedHeight: highestAdvertisedHeight || undefined,
+  };
+}
+
+function bilibiliQualityToHeight(value: number): number {
+  if (value >= 120) return 2160;
+  if (value === 116) return 1080;
+  if (value === 112) return 1080;
+  if (value === 80) return 1080;
+  if (value === 74) return 720;
+  if (value === 64) return 720;
+  if (value === 32) return 480;
+  if (value === 16) return 360;
+  return 0;
+}
+
+function candidateFromBilibiliDashEntry(
+  entry: unknown,
+  kind: "audio" | "video",
+  pageUrl: string,
+  availability?: BilibiliAvailability,
+): BrowserCandidate | undefined {
   const record = asRecord(entry);
   const url = firstString(record?.baseUrl, record?.base_url);
   if (!url || !isHttpUrl(url)) {
@@ -503,6 +552,10 @@ function candidateFromBilibiliDashEntry(entry: unknown, kind: "audio" | "video",
   const bandwidth = asNumber(record?.bandwidth);
   const width = asNumber(record?.width);
   const codecs = firstString(record?.codecs);
+  const higherQualityRequiresProfile = kind === "video"
+    && Boolean(height)
+    && Boolean(availability?.highestAdvertisedHeight)
+    && (availability?.highestAdvertisedHeight ?? 0) > (height ?? 0);
   return {
     url,
     kind,
@@ -515,7 +568,7 @@ function candidateFromBilibiliDashEntry(entry: unknown, kind: "audio" | "video",
       ? (height ? `${height}p` : mediaId ? `bilibili-video-${mediaId}` : mimeType)
       : mediaId ? `bilibili-audio-${mediaId}` : bandwidth ? `audio-${bandwidth}` : mimeType,
     score: scoreCandidate(kind, mimeType, url) + 35 + (height ? Math.min(Math.floor(height / 20), 60) : 0),
-    requiresAuthorization: false,
+    requiresAuthorization: higherQualityRequiresProfile,
     metadata: {
       source: "bilibili_playinfo",
       mediaId,
@@ -523,6 +576,10 @@ function candidateFromBilibiliDashEntry(entry: unknown, kind: "audio" | "video",
       width,
       bandwidth,
       codecs,
+      acceptQuality: availability?.acceptQuality,
+      acceptDescription: availability?.acceptDescription,
+      highestAdvertisedHeight: availability?.highestAdvertisedHeight,
+      higherQualityRequiresProfile,
       backupUrls: asArray(record?.backupUrl ?? record?.backup_url).filter((value): value is string => typeof value === "string"),
     },
   };
