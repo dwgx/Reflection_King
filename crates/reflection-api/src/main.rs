@@ -177,7 +177,7 @@ async fn create_job(
         .unwrap_or_else(|| infer_platform(source_url));
     let outputs = normalize_outputs(request.outputs);
     let profile_id = normalize_profile_id(request.profile_id);
-    let auth_mode = request.auth_mode.unwrap_or(AuthMode::None);
+    let auth_mode = request.auth_mode.unwrap_or(AuthMode::Auto);
     let record = JobRecord::new_with_options(
         source_url.to_string(),
         bitrate,

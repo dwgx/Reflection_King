@@ -344,6 +344,7 @@ impl OutputKind {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthMode {
+    Auto,
     None,
     Profile,
     Cookies,
@@ -352,6 +353,7 @@ pub enum AuthMode {
 impl AuthMode {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Auto => "auto",
             Self::None => "none",
             Self::Profile => "profile",
             Self::Cookies => "cookies",
@@ -360,6 +362,7 @@ impl AuthMode {
 
     pub fn parse(value: &str) -> Option<Self> {
         match value {
+            "auto" => Some(Self::Auto),
             "none" => Some(Self::None),
             "profile" => Some(Self::Profile),
             "cookies" => Some(Self::Cookies),

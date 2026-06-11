@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useMemo, useState } from "react";
+﻿import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   Activity,
@@ -17,6 +17,7 @@ import {
   Search,
   Server,
   Settings,
+  X,
 } from "lucide-react";
 import "./styles.css";
 
@@ -107,7 +108,7 @@ interface CreateJobPayload {
   platform_hint: PlatformHint;
   outputs: OutputKind[];
   profile_id: string;
-  auth_mode: "none" | "profile" | "cookies";
+  auth_mode: "auto" | "none" | "profile" | "cookies";
 }
 
 const OUTPUTS: OutputKind[] = ["audio", "video", "image", "page_html"];
@@ -131,6 +132,9 @@ function App() {
   const [candidatePageSize, setCandidatePageSize] = useState(3);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string>("空闲");
+  const [pasteOpen, setPasteOpen] = useState(false);
+  const [pasteText, setPasteText] = useState("");
+  const pasteInputRef = useRef<HTMLInputElement | null>(null);
   const [form, setForm] = useState<CreateJobPayload>({
     url: "",
     bitrate: "auto",
@@ -138,7 +142,7 @@ function App() {
     platform_hint: "auto",
     outputs: ["audio"],
     profile_id: "admin_default",
-    auth_mode: "none",
+    auth_mode: "auto",
   });
 
   const headers = useMemo(() => apiHeaders(apiKey), [apiKey]);
@@ -200,6 +204,11 @@ function App() {
   useEffect(() => {
     setCandidatePage((page) => clampPage(page, visibleCandidates.length, candidatePageSize));
   }, [visibleCandidates.length, candidatePageSize]);
+
+  useEffect(() => {
+    if (!pasteOpen) return;
+    window.setTimeout(() => pasteInputRef.current?.focus(), 0);
+  }, [pasteOpen]);
 
   async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const response = await fetch(path, {
@@ -316,28 +325,36 @@ function App() {
   async function pasteFromClipboard() {
     try {
       if (!navigator.clipboard?.readText) {
-        await pasteWithPrompt();
+        openPasteBox("浏览器不允许直接读取剪贴板，请在输入框粘贴 URL。");
         return;
       }
       const text = await navigator.clipboard.readText();
       if (!text.trim()) {
         setMessage("剪贴板为空");
+        openPasteBox("剪贴板为空，可以手动粘贴 URL。");
         return;
       }
-      setForm({ ...form, url: text.trim() });
-      setMessage("已粘贴剪贴板内容");
+      applyPastedUrl(text);
     } catch {
-      await pasteWithPrompt();
+      openPasteBox("浏览器拦截了剪贴板读取，请在输入框粘贴 URL。");
     }
   }
 
-  async function pasteWithPrompt() {
-    const text = window.prompt("浏览器禁止直接读取剪贴板，请在这里粘贴 URL");
-    if (!text?.trim()) {
+  function openPasteBox(reason: string) {
+    setPasteText("");
+    setPasteOpen(true);
+    setMessage(reason);
+  }
+
+  function applyPastedUrl(text = pasteText) {
+    const value = text.trim();
+    if (!value) {
       setMessage("未粘贴内容");
       return;
     }
-    setForm({ ...form, url: text.trim() });
+    setForm({ ...form, url: value });
+    setPasteText("");
+    setPasteOpen(false);
     setMessage("已填入粘贴内容");
   }
 
@@ -424,6 +441,37 @@ function App() {
                   onChange={(event) => setForm({ ...form, url: event.target.value })}
                 />
               </Field>
+              {pasteOpen && (
+                <div className="rounded-md border border-cyan-500/40 bg-cyan-500/10 p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-sm font-medium text-cyan-100">粘贴 URL</span>
+                    <button
+                      className="rounded p-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
+                      type="button"
+                      onClick={() => setPasteOpen(false)}
+                    >
+                      <X size={16} />
+                    </button>
+                  </div>
+                  <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_auto]">
+                    <Input
+                      ref={pasteInputRef}
+                      value={pasteText}
+                      placeholder="在这里按 Ctrl+V"
+                      onChange={(event) => setPasteText(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          event.preventDefault();
+                          applyPastedUrl();
+                        }
+                      }}
+                    />
+                    <Button type="button" onClick={() => applyPastedUrl()}>
+                      填入
+                    </Button>
+                  </div>
+                </div>
+              )}
               <div className="grid gap-3 md:grid-cols-4">
                 <Field label="解析方式">
                   <Select
@@ -453,7 +501,7 @@ function App() {
                   <Select
                     value={form.auth_mode}
                     onChange={(event) => setForm({ ...form, auth_mode: event.target.value as CreateJobPayload["auth_mode"] })}
-                    options={["none", "profile", "cookies"]}
+                    options={["auto", "none", "profile", "cookies"]}
                     labelFor={authModeLabel}
                   />
                 </Field>
@@ -496,7 +544,7 @@ function App() {
           </Card>
         </section>
 
-        <section className="grid items-stretch gap-4 xl:grid-cols-[1.05fr_0.95fr]">
+        <section className="grid items-start gap-4 xl:grid-cols-[0.95fr_1.05fr]">
           <Card
             title="任务列表"
             icon={<Activity size={16} />}
@@ -504,35 +552,36 @@ function App() {
             className="h-full"
           >
             <div className="grid h-full gap-3">
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[720px] table-fixed text-left text-sm">
-                <thead className="text-xs uppercase text-zinc-500">
-                  <tr>
-                    <th className="w-24 px-2 py-2">状态</th>
-                    <th className="px-2 py-2">来源</th>
-                    <th className="w-36 px-2 py-2">解析方式</th>
-                    <th className="w-36 px-2 py-2">更新时间</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {pagedJobs.items.map((job) => (
-                    <tr
-                      key={job.id}
-                      className={`cursor-pointer border-t border-zinc-900 hover:bg-zinc-900/70 ${job.id === selectedJobId ? "bg-zinc-900 ring-1 ring-inset ring-cyan-500/25" : ""}`}
-                      onClick={() => setSelectedJobId(job.id)}
-                    >
-                      <td className="px-2 py-3"><Badge status={job.status} /></td>
-                      <td className="min-w-0 px-2 py-3">
-                        <div className="truncate text-zinc-100">{sourceTitle(job.source_url)}</div>
-                        <div className="truncate text-xs text-zinc-500">{job.error ? friendlyError(job.error) : job.source_url}</div>
-                      </td>
-                      <td className="px-2 py-3 text-zinc-400">{discoveryLabel(job.discovery)}/{platformLabel(job.platform_hint)}</td>
-                      <td className="px-2 py-3 text-zinc-500">{formatShortDate(job.updated_at)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+              <div className="grid gap-2">
+                {pagedJobs.items.map((job) => (
+                  <button
+                    key={job.id}
+                    className={`grid w-full gap-2 rounded-md border p-3 text-left transition-colors ${
+                      job.id === selectedJobId
+                        ? "border-cyan-500/50 bg-cyan-500/10"
+                        : "border-zinc-800 bg-zinc-950 hover:border-zinc-700"
+                    }`}
+                    type="button"
+                    onClick={() => setSelectedJobId(job.id)}
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <Badge status={job.status} />
+                      <span className="text-xs text-zinc-500">{formatShortDate(job.updated_at)}</span>
+                    </div>
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-medium text-zinc-100">{sourceTitle(job.source_url)}</div>
+                      <div className="mt-1 line-clamp-2 break-all text-xs text-zinc-500">
+                        {job.error ? friendlyError(job.error) : job.source_url}
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-400">
+                      <span className="rounded bg-zinc-800 px-1.5 py-0.5">{discoveryLabel(job.discovery)}</span>
+                      <span className="rounded bg-zinc-800 px-1.5 py-0.5">{platformLabel(job.platform_hint)}</span>
+                      <span className="rounded bg-zinc-800 px-1.5 py-0.5">{job.outputs.map(outputLabel).join(", ")}</span>
+                    </div>
+                  </button>
+                ))}
+              </div>
             <Pager
               page={pagedJobs.page}
               pageSize={jobPageSize}
@@ -546,8 +595,8 @@ function App() {
             </div>
           </Card>
 
-          <div className="grid h-full gap-4">
-            <Card title="任务详情" icon={<Settings size={16} />} className="min-h-[260px]">
+          <div className="grid gap-4">
+            <Card title="任务详情" icon={<Settings size={16} />}>
               {selectedJob ? (
                 <div className="grid gap-3 text-sm">
                   <Info label="ID" value={selectedJob.id} />
@@ -697,10 +746,10 @@ function Field(props: { label: string; children: React.ReactNode }) {
   );
 }
 
-function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
+const Input = React.forwardRef<HTMLInputElement, React.InputHTMLAttributes<HTMLInputElement>>(function Input(props, ref) {
   const { className = "", ...rest } = props;
-  return <input className={`input ${className}`} {...rest} />;
-}
+  return <input ref={ref} className={`input ${className}`} {...rest} />;
+});
 
 function Select(props: {
   value: string;
@@ -949,6 +998,7 @@ function platformLabel(value: string): string {
 
 function authModeLabel(value: string): string {
   return ({
+    auto: "自动",
     none: "无",
     profile: "浏览器配置",
     cookies: "Cookie",

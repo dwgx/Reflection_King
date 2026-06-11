@@ -30,4 +30,11 @@
   .button.secondary {
     @apply border-zinc-800 bg-zinc-950 text-zinc-200 hover:bg-zinc-800;
   }
+
+  .line-clamp-2 {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
 }

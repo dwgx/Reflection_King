@@ -140,7 +140,7 @@ export class BrowserProbeService {
     );
     // Douyin renders behind anti-bot/RSC, so the generic scan returns lots of
     // page noise. Keep only the real post media on Douyin's CDNs.
-    if (isDouyinUrl(finalUrl)) {
+    if (isDouyinUrl(request.url) || isDouyinUrl(finalUrl)) {
       filtered = filterDouyinCandidates(filtered);
     }
 
