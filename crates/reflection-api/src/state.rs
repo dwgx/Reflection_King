@@ -839,7 +839,7 @@ fn candidate_attempt_rank(job: &JobRecord, candidate: &MediaCandidate) -> i64 {
         };
     }
 
-    rank += candidate_quality_height(candidate).unwrap_or_default() / 2;
+    rank += quality_preference_rank(&job.bitrate, candidate);
     rank += audio_rank(candidate) / 1000;
 
     if candidate.requires_authorization {
@@ -849,6 +849,27 @@ fn candidate_attempt_rank(job: &JobRecord, candidate: &MediaCandidate) -> i64 {
         rank -= 5_000;
     }
     rank
+}
+
+fn quality_preference_rank(preference: &str, candidate: &MediaCandidate) -> i64 {
+    let Some(height) = candidate_quality_height(candidate) else {
+        return 0;
+    };
+    if preference == "auto" || !preference.ends_with('p') {
+        return height;
+    }
+    let target = preference
+        .trim_end_matches('p')
+        .parse::<i64>()
+        .unwrap_or_default();
+    if target <= 0 {
+        return height;
+    }
+    if height <= target {
+        5_000 + height
+    } else {
+        2_000 - (height - target)
+    }
 }
 
 fn candidate_quality_height(candidate: &MediaCandidate) -> Option<i64> {

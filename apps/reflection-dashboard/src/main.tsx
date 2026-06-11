@@ -8,6 +8,7 @@ import {
   CheckCircle2,
   Clipboard,
   ClipboardPaste,
+  Eye,
   ExternalLink,
   FileAudio,
   ListRestart,
@@ -24,6 +25,7 @@ import "./styles.css";
 type DiscoveryMode = "direct" | "external" | "browser" | "auto";
 type PlatformHint = "auto" | "bilibili" | "youtube" | "soundcloud";
 type OutputKind = "audio" | "video" | "image" | "page_html";
+type OutputMode = "auto" | "video" | "audio" | "image" | "page_html";
 
 interface Health {
   ok: boolean;
@@ -118,12 +120,14 @@ interface CreateJobPayload {
 const OUTPUTS: OutputKind[] = ["audio", "video", "image", "page_html"];
 const TERMINAL = new Set(["ready", "error", "candidates_ready"]);
 const PAGE_SIZE_OPTIONS = [3, 5, 10, 20, 50];
+const HIDDEN_JOBS_KEY = "reflection_hidden_job_ids";
 
 function App() {
   const [apiKey, setApiKey] = useState(() => localStorage.getItem("reflection_api_key") ?? "");
   const [health, setHealth] = useState<Health | null>(null);
   const [capabilities, setCapabilities] = useState<Capabilities | null>(null);
   const [jobs, setJobs] = useState<JobView[]>([]);
+  const [hiddenJobIds, setHiddenJobIds] = useState<Set<string>>(() => loadHiddenJobIds());
   const [selectedJobId, setSelectedJobId] = useState<string>("");
   const [selectedJob, setSelectedJob] = useState<JobView | null>(null);
   const [candidates, setCandidates] = useState<Candidate[]>([]);
@@ -144,16 +148,21 @@ function App() {
     bitrate: "auto",
     discovery: "auto",
     platform_hint: "auto",
-    outputs: ["audio"],
+    outputs: ["video", "audio"],
     profile_id: "admin_default",
     auth_mode: "auto",
   });
+  const [outputMode, setOutputMode] = useState<OutputMode>("auto");
 
   const headers = useMemo(() => apiHeaders(apiKey), [apiKey]);
 
   useEffect(() => {
     localStorage.setItem("reflection_api_key", apiKey);
   }, [apiKey]);
+
+  useEffect(() => {
+    localStorage.setItem(HIDDEN_JOBS_KEY, JSON.stringify(Array.from(hiddenJobIds)));
+  }, [hiddenJobIds]);
 
   useEffect(() => {
     void refreshSystem();
@@ -271,13 +280,16 @@ function App() {
     }
   }
 
-  async function refreshJobs() {
+  async function refreshJobs(hiddenOverride = hiddenJobIds) {
     try {
       const data = await request<JobView[]>("/api/jobs?limit=100");
-      setJobs(data);
-      setJobPage((page) => clampPage(page, data.length, jobPageSize));
-      if (!selectedJobId && data[0]) {
-        setSelectedJobId(data[0].id);
+      const visible = data.filter((job) => !hiddenOverride.has(job.id));
+      setJobs(visible);
+      setJobPage((page) => clampPage(page, visible.length, jobPageSize));
+      if (selectedJobId && hiddenJobIds.has(selectedJobId)) {
+        clearSelection();
+      } else if (!selectedJobId && visible[0]) {
+        setSelectedJobId(visible[0].id);
       }
     } catch (error) {
       setMessage(errorMessage(error));
@@ -367,6 +379,37 @@ function App() {
     setMessage("已清空来源 URL");
   }
 
+  function clearVisibleJobs() {
+    if (!jobs.length) {
+      setMessage("任务列表已经为空");
+      return;
+    }
+    const next = new Set(hiddenJobIds);
+    for (const job of jobs) {
+      next.add(job.id);
+    }
+    setHiddenJobIds(next);
+    setJobs([]);
+    clearSelection();
+    setJobPage(1);
+    setMessage("已清空当前任务列表；数据库历史未删除");
+  }
+
+  async function restoreHiddenJobs() {
+    const empty = new Set<string>();
+    setHiddenJobIds(empty);
+    setMessage("已恢复本机隐藏的历史任务");
+    await refreshJobs(empty);
+  }
+
+  function clearSelection() {
+    setSelectedJobId("");
+    setSelectedJob(null);
+    setCandidates([]);
+    setArtifacts([]);
+    setSelectedCandidates(new Set());
+  }
+
   async function selectCandidates() {
     if (!selectedJob) return;
     const candidateIds = selectedCandidates.size ? Array.from(selectedCandidates) : defaultCandidateIds;
@@ -389,11 +432,9 @@ function App() {
     }
   }
 
-  function toggleOutput(output: OutputKind) {
-    const next = new Set(form.outputs);
-    if (next.has(output)) next.delete(output);
-    else next.add(output);
-    setForm({ ...form, outputs: next.size ? Array.from(next) : ["audio"] });
+  function setOutputModeAndPayload(mode: OutputMode) {
+    setOutputMode(mode);
+    setForm({ ...form, outputs: outputsForMode(mode) });
   }
 
   function toggleCandidate(id: string) {
@@ -497,7 +538,7 @@ function App() {
                   <Select
                     value={form.bitrate}
                     onChange={(event) => setForm({ ...form, bitrate: event.target.value })}
-                    options={["auto", "96k", "128k", "160k", "192k", "256k", "320k"]}
+                    options={["auto", "2160p", "1440p", "1080p", "720p", "480p", "360p"]}
                     labelFor={bitrateLabel}
                   />
                 </Field>
@@ -518,18 +559,12 @@ function App() {
                   />
                 </Field>
                 <Field label="输出类型">
-                  <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
-                    {OUTPUTS.map((output) => (
-                      <label key={output} className="flex items-center gap-2 rounded-md border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm">
-                        <input
-                          type="checkbox"
-                          checked={form.outputs.includes(output)}
-                          onChange={() => toggleOutput(output)}
-                        />
-                        {outputLabel(output)}
-                      </label>
-                    ))}
-                  </div>
+                  <Select
+                    value={outputMode}
+                    onChange={(event) => setOutputModeAndPayload(event.target.value as OutputMode)}
+                    options={["auto", "video", "audio", "image", "page_html"]}
+                    labelFor={outputModeLabel}
+                  />
                 </Field>
               </div>
               <div className="grid gap-2 sm:grid-cols-[1fr_1fr_1.3fr]">
@@ -552,12 +587,24 @@ function App() {
           <Card
             title="任务列表"
             icon={<Activity size={16} />}
-            action={<Button variant="secondary" onClick={refreshJobs}><ListRestart size={16} /> 刷新</Button>}
+            action={
+              <div className="flex gap-2">
+                <Button variant="secondary" onClick={restoreHiddenJobs} disabled={!hiddenJobIds.size}>
+                  <Eye size={16} /> 恢复
+                </Button>
+                <Button variant="secondary" onClick={clearVisibleJobs} disabled={!jobs.length}>
+                  <X size={16} /> 清空
+                </Button>
+                <Button variant="secondary" onClick={() => refreshJobs()}>
+                  <ListRestart size={16} /> 刷新
+                </Button>
+              </div>
+            }
             className="h-[520px]"
             bodyClassName="h-[455px]"
           >
             <div className="flex h-full flex-col gap-3">
-              <div className="grid flex-1 auto-rows-fr gap-2 overflow-hidden">
+              <div className="grid flex-1 auto-rows-max gap-2 overflow-y-auto pr-1">
                 {pagedJobs.items.map((job) => (
                   <button
                     key={job.id}
@@ -582,7 +629,7 @@ function App() {
                     <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-400">
                       <span className="rounded bg-zinc-800 px-1.5 py-0.5">{discoveryLabel(job.discovery)}</span>
                       <span className="rounded bg-zinc-800 px-1.5 py-0.5">{platformLabel(job.platform_hint)}</span>
-                      <span className="rounded bg-zinc-800 px-1.5 py-0.5">{job.outputs.map(outputLabel).join(", ")}</span>
+                      <span className="rounded bg-zinc-800 px-1.5 py-0.5">{outputsLabel(job.outputs)}</span>
                     </div>
                   </button>
                 ))}
@@ -605,7 +652,7 @@ function App() {
                 <div className="grid gap-3 text-sm">
                   <Info label="ID" value={selectedJob.id} />
                   <Info label="状态" value={statusLabel(selectedJob.status)} tone={selectedJob.status === "error" ? "danger" : "normal"} />
-                  <Info label="输出类型" value={selectedJob.outputs.map(outputLabel).join(", ")} />
+                  <Info label="输出类型" value={outputsLabel(selectedJob.outputs)} />
                   {selectedJob.error && <Info label="错误摘要" value={friendlyError(selectedJob.error)} tone="danger" />}
                   <Info label="播放地址" value={selectedJob.media_url ?? "-"} copyable />
                   {selectedJob.media_url && <Player url={selectedJob.media_url} />}
@@ -639,13 +686,16 @@ function App() {
             {candidates.length ? (
               <div className="flex h-full flex-col gap-3">
                 <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-zinc-500">
-                  <span>找到 {candidates.length} 个资源，当前显示 {pagedCandidates.items.length} 个。</span>
+                  <span>
+                    找到 {candidates.length} 个资源，当前显示 {pagedCandidates.items.length} 个。
+                    {selectedJob && ` ${qualityAvailabilityLabel(candidates, selectedJob.bitrate)}`}
+                  </span>
                   <Button type="button" variant="secondary" className="h-8" onClick={() => setShowAllCandidates(!showAllCandidates)}>
                     {showAllCandidates ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
                     {showAllCandidates ? "只看推荐" : "显示全部"}
                   </Button>
                 </div>
-                <div className="grid flex-1 auto-rows-fr gap-2 overflow-hidden">
+                <div className="grid flex-1 auto-rows-max gap-2 overflow-y-auto pr-1">
                   {pagedCandidates.items.map((candidate, index) => (
                     <CandidateRow
                       key={candidate.id}
@@ -809,7 +859,7 @@ function CandidateRow(props: {
         checked={props.selected}
         onChange={props.onToggle}
       />
-      <div className="min-w-0">
+      <div className="min-w-0 overflow-hidden">
         <div className="flex flex-wrap items-start justify-between gap-2">
           <div className="flex flex-wrap items-center gap-2">
             <span className="font-medium text-zinc-100">
@@ -824,9 +874,9 @@ function CandidateRow(props: {
           </div>
         </div>
         <div className="mt-2 grid gap-1 text-xs text-zinc-400 sm:grid-cols-3">
-          <span>类型：{summary.kindDetail}</span>
-          <span>来源：{extractorLabel(props.candidate.extractor)}</span>
-          <span>评分：{props.candidate.score}</span>
+          <span className="truncate">类型：{summary.kindDetail}</span>
+          <span className="truncate">来源：{extractorLabel(props.candidate.extractor)}</span>
+          <span className="truncate">评分：{props.candidate.score}</span>
         </div>
         <div className="mt-2 flex flex-wrap gap-1.5">
           {props.recommended && <span className="rounded bg-cyan-500/15 px-1.5 py-0.5 text-xs text-cyan-200">自动推荐</span>}
@@ -841,7 +891,7 @@ function CandidateRow(props: {
             </span>
           )}
         </div>
-        <div className="mt-2 line-clamp-2 break-all text-xs text-zinc-500">
+        <div className="mt-2 max-h-9 overflow-hidden break-all text-xs leading-4 text-zinc-500">
           第 {props.index + 1} 项 · {compactUrl(props.candidate.url)}
         </div>
       </div>
@@ -953,6 +1003,16 @@ function apiHeaders(apiKey: string): Record<string, string> {
   return apiKey ? { "x-api-key": apiKey } : {};
 }
 
+function loadHiddenJobIds(): Set<string> {
+  try {
+    const raw = localStorage.getItem(HIDDEN_JOBS_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return new Set(Array.isArray(parsed) ? parsed.filter((value) => typeof value === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
+
 function errorMessage(error: unknown): string {
   return friendlyError(error instanceof Error ? error.message : String(error));
 }
@@ -1051,8 +1111,40 @@ function outputLabel(value: string): string {
   } as Record<string, string>)[value] ?? value;
 }
 
+function outputModeLabel(value: string): string {
+  return ({
+    auto: "自动（媒体）",
+    video: "视频",
+    audio: "音频",
+    image: "图片",
+    page_html: "页面 HTML",
+  } as Record<string, string>)[value] ?? value;
+}
+
+function outputsLabel(outputs: OutputKind[]): string {
+  if (outputs.includes("video") && outputs.includes("audio")) {
+    return "媒体";
+  }
+  return outputs.map(outputLabel).join(", ");
+}
+
+function outputsForMode(mode: OutputMode): OutputKind[] {
+  if (mode === "auto") {
+    return ["video", "audio"];
+  }
+  return [mode];
+}
+
 function bitrateLabel(value: string): string {
-  return value === "auto" ? "自动" : value;
+  return ({
+    auto: "自动（最高可用）",
+    "2160p": "4K / 2160p",
+    "1440p": "2K / 1440p",
+    "1080p": "1080p",
+    "720p": "720p",
+    "480p": "480p",
+    "360p": "360p",
+  } as Record<string, string>)[value] ?? value;
 }
 
 function candidateDisplayList(candidates: Candidate[], job: JobView | null, showAll: boolean): Candidate[] {
@@ -1210,6 +1302,31 @@ function validationLabel(value: string): string {
   if (value === "ok") return "已验证可用";
   if (value.startsWith("failed:")) return `不可用：${friendlyError(value.slice("failed:".length).trim())}`;
   return value;
+}
+
+function qualityAvailabilityLabel(candidates: Candidate[], preference: string): string {
+  const qualities = Array.from(
+    new Set(
+      candidates
+        .map((candidate) => candidate.quality_label ?? qualityFromUrl(candidate.url))
+        .filter((value): value is string => Boolean(value && /^\d{3,4}p$/i.test(value))),
+    ),
+  ).sort((left, right) => qualityNumber(right) - qualityNumber(left));
+
+  if (!qualities.length) {
+    return "未识别清晰度，将按可用媒体排序。";
+  }
+  if (preference === "auto") {
+    return `自动选择最高可用：${qualities[0]}。`;
+  }
+  if (qualities.includes(preference)) {
+    return `目标清晰度可用：${preference}。`;
+  }
+  return `目标 ${preference} 不可用，可用：${qualities.join("、")}。`;
+}
+
+function qualityNumber(value: string): number {
+  return Number(value.match(/(\d{3,4})p/i)?.[1] ?? 0);
 }
 
 function extractorLabel(value: string): string {

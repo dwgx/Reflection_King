@@ -148,6 +148,14 @@ export class BrowserProbeService {
       addCandidate(candidate);
     }
 
+    const adultVideoCandidates = await adultVideoCandidatesFromPage(page, finalUrl).catch((error) => {
+      warnings.push(`adult video discovery failed: ${error instanceof Error ? error.message : String(error)}`);
+      return [];
+    });
+    for (const candidate of adultVideoCandidates) {
+      addCandidate(candidate);
+    }
+
     const title = await page.title().catch(() => undefined);
     const userAgent = await contextUserAgent(context).catch(() => undefined);
     await page.close().catch(() => undefined);
@@ -737,6 +745,109 @@ function candidateFromDiscoveredUrl(discovered: DiscoveredUrl, pageUrl: string):
   };
 }
 
+async function adultVideoCandidatesFromPage(page: Page, pageUrl: string): Promise<BrowserCandidate[]> {
+  if (!isAdultVideoPage(pageUrl)) {
+    return [];
+  }
+
+  const discovered = await page.evaluate(() => {
+    type Item = {
+      url: string;
+      source: string;
+      contentType?: string;
+      initiatorType?: string;
+      scoreBoost?: number;
+    };
+    const out = new Map<string, Item>();
+    const add = (value: unknown, source: string, scoreBoost = 36) => {
+      if (typeof value !== "string" || !value) {
+        return;
+      }
+      const decoded = value
+        .replace(/\\u002[fF]/g, "/")
+        .replace(/\\u0026/g, "&")
+        .replace(/\\u003[dD]/g, "=")
+        .replace(/\\\//g, "/");
+      if (!/^https?:\/\//i.test(decoded) || !/\.(m3u8|mp4|m4v|webm)(?:[?#]|$)/i.test(decoded)) {
+        return;
+      }
+      const contentType = decoded.includes(".m3u8") ? "application/vnd.apple.mpegurl" : "video/mp4";
+      const current = out.get(decoded);
+      const item = { url: decoded, source, contentType, initiatorType: "video", scoreBoost };
+      if (!current || scoreBoost > (current.scoreBoost ?? 0)) {
+        out.set(decoded, item);
+      }
+    };
+
+    const scan = (value: unknown, source: string, depth = 0) => {
+      if (depth > 7 || value === null || value === undefined) {
+        return;
+      }
+      if (typeof value === "string") {
+        add(value, source);
+        return;
+      }
+      if (Array.isArray(value)) {
+        for (const item of value.slice(0, 400)) {
+          scan(item, source, depth + 1);
+        }
+        return;
+      }
+      if (typeof value === "object") {
+        for (const item of Object.values(value as Record<string, unknown>).slice(0, 400)) {
+          scan(item, source, depth + 1);
+        }
+      }
+    };
+
+    const win = window as unknown as Record<string, unknown>;
+    for (const key of [
+      "flashvars",
+      "flashVars",
+      "mediaDefinitions",
+      "qualityItems",
+      "videoVars",
+      "playerObjList",
+      "playerConfig",
+      "videoData",
+    ]) {
+      scan(win[key], `adult_player_${key}`);
+    }
+
+    for (const script of Array.from(document.scripts)) {
+      const text = (script.textContent || "")
+        .replace(/\\u002[fF]/g, "/")
+        .replace(/\\u0026/g, "&")
+        .replace(/\\u003[dD]/g, "=")
+        .replace(/\\\//g, "/")
+        .slice(0, 1_500_000);
+      for (const match of text.matchAll(/https?:\/\/[^"'<>\\\s]+?\.(?:m3u8|mp4|m4v|webm)(?:\?[^"'<>\\\s]*)?/gi)) {
+        add(match[0], "adult_inline_player", 34);
+      }
+    }
+
+    return Array.from(out.values()).slice(0, 100);
+  });
+
+  return discovered
+    .map((candidate) => candidateFromDiscoveredUrl(candidate, pageUrl))
+    .filter((candidate): candidate is BrowserCandidate => Boolean(candidate))
+    .map((candidate) => ({
+      ...candidate,
+      score: candidate.score + 45,
+      metadata: { ...(candidate.metadata ?? {}), source: "adult_video_player" },
+    }));
+}
+
+function isAdultVideoPage(value: string): boolean {
+  try {
+    const host = new URL(value).hostname.toLowerCase();
+    return host.includes("pornhub.") || host.includes("phncdn.com");
+  } catch {
+    return false;
+  }
+}
+
 function requestedCandidateKinds(outputs: string[] | undefined): ReadonlySet<CandidateKind> {
   const normalizedOutputs = outputs?.length ? outputs : ["audio"];
   const kinds = new Set<CandidateKind>();
@@ -988,11 +1099,20 @@ const PLAY_SELECTORS = [
   ".squirtle-video-start",
   ".xgplayer-play",
   ".play-icon",
+  // Common adult/video players
+  ".mgp_playIcon",
+  ".mgp_play",
+  ".mhp1138_playIcon",
+  ".js-play",
+  ".playButton",
+  ".play_button",
+  "[data-role='play']",
 ];
 
 async function triggerPlayback(page: Page, warnings: string[]): Promise<boolean> {
   await dismissConsentPrompt(page);
-  await dismissAgeGate(page);
+  await noteAgeGate(page, warnings);
+  await dismissPlaybackOverlays(page, warnings);
 
   let clicked = await clickFirstVisible(page, PLAY_SELECTORS);
 
@@ -1037,8 +1157,38 @@ async function triggerPlayback(page: Page, warnings: string[]): Promise<boolean>
 
   await page.waitForTimeout(1_500);
   await dismissPlaybackAds(page, warnings);
+  await dismissPlaybackOverlays(page, warnings);
   await page.waitForTimeout(4_000);
   return clicked;
+}
+
+async function dismissPlaybackOverlays(page: Page, warnings: string[]): Promise<void> {
+  let clicked = false;
+  for (const selector of [
+    "button:has-text('Accept All')",
+    "button:has-text('I Agree')",
+    "button:has-text('Agree')",
+    "button:has-text('Continue')",
+    "button:has-text('Enter')",
+    "button:has-text('Close')",
+    "button:has-text('No thanks')",
+    "button:has-text('Not now')",
+    "button[aria-label*='close' i]",
+    ".modal-close",
+    ".close",
+    ".mgp_announce_close",
+    ".mgp_skip",
+    ".skipButton",
+  ]) {
+    const ok = await clickFirstVisible(page, [selector]);
+    if (ok) {
+      clicked = true;
+      await page.waitForTimeout(400);
+    }
+  }
+  if (clicked) {
+    warnings.push("player overlay closed");
+  }
 }
 
 async function dismissPlaybackAds(page: Page, warnings: string[]): Promise<void> {
@@ -1052,10 +1202,10 @@ async function dismissPlaybackAds(page: Page, warnings: string[]): Promise<void>
       "button:has-text('Skip Ad')",
       "button:has-text('Skip Ads')",
       "button:has-text('Skip')",
-      "button:has-text('跳过广告')",
-      "button:has-text('跳过')",
-      "button:has-text('跳過廣告')",
-      "button:has-text('跳過')",
+      "button:has-text('\\u8df3\\u8fc7\\u5e7f\\u544a')",
+      "button:has-text('\\u8df3\\u8fc7')",
+      "button:has-text('\\u8df3\\u904e\\u5ee3\\u544a')",
+      "button:has-text('\\u8df3\\u904e')",
       ".ytp-ad-skip-button",
       ".ytp-ad-skip-button-modern",
     ]);
@@ -1069,8 +1219,8 @@ async function dismissPlaybackAds(page: Page, warnings: string[]): Promise<void>
       "button[aria-label*='Close' i]",
       "button[title*='Close' i]",
       "button:has-text('Close')",
-      "button:has-text('关闭')",
-      "button:has-text('關閉')",
+      "button:has-text('\\u5173\\u95ed')",
+      "button:has-text('\\u95dc\\u9589')",
       ".close",
       ".modal-close",
     ]);
@@ -1088,7 +1238,7 @@ async function dismissPlaybackAds(page: Page, warnings: string[]): Promise<void>
   }
 }
 
-async function dismissAgeGate(page: Page): Promise<void> {
+async function noteAgeGate(page: Page, warnings: string[]): Promise<void> {
   for (const name of [
     /i am over 18/i,
     /enter site/i,
@@ -1102,8 +1252,7 @@ async function dismissAgeGate(page: Page): Promise<void> {
   ]) {
     const button = page.getByRole("button", { name }).first();
     if (await isVisible(button)) {
-      await button.click({ timeout: 1_000 }).catch(() => undefined);
-      await page.waitForTimeout(400);
+      warnings.push("age confirmation visible; user profile or cookies may be required");
       return;
     }
   }

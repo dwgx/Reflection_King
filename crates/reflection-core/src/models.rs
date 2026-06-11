@@ -108,7 +108,7 @@ impl Default for JobCreateOptions {
         Self {
             discovery: DiscoveryMode::Direct,
             platform_hint: PlatformHint::Auto,
-            outputs: vec![OutputKind::Audio],
+            outputs: vec![OutputKind::Video, OutputKind::Audio],
             profile_id: "admin_default".to_string(),
             auth_mode: AuthMode::None,
         }
@@ -464,11 +464,11 @@ pub struct SelectCandidatesRequest {
 }
 
 pub fn normalize_outputs(value: Option<Vec<OutputKind>>) -> Vec<OutputKind> {
-    let mut outputs = value.unwrap_or_else(|| vec![OutputKind::Audio]);
+    let mut outputs = value.unwrap_or_else(|| vec![OutputKind::Video, OutputKind::Audio]);
     outputs.sort_by_key(|output| output.as_str());
     outputs.dedup();
     if outputs.is_empty() {
-        vec![OutputKind::Audio]
+        vec![OutputKind::Video, OutputKind::Audio]
     } else {
         outputs
     }
@@ -490,9 +490,10 @@ pub fn normalize_profile_id(value: Option<String>) -> String {
 
 pub fn normalize_bitrate(value: Option<&str>) -> String {
     match value {
-        Some(value @ ("auto" | "96k" | "128k" | "160k" | "192k" | "256k" | "320k")) => {
-            value.to_string()
-        }
+        Some(
+            value @ ("auto" | "2160p" | "1440p" | "1080p" | "720p" | "480p" | "360p" | "96k"
+            | "128k" | "160k" | "192k" | "256k" | "320k"),
+        ) => value.to_string(),
         _ => "192k".to_string(),
     }
 }

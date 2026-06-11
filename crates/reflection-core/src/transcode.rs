@@ -353,7 +353,7 @@ fn ffprobe_path(ffmpeg_path: &Path) -> PathBuf {
 }
 
 fn normalize_audio_bitrate(value: &str) -> &str {
-    if value == "auto" {
+    if value == "auto" || value.ends_with('p') {
         "192k"
     } else {
         value
