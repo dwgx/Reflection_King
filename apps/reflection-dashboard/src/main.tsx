@@ -1067,7 +1067,7 @@ function App() {
               <Input value={profileId} onChange={(event) => setProfileId(event.target.value)} />
             </Field>
             <div className="admin-note">
-              当前支持粘贴浏览器导出的 Cookie JSON 导入 Profile。交互式登录后续改为服务端远程浏览器代理。
+              当前支持手动粘贴 Cookie JSON，或在本机运行 scripts/cookies/import_browser_cookies.py 从已登录浏览器导入指定站点 Cookie。交互式登录后续改为服务端远程浏览器代理。
             </div>
             <form className="admin-form" onSubmit={importProfileCookies}>
               <label className="field">

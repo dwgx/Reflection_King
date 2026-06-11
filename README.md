@@ -154,6 +154,23 @@ JSON exported from a browser profile. The removed local protocol/PowerShell
 helper path is intentionally unsupported; future interactive login should run as
 a server-side remote browser session behind HTTPS.
 
+For a logged-in Windows browser profile, use the explicit Python importer:
+
+```powershell
+python -m pip install --user -U yt-dlp browser-cookie3
+python scripts/cookies/import_browser_cookies.py `
+  --base-url http://154.40.36.22:8780 `
+  --api-key "<admin-key>" `
+  --browser edge `
+  --platform bilibili `
+  --profile-id admin_default
+```
+
+If Edge/Chrome is open and Windows locks the cookie database, close that browser
+and retry `--engine yt-dlp`, or run with `--engine browser-cookie3` from an
+administrator terminal. The script prints counts and domains only, not cookie
+values.
+
 ## Public URLs
 
 VRChat clients cannot access your local `localhost`. Use a VPS, reverse proxy, or HTTPS tunnel. Set:

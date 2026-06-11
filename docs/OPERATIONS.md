@@ -74,6 +74,26 @@ Export cookies from a browser profile and paste the JSON array into
 `管理 -> 浏览器账号配置 -> Cookie JSON`, then import it into the target Profile
 ID.
 
+For Windows machines where the operator is already logged into Edge, Chrome, or
+Firefox, the local Python importer can extract only the requested site domains
+and upload them to the server profile:
+
+```powershell
+python -m pip install --user -U yt-dlp browser-cookie3
+python scripts/cookies/import_browser_cookies.py `
+  --base-url http://154.40.36.22:8780 `
+  --api-key "<admin-key>" `
+  --browser edge `
+  --platform bilibili `
+  --profile-id admin_default
+```
+
+Use `--dry-run` first to confirm only cookie counts and domains. Cookie values
+are not printed. If Chromium reports that the cookie database cannot be copied,
+close that browser and retry the default `--engine yt-dlp`. If Windows requires
+shadow-copy access, run `--engine browser-cookie3` from an administrator
+terminal. This is an explicit local import command, not a protocol handler.
+
 Local protocol handlers and PowerShell desktop helpers are intentionally not
 supported. They are hard to trust, fail in common browser security contexts, and
 do not work reliably for a remote VPS dashboard. Future interactive login should
