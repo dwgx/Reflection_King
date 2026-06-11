@@ -38,6 +38,28 @@ pub struct ProbeResponse {
     pub event_count: usize,
     #[serde(rename = "timedOut")]
     pub timed_out: bool,
+    // Fields emitted by the enhanced sidecar (Phase 3). Optional so older
+    // sidecars still deserialize cleanly.
+    #[serde(rename = "userAgent", default)]
+    pub user_agent: Option<String>,
+    #[serde(rename = "playbackTriggered", default)]
+    pub playback_triggered: Option<bool>,
+    #[serde(rename = "consoleErrors", default)]
+    pub console_errors: Option<Vec<String>>,
+}
+
+/// Result of a browser probe that also carries session metadata for the trace.
+#[derive(Debug, Clone)]
+pub struct BrowserProbeOutcome {
+    pub candidates: Vec<MediaCandidate>,
+    pub final_url: String,
+    pub title: Option<String>,
+    pub warnings: Vec<String>,
+    pub event_count: usize,
+    pub timed_out: bool,
+    pub user_agent: Option<String>,
+    pub playback_triggered: bool,
+    pub console_errors: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -84,6 +106,23 @@ impl BrowserProbeClient {
         platform_hint: PlatformHint,
         outputs: &[String],
     ) -> Result<Vec<MediaCandidate>> {
+        Ok(self
+            .probe_session(job_id, url, profile_id, platform_hint, outputs)
+            .await?
+            .candidates)
+    }
+
+    /// Probe a page and return both the policy-checked candidates and the
+    /// session metadata (final URL, title, warnings, counts) so callers can
+    /// persist a `browser_sessions` record for the trace.
+    pub async fn probe_session(
+        &self,
+        job_id: Uuid,
+        url: &str,
+        profile_id: &str,
+        platform_hint: PlatformHint,
+        outputs: &[String],
+    ) -> Result<BrowserProbeOutcome> {
         let request = ProbeRequest {
             url: url.to_string(),
             profile_id: profile_id.to_string(),
@@ -106,12 +145,25 @@ impl BrowserProbeClient {
 
         let response: ProbeResponse = response.json().await?;
         let metadata = ProbeMetadata::from(&response);
-        Ok(response
+        let candidates = response
             .candidates
-            .into_iter()
+            .iter()
             .filter(|candidate| parse_and_validate_url(&candidate.url).is_ok())
+            .cloned()
             .map(|candidate| candidate.into_media_candidate(job_id, &metadata))
-            .collect())
+            .collect::<Vec<_>>();
+
+        Ok(BrowserProbeOutcome {
+            candidates,
+            final_url: response.final_url,
+            title: response.title,
+            warnings: response.warnings,
+            event_count: response.event_count,
+            timed_out: response.timed_out,
+            user_agent: response.user_agent,
+            playback_triggered: response.playback_triggered.unwrap_or(false),
+            console_errors: response.console_errors.unwrap_or_default(),
+        })
     }
 
     pub async fn headers_for_url(
@@ -181,6 +233,14 @@ impl BrowserCandidate {
                 "candidate": self.metadata,
             }),
             created_at: OffsetDateTime::now_utc(),
+            score_breakdown_json: serde_json::Value::Object(Default::default()),
+            selected: false,
+            selection_reason: None,
+            validation_status: None,
+            resolved_ip: None,
+            final_url_after_redirects: None,
+            expires_at: None,
+            discovered_by_event_id: None,
         }
     }
 }

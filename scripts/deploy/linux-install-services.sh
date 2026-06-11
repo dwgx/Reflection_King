@@ -63,7 +63,7 @@ if [[ ! -x "${YTDLP_VENV}/bin/yt-dlp" ]]; then
   python3 -m venv "${YTDLP_VENV}"
   "${YTDLP_VENV}/bin/python" -m pip install --upgrade pip
 fi
-"${YTDLP_VENV}/bin/python" -m pip install --upgrade "yt-dlp==2026.03.17"
+"${YTDLP_VENV}/bin/python" -m pip install --upgrade yt-dlp
 if ! grep -q '^RK_YTDLP_PATH=' "${ENV_DIR}/reflection.env"; then
   printf '\nRK_YTDLP_PATH=%s\n' "${YTDLP_VENV}/bin/yt-dlp" >> "${ENV_DIR}/reflection.env"
 fi

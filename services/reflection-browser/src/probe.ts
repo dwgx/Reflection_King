@@ -47,8 +47,21 @@ export class BrowserProbeService {
     const candidates = new Map<string, BrowserCandidate>();
     const acceptedKinds = requestedCandidateKinds(request.outputs);
     const warnings: string[] = [];
+    const consoleErrors: string[] = [];
     let eventCount = 0;
     let timedOut = false;
+    let playbackTriggered = false;
+
+    page.on("console", (message) => {
+      if (message.type() === "error" && consoleErrors.length < 50) {
+        consoleErrors.push(message.text().slice(0, 300));
+      }
+    });
+    page.on("pageerror", (error) => {
+      if (consoleErrors.length < 50) {
+        consoleErrors.push(`pageerror: ${error.message}`.slice(0, 300));
+      }
+    });
 
     const addCandidate = (candidate: BrowserCandidate) => {
       if (!acceptedKinds.has(candidate.kind) || isRejectedCandidate(candidate)) {
@@ -87,7 +100,7 @@ export class BrowserProbeService {
         warnings.push("networkidle timeout");
       });
       if (shouldTriggerPlayback(page.url(), request.platformHint, request.outputs)) {
-        await triggerPlayback(page, warnings);
+        playbackTriggered = await triggerPlayback(page, warnings);
       }
       await page.waitForTimeout(2_000);
     } catch (error) {
@@ -115,16 +128,33 @@ export class BrowserProbeService {
     }
 
     const title = await page.title().catch(() => undefined);
+    const userAgent = await contextUserAgent(context).catch(() => undefined);
     await page.close().catch(() => undefined);
+
+    // A page URL is never a media file: drop candidates whose URL is the page
+    // (or final) URL itself — this is the generic-scan false positive that made
+    // JS-resolved sites like StreetVoice look "solved" when they were not.
+    const pageUrls = new Set([request.url, finalUrl].map(normalizeUrlForCompare));
+    let filtered = [...candidates.values()].filter(
+      (candidate) => !pageUrls.has(normalizeUrlForCompare(candidate.url)),
+    );
+    // Douyin renders behind anti-bot/RSC, so the generic scan returns lots of
+    // page noise. Keep only the real post media on Douyin's CDNs.
+    if (isDouyinUrl(finalUrl)) {
+      filtered = filterDouyinCandidates(filtered);
+    }
 
     return {
       finalUrl,
       title,
       platformHint: request.platformHint,
-      candidates: [...candidates.values()].sort((a, b) => b.score - a.score),
+      candidates: filtered.sort((a, b) => b.score - a.score),
       warnings,
       eventCount,
       timedOut,
+      userAgent,
+      playbackTriggered,
+      consoleErrors,
     };
   }
 
@@ -176,8 +206,25 @@ export class BrowserProbeService {
       headless: !headed,
       viewport: { width: 1366, height: 768 },
       locale: "zh-CN",
+      timezoneId: "Asia/Shanghai",
       userAgent:
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    });
+    // Make the headless context behave like the user's real browser by
+    // normalizing the most obvious automation tells. This is not aimed at any
+    // specific anti-bot product; it just keeps sites that break under plain
+    // headless from misrendering.
+    await context.addInitScript(() => {
+      Object.defineProperty(navigator, "webdriver", { get: () => undefined });
+      Object.defineProperty(navigator, "languages", { get: () => ["zh-CN", "zh", "en"] });
+      try {
+        const win = window as unknown as { chrome?: unknown };
+        if (!win.chrome) {
+          win.chrome = { runtime: {} };
+        }
+      } catch {
+        // ignore
+      }
     });
     this.contexts.set(profileId, { context, lastUsedAt: Date.now() });
     return context;
@@ -738,6 +785,79 @@ function urlPath(url: string): string {
   }
 }
 
+function isDouyinUrl(value: string): boolean {
+  try {
+    const host = new URL(value).hostname.toLowerCase();
+    return (
+      host === "douyin.com" ||
+      host.endsWith(".douyin.com") ||
+      host.endsWith(".iesdouyin.com")
+    );
+  } catch {
+    return false;
+  }
+}
+
+/// Filter raw Douyin candidates down to the real post media on Douyin's CDNs,
+/// dropping the page noise (avatars, UI sprites, effect assets, emoji). Modern
+/// douyin.com renders via obfuscated RSC flight behind anti-bot, so the media
+/// URLs only survive as raw strings in the generic scan; this keeps the ones
+/// that matter:
+///   - 图文 gallery images: *.douyinpic.com paths under /tos-cn-i- (not avatars)
+///   - video: *.douyinvod.com or /video/tos/ or /aweme/v1/play (real stream)
+///   - music: *.douyinpic.com /obj/ ... (passed through as audio)
+/// Images are deduped by path (signed query params differ per request).
+function filterDouyinCandidates(candidates: BrowserCandidate[]): BrowserCandidate[] {
+  const out: BrowserCandidate[] = [];
+  const seenImage = new Set<string>();
+  let imageIndex = 0;
+  for (const candidate of candidates) {
+    let host = "";
+    let pathname = "";
+    try {
+      const parsed = new URL(candidate.url);
+      host = parsed.hostname.toLowerCase();
+      pathname = parsed.pathname.toLowerCase();
+    } catch {
+      continue;
+    }
+
+    if (candidate.kind === "image") {
+      const isGallery =
+        host.endsWith("douyinpic.com") &&
+        pathname.includes("/tos-cn-i-") &&
+        !pathname.includes("avatar") &&
+        !/(100x100|72x72|168x168)/.test(pathname);
+      if (!isGallery || seenImage.has(pathname)) {
+        continue;
+      }
+      seenImage.add(pathname);
+      out.push({
+        ...candidate,
+        qualityLabel: `douyin-image-${imageIndex.toString().padStart(2, "0")}`,
+        score: candidate.score + 25,
+        metadata: { ...(candidate.metadata ?? {}), source: "douyin_gallery", index: imageIndex },
+      });
+      imageIndex += 1;
+    } else if (candidate.kind === "video") {
+      const isRealVideo =
+        host.includes("douyinvod") ||
+        pathname.includes("/video/tos/") ||
+        pathname.includes("/aweme/v1/play");
+      if (!isRealVideo) {
+        continue;
+      }
+      out.push({ ...candidate, score: candidate.score + 25 });
+    } else {
+      // Music / audio: keep douyin-hosted audio only.
+      if (host.endsWith("douyinpic.com") || host.endsWith("douyinvod.com") || host.endsWith("amemv.com")) {
+        out.push(candidate);
+      }
+    }
+  }
+  return out;
+}
+
 function isBilibiliUrl(value: string): boolean {
   try {
     const host = new URL(value).hostname.toLowerCase();
@@ -764,36 +884,115 @@ function bilibiliIdsFromUrl(value: string): { bvid?: string; aid?: string } {
   }
 }
 
-function shouldTriggerPlayback(url: string, platformHint: string | undefined, outputs: string[] | undefined): boolean {
-  const wantsMedia = !outputs?.length || outputs.some((output) => output === "audio" || output === "video");
-  if (!wantsMedia) {
-    return false;
-  }
-
-  const platform = platformHint?.toLowerCase();
-  return platform === "soundcloud" || platform === "youtube" || isSoundCloudUrl(url) || isYouTubeUrl(url);
+function shouldTriggerPlayback(_url: string, _platformHint: string | undefined, outputs: string[] | undefined): boolean {
+  // Attempt playback for any job that wants audio/video. triggerPlayback is a
+  // safe no-op when the page has no player, so this is broadly applicable — and
+  // it is exactly what lets JS-resolved sites (StreetVoice, Douyin, Bilibili,
+  // ...) reveal their real media request instead of only the page URL.
+  return !outputs?.length || outputs.some((output) => output === "audio" || output === "video");
 }
 
-async function triggerPlayback(page: Page, warnings: string[]): Promise<void> {
-  await dismissConsentPrompt(page);
+const PLAY_SELECTORS = [
+  // Generic ARIA / title
+  "button[aria-label='Play']",
+  "button[aria-label^='Play ']",
+  "button[aria-label*='play' i]",
+  "button[title='Play']",
+  "button[title*='play' i]",
+  "[aria-label*='播放']",
+  "[title*='播放']",
+  // Generic class / data hooks
+  "button.playButton",
+  ".playButton",
+  ".play-button",
+  ".play-btn",
+  ".btn-play",
+  "[data-testid='play-button']",
+  // SoundCloud
+  ".sc-button-play",
+  // YouTube
+  "button.ytp-large-play-button",
+  "button.ytp-play-button",
+  // StreetVoice
+  ".player-control .play",
+  ".sv-player .play",
+  ".player .play",
+  ".icon-play",
+  // Bilibili / common CN HTML5 players
+  ".bpx-player-ctrl-play",
+  ".squirtle-video-start",
+  ".xgplayer-play",
+  ".play-icon",
+];
 
-  const clicked = await clickFirstVisible(page, [
-    "button[aria-label='Play']",
-    "button[aria-label^='Play ']",
-    "button[title='Play']",
-    "button.playButton",
-    ".playButton",
-    ".sc-button-play",
-    "[data-testid='play-button']",
-    "button.ytp-large-play-button",
-    "button.ytp-play-button",
-  ]);
+async function triggerPlayback(page: Page, warnings: string[]): Promise<boolean> {
+  await dismissConsentPrompt(page);
+  await dismissAgeGate(page);
+
+  let clicked = await clickFirstVisible(page, PLAY_SELECTORS);
 
   if (!clicked) {
-    await page.locator("video").first().click({ timeout: 1_000 }).catch(() => undefined);
+    // Fall back to clicking the page's own media element.
+    for (const selector of ["video", "audio"]) {
+      const ok = await page
+        .locator(selector)
+        .first()
+        .click({ timeout: 1_000 })
+        .then(() => true)
+        .catch(() => false);
+      if (ok) {
+        clicked = true;
+        break;
+      }
+    }
+  }
+
+  if (!clicked) {
+    // Last resort: ask any media element to play() directly (muted, to satisfy
+    // autoplay policies).
+    clicked = await page
+      .evaluate(() => {
+        const media = document.querySelector("video,audio") as HTMLMediaElement | null;
+        if (!media) {
+          return false;
+        }
+        media.muted = true;
+        const result = media.play() as unknown as Promise<void> | undefined;
+        if (result && typeof result.catch === "function") {
+          result.catch(() => undefined);
+        }
+        return true;
+      })
+      .catch(() => false);
+  }
+
+  if (!clicked) {
+    warnings.push("no play control found");
   }
 
   await page.waitForTimeout(5_000);
+  return clicked;
+}
+
+async function dismissAgeGate(page: Page): Promise<void> {
+  for (const name of [
+    /i am over 18/i,
+    /enter site/i,
+    /^enter$/i,
+    /agree and enter/i,
+    /我已满\s*18/,
+    /满\s*18/,
+    /同意并进入/,
+    /^同意$/,
+    /continue/i,
+  ]) {
+    const button = page.getByRole("button", { name }).first();
+    if (await isVisible(button)) {
+      await button.click({ timeout: 1_000 }).catch(() => undefined);
+      await page.waitForTimeout(400);
+      return;
+    }
+  }
 }
 
 async function dismissConsentPrompt(page: Page): Promise<void> {
@@ -883,6 +1082,18 @@ function isHttpUrl(value: string): boolean {
     return url.protocol === "http:" || url.protocol === "https:";
   } catch {
     return false;
+  }
+}
+
+/// Normalize a URL for "is this the page itself" comparison: drop the fragment
+/// and any trailing slash so the page URL and a candidate that echoes it match.
+function normalizeUrlForCompare(value: string): string {
+  try {
+    const url = new URL(value);
+    url.hash = "";
+    return url.toString().replace(/\/$/, "");
+  } catch {
+    return value.replace(/\/$/, "");
   }
 }
 

@@ -1,22 +1,66 @@
-use std::sync::Arc;
+use std::{path::Path, sync::Arc};
 
 use reflection_core::{
     browser_probe::BrowserProbeClient,
     download::Downloader,
     external_probe::YtDlpProbe,
+    extractors::{ExtractContext, SourceResolver},
     job_store::JobStore,
     models::{
         ArtifactView, CandidateKind, DiscoveryMode, JobRecord, JobStatus, JobView, MediaCandidate,
         OutputKind,
     },
+    observability::{ErrorClass, JobTrace, PipelineEvent, PipelineEventType},
     paths::StoragePaths,
-    transcode::Transcoder,
+    transcode::{concat_demuxer_file, Transcoder},
     AppConfig, Result, RkError,
 };
 use time::OffsetDateTime;
 use tokio::sync::{mpsc, Mutex, Semaphore};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
+
+/// Map a backend error to its observability classification so retry decisions
+/// and the `error_class` columns stay consistent.
+pub fn classify_error(error: &RkError) -> ErrorClass {
+    match error {
+        RkError::UrlPolicy(_) => ErrorClass::Blocked,
+        RkError::DownloadTooLarge { .. } => ErrorClass::TooLarge,
+        RkError::Browser(_) => ErrorClass::Blocked,
+        RkError::Transcode(_) => ErrorClass::Parse,
+        RkError::Json(_) => ErrorClass::Parse,
+        RkError::Http(http_error) => {
+            if http_error.is_timeout() {
+                ErrorClass::Timeout
+            } else if http_error.is_connect() {
+                ErrorClass::Dns
+            } else if let Some(status) = http_error.status() {
+                if status.is_server_error() {
+                    ErrorClass::Http5xx
+                } else if status.is_client_error() {
+                    ErrorClass::Http4xx
+                } else {
+                    ErrorClass::Internal
+                }
+            } else {
+                ErrorClass::Internal
+            }
+        }
+        RkError::Source(message) => {
+            let lowered = message.to_ascii_lowercase();
+            if lowered.contains("timed out") {
+                ErrorClass::Timeout
+            } else if lowered.contains("drm") {
+                ErrorClass::DrmBlocked
+            } else if lowered.contains("did not find") || lowered.contains("no ") {
+                ErrorClass::Blocked
+            } else {
+                ErrorClass::Internal
+            }
+        }
+        _ => ErrorClass::Internal,
+    }
+}
 
 pub struct AppState {
     pub config: AppConfig,
@@ -130,6 +174,20 @@ impl AppState {
         self.job_store
             .set_selected_candidates(job_id, &candidate_ids)
             .await?;
+        for candidate_id in &candidate_ids {
+            self.job_store
+                .set_candidate_selection(*candidate_id, true, Some("selected via API"))
+                .await
+                .ok();
+        }
+        self.record_event(PipelineEvent::new(
+            job_id,
+            "candidate_selected",
+            "api",
+            PipelineEventType::CandidateSelected,
+            serde_json::json!({ "candidate_ids": candidate_ids }),
+        ))
+        .await;
         self.update_status(job_id, JobStatus::CandidateSelected)
             .await?;
         self.enqueue(job_id).await?;
@@ -164,7 +222,8 @@ impl AppState {
                 let _permit = permit;
                 if let Err(error) = state.process_job(job_id).await {
                     error!(%job_id, "job failed: {error}");
-                    state.mark_error(job_id, error.to_string()).await;
+                    let class = classify_error(&error);
+                    state.mark_error(job_id, error.to_string(), class).await;
                 }
             });
         }
@@ -172,6 +231,16 @@ impl AppState {
 
     async fn process_job(&self, job_id: Uuid) -> Result<()> {
         debug!(%job_id, "starting job");
+        self.job_store.mark_started(job_id).await.ok();
+        let attempt = self.job_store.increment_attempt(job_id).await.unwrap_or(1);
+        self.record_event(PipelineEvent::new(
+            job_id,
+            "dispatch",
+            "worker",
+            PipelineEventType::Note,
+            serde_json::json!({ "attempt": attempt }),
+        ))
+        .await;
 
         let job = self
             .get_job(job_id)
@@ -183,19 +252,12 @@ impl AppState {
         }
 
         match job.discovery {
-            DiscoveryMode::External => return self.resolve_external_candidates(job).await,
-            DiscoveryMode::Browser => return self.resolve_browser_candidates(job).await,
-            DiscoveryMode::Auto => {
-                if self.yt_dlp_probe.is_some() {
-                    match self.resolve_external_candidates(job.clone()).await {
-                        Ok(()) => return Ok(()),
-                        Err(error) => {
-                            info!(%job_id, "external discovery failed, falling back to browser: {error}");
-                        }
-                    }
-                }
-                return self.resolve_browser_candidates(job).await;
+            // External/Browser/Auto all run through the resolver chain; the
+            // chain composition is chosen from the discovery mode.
+            DiscoveryMode::External | DiscoveryMode::Browser | DiscoveryMode::Auto => {
+                return self.resolve_candidates(job).await
             }
+            // Direct keeps the fast immediate download+transcode path below.
             DiscoveryMode::Direct => {}
         }
 
@@ -224,66 +286,122 @@ impl AppState {
         Ok(())
     }
 
-    async fn resolve_external_candidates(&self, job: JobRecord) -> Result<()> {
-        let Some(yt_dlp_probe) = &self.yt_dlp_probe else {
-            return Err(RkError::Source(
-                "RK_YTDLP_PATH is required for external discovery".to_string(),
-            ));
-        };
-
-        self.update_status(job.id, JobStatus::Resolving).await?;
-        let candidates = yt_dlp_probe
-            .probe(job.id, &job.source_url, &job.outputs)
-            .await?;
-
-        if candidates.is_empty() {
-            return Err(RkError::Source(
-                "yt-dlp did not find usable media candidates".to_string(),
-            ));
+    /// Unified candidate discovery: build the extractor chain for the job's
+    /// discovery mode, run it, and persist every attempt, browser session, and
+    /// candidate. The first extractor that yields candidates wins.
+    async fn resolve_candidates(&self, job: JobRecord) -> Result<()> {
+        // Explicit modes require their backing service.
+        match job.discovery {
+            DiscoveryMode::External if self.yt_dlp_probe.is_none() => {
+                return Err(RkError::Source(
+                    "RK_YTDLP_PATH is required for external discovery".to_string(),
+                ));
+            }
+            DiscoveryMode::Browser if self.browser_probe.is_none() => {
+                return Err(RkError::Browser(
+                    "RK_BROWSER_PROBE_URL is required for browser discovery".to_string(),
+                ));
+            }
+            _ => {}
         }
 
+        self.update_status(job.id, JobStatus::Resolving).await?;
+
+        let url = reflection_core::url_policy::parse_and_validate_url(&job.source_url)?;
+        let ctx = ExtractContext {
+            job_id: job.id,
+            source_url: job.source_url.clone(),
+            url,
+            outputs: job.outputs.clone(),
+            profile_id: job.profile_id.clone(),
+            platform_hint: job.platform_hint,
+            auth_mode: job.auth_mode,
+            yt_dlp: self.yt_dlp_probe.clone(),
+            browser: self.browser_probe.clone(),
+        };
+
+        let resolver = SourceResolver::for_discovery(job.discovery);
+        let outcome = resolver.resolve(&ctx).await;
+
+        // Persist browser sessions and record each extractor attempt.
+        for session in &outcome.browser_sessions {
+            self.job_store.record_browser_session(session).await.ok();
+        }
+        for attempt in &outcome.attempts {
+            self.record_event(PipelineEvent::new(
+                job.id,
+                "resolving",
+                attempt.extractor.clone(),
+                PipelineEventType::ExtractorAttempt,
+                serde_json::json!({
+                    "candidate_count": attempt.candidate_count,
+                    "error": attempt.error,
+                    "error_class": attempt.error_class.as_str(),
+                    "duration_ms": attempt.duration_ms,
+                    "warnings": attempt.warnings,
+                }),
+            ))
+            .await;
+        }
+
+        if outcome.candidates.is_empty() {
+            let detail = if outcome.chain.is_empty() {
+                "no extractor matched this source".to_string()
+            } else {
+                format!(
+                    "no media candidates from chain [{}]",
+                    outcome.chain.join(", ")
+                )
+            };
+            return Err(RkError::Source(detail));
+        }
+
+        let chain_label = outcome.chain_label();
         self.job_store
-            .replace_candidates(job.id, &candidates)
+            .set_resolved_extractor(job.id, &chain_label)
+            .await
+            .ok();
+        let winner = outcome.winner.clone().unwrap_or(chain_label);
+        self.record_candidate_summary(job.id, &winner, &outcome.candidates)
+            .await;
+        self.job_store
+            .replace_candidates(job.id, &outcome.candidates)
             .await?;
         self.update_status(job.id, JobStatus::CandidatesReady)
             .await?;
         Ok(())
     }
 
-    async fn resolve_browser_candidates(&self, job: JobRecord) -> Result<()> {
-        let Some(browser_probe) = &self.browser_probe else {
-            return Err(RkError::Browser(
-                "RK_BROWSER_PROBE_URL is required for browser discovery".to_string(),
-            ));
-        };
-        self.update_status(job.id, JobStatus::Resolving).await?;
-        let output_names = job
-            .outputs
+    /// Emit a `candidate_found` event summarizing what an extractor surfaced
+    /// (auditability: who extracted, which links, how scored).
+    async fn record_candidate_summary(
+        &self,
+        job_id: Uuid,
+        extractor: &str,
+        candidates: &[MediaCandidate],
+    ) {
+        let top = candidates
             .iter()
-            .map(|output| output.as_str().to_string())
+            .take(10)
+            .map(|c| {
+                serde_json::json!({
+                    "id": c.id,
+                    "kind": c.kind.as_str(),
+                    "url": c.url,
+                    "score": c.score,
+                    "quality": c.quality_label,
+                    "score_breakdown": c.score_breakdown_json,
+                })
+            })
             .collect::<Vec<_>>();
-        let candidates = browser_probe
-            .probe(
-                job.id,
-                &job.source_url,
-                &job.profile_id,
-                job.platform_hint,
-                &output_names,
-            )
-            .await?;
-
-        if candidates.is_empty() {
-            return Err(RkError::Source(
-                "browser probe did not find media candidates".to_string(),
-            ));
-        }
-
-        self.job_store
-            .replace_candidates(job.id, &candidates)
-            .await?;
-        self.update_status(job.id, JobStatus::CandidatesReady)
-            .await?;
-        Ok(())
+        self.record_event(PipelineEvent::new(
+            job_id,
+            "candidates_ready",
+            extractor,
+            PipelineEventType::CandidateFound,
+            serde_json::json!({ "count": candidates.len(), "top": top }),
+        ))
+        .await;
     }
 
     async fn process_selected_candidates(&self, job: JobRecord) -> Result<()> {
@@ -306,8 +424,12 @@ impl AppState {
             ));
         }
 
-        for candidate in &selected {
-            self.process_candidate(&job, candidate, &candidates).await?;
+        if should_build_image_slideshow(&job, &selected) {
+            self.process_image_slideshow(&job, &selected).await?;
+        } else {
+            for candidate in &selected {
+                self.process_candidate(&job, candidate, &candidates).await?;
+            }
         }
 
         let artifacts = self.job_store.list_artifacts(job.id).await?;
@@ -321,6 +443,59 @@ impl AppState {
                 )
             });
         self.mark_ready(job.id, media_url).await?;
+        Ok(())
+    }
+
+    async fn process_image_slideshow(
+        &self,
+        job: &JobRecord,
+        candidates: &[MediaCandidate],
+    ) -> Result<()> {
+        let mut image_candidates = candidates
+            .iter()
+            .filter(|candidate| candidate.kind == CandidateKind::Image)
+            .collect::<Vec<_>>();
+        image_candidates.sort_by_key(|candidate| image_candidate_order(candidate));
+        if image_candidates.is_empty() {
+            return Err(RkError::Source(
+                "image slideshow requires at least one image candidate".to_string(),
+            ));
+        }
+
+        let job_dir = self.paths.public_job_dir(job.id);
+        tokio::fs::create_dir_all(&job_dir).await?;
+        let temp_dir = self.paths.tmp_dir().join(job.id.to_string());
+        tokio::fs::create_dir_all(&temp_dir).await?;
+
+        self.update_status(job.id, JobStatus::Downloading).await?;
+        let downloader =
+            Downloader::new(self.config.download_timeout, self.config.max_download_bytes)?;
+        let mut image_paths = Vec::with_capacity(image_candidates.len());
+        for (index, candidate) in image_candidates.iter().enumerate() {
+            validate_candidate_url(&candidate.url)?;
+            let input_path = temp_dir.join(format!(
+                "slide-{index:04}.{}",
+                image_extension(candidate.content_type.as_deref(), &candidate.url)
+            ));
+            let headers = self.download_headers(job, candidate).await?;
+            downloader
+                .download_to_file_with_headers(&candidate.url, &input_path, headers)
+                .await?;
+            image_paths.push(input_path);
+        }
+
+        self.update_status(job.id, JobStatus::Remuxing).await?;
+        let list_path = temp_dir.join("slideshow.ffconcat");
+        let concat = concat_demuxer_file(&image_paths, 2.75)?;
+        tokio::fs::write(&list_path, concat).await?;
+        let output_path = job_dir.join("slideshow.mp4");
+        Transcoder::new(self.config.ffmpeg_path.clone())
+            .images_to_mp4(&list_path, &output_path, 1920, 1080)
+            .await?;
+        self.insert_artifact(job.id, OutputKind::Video, output_path, "video/mp4")
+            .await?;
+
+        tokio::fs::remove_dir_all(&temp_dir).await.ok();
         Ok(())
     }
 
@@ -480,22 +655,106 @@ impl AppState {
     }
 
     async fn update_status(&self, job_id: Uuid, status: JobStatus) -> Result<()> {
-        self.job_store.update_status(job_id, status).await
+        self.job_store.update_status(job_id, status).await?;
+        self.record_event(PipelineEvent::new(
+            job_id,
+            status.as_str(),
+            "worker",
+            PipelineEventType::StatusChange,
+            serde_json::json!({ "status": status.as_str() }),
+        ))
+        .await;
+        Ok(())
     }
 
     async fn mark_ready(&self, job_id: Uuid, media_url: String) -> Result<()> {
-        self.job_store.mark_ready(job_id, &media_url).await
+        self.job_store.mark_ready(job_id, &media_url).await?;
+        self.record_event(PipelineEvent::new(
+            job_id,
+            "ready",
+            "worker",
+            PipelineEventType::StatusChange,
+            serde_json::json!({ "status": "ready", "media_url": media_url }),
+        ))
+        .await;
+        Ok(())
     }
 
-    async fn mark_error(&self, job_id: Uuid, error: String) {
-        if let Err(store_error) = self.job_store.mark_error(job_id, &error).await {
+    async fn mark_error(&self, job_id: Uuid, error: String, class: ErrorClass) {
+        if let Err(store_error) = self.job_store.mark_error(job_id, &error, class).await {
             error!(%job_id, "failed to persist job error: {store_error}");
         }
+        self.record_event(PipelineEvent::new(
+            job_id,
+            "error",
+            "worker",
+            PipelineEventType::Error,
+            serde_json::json!({ "error": error, "error_class": class.as_str() }),
+        ))
+        .await;
+    }
+
+    /// Best-effort pipeline event recording: a logging failure must never fail
+    /// the job it is describing.
+    pub async fn record_event(&self, event: PipelineEvent) {
+        if let Err(error) = self.job_store.log_event(&event).await {
+            warn!(job_id = %event.job_id, "failed to record pipeline event: {error}");
+        }
+    }
+
+    pub async fn get_trace(&self, job_id: Uuid) -> Result<JobTrace> {
+        self.job_store.get_trace(job_id).await
     }
 }
 
 fn validate_candidate_url(url: &str) -> Result<()> {
     reflection_core::url_policy::parse_and_validate_url(url).map(|_| ())
+}
+
+fn should_build_image_slideshow(job: &JobRecord, selected: &[MediaCandidate]) -> bool {
+    job.outputs.contains(&OutputKind::Video)
+        && selected
+            .iter()
+            .any(|candidate| candidate.kind == CandidateKind::Image)
+        && selected
+            .iter()
+            .all(|candidate| candidate.kind == CandidateKind::Image)
+}
+
+fn image_candidate_order(candidate: &MediaCandidate) -> i64 {
+    candidate_metadata_number(candidate, "index")
+        .or_else(|| {
+            candidate
+                .quality_label
+                .as_deref()
+                .and_then(|label| label.rsplit('-').next())
+                .and_then(|value| value.parse::<i64>().ok())
+        })
+        .unwrap_or(candidate.score)
+}
+
+fn image_extension(content_type: Option<&str>, url: &str) -> &'static str {
+    let content_type = content_type.unwrap_or_default().to_ascii_lowercase();
+    if content_type.contains("png") || has_url_extension(url, ".png") {
+        "png"
+    } else if content_type.contains("webp") || has_url_extension(url, ".webp") {
+        "webp"
+    } else {
+        "jpg"
+    }
+}
+
+fn has_url_extension(url: &str, extension: &str) -> bool {
+    url::Url::parse(url)
+        .ok()
+        .and_then(|url| {
+            Path::new(url.path())
+                .extension()
+                .and_then(|value| value.to_str())
+                .map(|value| format!(".{}", value.to_ascii_lowercase()))
+        })
+        .as_deref()
+        == Some(extension)
 }
 
 fn best_companion_audio<'a>(

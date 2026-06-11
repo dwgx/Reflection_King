@@ -175,6 +175,13 @@ function App() {
     () => bestCandidate(candidates, selectedJob),
     [candidates, selectedJob],
   );
+  const defaultCandidateIds = useMemo(
+    () =>
+      defaultCandidatesForJob(candidates, selectedJob, defaultCandidate).map(
+        (candidate) => candidate.id,
+      ),
+    [candidates, selectedJob, defaultCandidate],
+  );
 
   const pagedJobs = useMemo(
     () => paginate(jobs, jobPage, jobPageSize),
@@ -341,11 +348,7 @@ function App() {
 
   async function selectCandidates() {
     if (!selectedJob) return;
-    const candidateIds = selectedCandidates.size
-      ? Array.from(selectedCandidates)
-      : defaultCandidate
-        ? [defaultCandidate.id]
-        : [];
+    const candidateIds = selectedCandidates.size ? Array.from(selectedCandidates) : defaultCandidateIds;
     if (candidateIds.length === 0) return;
     setBusy(true);
     setMessage("正在开始转码资源...");
@@ -565,10 +568,14 @@ function App() {
               action={
                 <Button
                   onClick={selectCandidates}
-                  disabled={!selectedJob || (!selectedCandidates.size && !defaultCandidate) || busy}
+                  disabled={!selectedJob || (!selectedCandidates.size && defaultCandidateIds.length === 0) || busy}
                 >
                   {busy ? <Loader2 className="animate-spin" size={16} /> : <Play size={16} />}
-                  {selectedCandidates.size ? "转换选中资源" : "转换推荐资源"}
+                  {selectedCandidates.size
+                    ? "转换选中资源"
+                    : defaultCandidateIds.length > 1
+                      ? `转换推荐资源 (${defaultCandidateIds.length})`
+                      : "转换推荐资源"}
                 </Button>
               }
             >
@@ -585,7 +592,7 @@ function App() {
                     <CandidateRow
                       key={candidate.id}
                       candidate={candidate}
-                      recommended={!selectedCandidates.size && candidate.id === defaultCandidate?.id}
+                      recommended={!selectedCandidates.size && defaultCandidateIds.includes(candidate.id)}
                       index={pagedCandidates.start + index}
                       selected={selectedCandidates.has(candidate.id)}
                       onToggle={() => toggleCandidate(candidate.id)}
@@ -975,6 +982,22 @@ function bestCandidate(candidates: Candidate[], job: JobView | null): Candidate 
   return candidateDisplayList(candidates, job, false)[0] ?? null;
 }
 
+function defaultCandidatesForJob(
+  candidates: Candidate[],
+  job: JobView | null,
+  fallback: Candidate | null,
+): Candidate[] {
+  const outputs = new Set(job?.outputs ?? ["audio"]);
+  if (outputs.has("video")) {
+    const mediaCandidates = candidates.filter((candidate) => candidate.kind === "video" || candidate.kind === "manifest");
+    if (!mediaCandidates.length) {
+      const imageCandidates = candidates.filter((candidate) => candidate.kind === "image");
+      if (imageCandidates.length) return imageCandidates;
+    }
+  }
+  return fallback ? [fallback] : [];
+}
+
 function candidateRank(candidate: Candidate, job: JobView | null): number {
   let rank = candidate.score;
   const outputs = new Set(job?.outputs ?? ["audio"]);
@@ -988,6 +1011,7 @@ function candidateRank(candidate: Candidate, job: JobView | null): number {
 
   if (outputs.has("video")) {
     if (candidate.kind === "video" || candidate.kind === "manifest") rank += 1000;
+    if (candidate.kind === "image") rank += 700;
     if (candidate.kind === "audio") rank += 50;
   }
 
@@ -1002,7 +1026,7 @@ function preferredCandidateKinds(job: JobView | null): Set<string> {
     return new Set(["audio", "manifest", "video"]);
   }
   if (outputs.has("video")) {
-    return new Set(["video", "manifest", "audio"]);
+    return new Set(["video", "manifest", "image", "audio"]);
   }
   if (outputs.has("image")) {
     return new Set(["image"]);

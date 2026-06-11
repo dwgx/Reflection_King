@@ -217,6 +217,14 @@ fn format_to_candidate(
             "has_http_headers": format.http_headers.is_some(),
         }),
         created_at: OffsetDateTime::now_utc(),
+        score_breakdown_json: score_breakdown(kind, format, outputs),
+        selected: false,
+        selection_reason: None,
+        validation_status: None,
+        resolved_ip: None,
+        final_url_after_redirects: None,
+        expires_at: None,
+        discovered_by_event_id: None,
     }))
 }
 
@@ -292,6 +300,65 @@ fn score_format(kind: CandidateKind, format: &YtDlpFormat, outputs: &[OutputKind
     }
 
     score
+}
+
+/// Auditable breakdown of how `score_format` arrived at the candidate score
+/// (stored in `score_breakdown_json`: "how we calculated").
+fn score_breakdown(
+    kind: CandidateKind,
+    format: &YtDlpFormat,
+    outputs: &[OutputKind],
+) -> serde_json::Value {
+    let base = match kind {
+        CandidateKind::Audio => 70,
+        CandidateKind::Video => 80,
+        CandidateKind::Manifest => 75,
+        CandidateKind::Image => 40,
+        CandidateKind::Html | CandidateKind::Unknown => 10,
+    };
+    let height_bonus = format.height.map(|h| (h / 36).clamp(0, 30)).unwrap_or(0);
+    let abr_bonus = format
+        .abr
+        .map(|abr| (abr / 16.0).round() as i64)
+        .unwrap_or(0);
+    let tbr_bonus = format
+        .tbr
+        .map(|tbr| (tbr / 250.0).round() as i64)
+        .unwrap_or(0);
+    let filesize_bonus = if format.filesize.or(format.filesize_approx).is_some() {
+        4
+    } else {
+        0
+    };
+    let manifest_bonus = if protocol_is_manifest(format.protocol.as_deref()) {
+        8
+    } else {
+        0
+    };
+    let audio_only = outputs.contains(&OutputKind::Audio) && !outputs.contains(&OutputKind::Video);
+    let output_preference = if audio_only {
+        match kind {
+            CandidateKind::Audio => 40,
+            CandidateKind::Video => -30,
+            CandidateKind::Manifest => 10,
+            _ => 0,
+        }
+    } else {
+        0
+    };
+
+    serde_json::json!({
+        "engine": "yt_dlp",
+        "base_by_kind": base,
+        "height_bonus": height_bonus,
+        "abr_bonus": abr_bonus,
+        "tbr_bonus": tbr_bonus,
+        "filesize_bonus": filesize_bonus,
+        "manifest_bonus": manifest_bonus,
+        "output_preference": output_preference,
+        "audio_only_job": audio_only,
+        "total": score_format(kind, format, outputs),
+    })
 }
 
 fn quality_label(format: &YtDlpFormat) -> Option<String> {

@@ -72,6 +72,55 @@ impl Transcoder {
             .await
     }
 
+    pub async fn images_to_mp4(
+        &self,
+        concat_file: &Path,
+        output: &Path,
+        width: u32,
+        height: u32,
+    ) -> Result<()> {
+        let mut command = Command::new(&self.ffmpeg_path);
+        let video_filter = format!(
+            "fps=30,scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p"
+        );
+        let output = command
+            .arg("-y")
+            .arg("-hide_banner")
+            .arg("-loglevel")
+            .arg("error")
+            .arg("-f")
+            .arg("concat")
+            .arg("-safe")
+            .arg("0")
+            .arg("-i")
+            .arg(concat_file)
+            .arg("-vf")
+            .arg(video_filter)
+            .arg("-c:v")
+            .arg("libx264")
+            .arg("-preset")
+            .arg("veryfast")
+            .arg("-crf")
+            .arg("23")
+            .arg("-movflags")
+            .arg("+faststart")
+            .arg("-an")
+            .arg(output)
+            .output()
+            .await?;
+
+        if output.status.success() {
+            return Ok(());
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(RkError::Transcode(if stderr.is_empty() {
+            "ffmpeg exited with failure".to_string()
+        } else {
+            stderr
+        }))
+    }
+
     async fn audio_input_to_mp3(
         &self,
         input: impl AsRef<std::ffi::OsStr>,
@@ -282,4 +331,52 @@ fn header_value(headers: &HeaderMap, name: reqwest::header::HeaderName) -> Optio
         .get(name)
         .and_then(|value| value.to_str().ok())
         .map(ToString::to_string)
+}
+
+pub fn concat_demuxer_file(images: &[PathBuf], seconds_per_image: f32) -> Result<String> {
+    let Some(last) = images.last() else {
+        return Err(RkError::Transcode(
+            "image slideshow requires at least one image".to_string(),
+        ));
+    };
+
+    let mut lines = String::new();
+    for image in images {
+        lines.push_str("file '");
+        lines.push_str(&escape_concat_path(image));
+        lines.push_str("'\n");
+        lines.push_str(&format!("duration {seconds_per_image:.3}\n"));
+    }
+    lines.push_str("file '");
+    lines.push_str(&escape_concat_path(last));
+    lines.push_str("'\n");
+    Ok(lines)
+}
+
+fn escape_concat_path(path: &Path) -> String {
+    path.to_string_lossy()
+        .replace('\\', "/")
+        .replace('\'', "'\\''")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn concat_file_repeats_last_image_for_duration() {
+        let images = vec![PathBuf::from("C:/tmp/a.jpg"), PathBuf::from("C:/tmp/b.png")];
+        let list = concat_demuxer_file(&images, 2.5).unwrap();
+
+        assert!(list.contains("file 'C:/tmp/a.jpg'\nduration 2.500"));
+        assert!(list.ends_with("file 'C:/tmp/b.png'\n"));
+        assert_eq!(list.matches("file '").count(), 3);
+    }
+
+    #[test]
+    fn concat_file_rejects_empty_slideshow() {
+        let error = concat_demuxer_file(&[], 2.5).unwrap_err().to_string();
+
+        assert!(error.contains("requires at least one image"));
+    }
 }

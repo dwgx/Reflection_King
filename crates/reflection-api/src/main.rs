@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use axum::{
     body::Body,
-    extract::{Path, Query, State},
+    extract::{ConnectInfo, Path, Query, State},
     http::{header, HeaderMap, HeaderValue, StatusCode},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
@@ -43,9 +43,12 @@ async fn main() -> anyhow::Result<()> {
     let listener = TcpListener::bind(bind_address).await?;
     info!("Reflection King API listening on http://{bind_address}");
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
 
     Ok(())
 }
@@ -61,6 +64,7 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/jobs/{id}/candidates", get(list_candidates))
         .route("/api/jobs/{id}/select-candidates", post(select_candidates))
         .route("/api/jobs/{id}/artifacts", get(list_artifacts))
+        .route("/api/jobs/{id}/trace", get(get_trace))
         .route("/media/{id}/{filename}", get(get_media))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
@@ -148,6 +152,7 @@ async fn list_jobs(
 
 async fn create_job(
     State(state): State<Arc<AppState>>,
+    ConnectInfo(remote_addr): ConnectInfo<std::net::SocketAddr>,
     headers: HeaderMap,
     Json(request): Json<CreateJobRequest>,
 ) -> Result<(StatusCode, Json<JobView>), ApiError> {
@@ -157,6 +162,13 @@ async fn create_job(
     if source_url.is_empty() {
         return Err(RkError::BadRequest("missing url".to_string()).into());
     }
+
+    // Requester provenance ("who / what IP / what browser"): prefer a proxy's
+    // forwarded client IP, fall back to the socket peer address.
+    let requester_ip = header_str(&headers, "x-forwarded-for")
+        .and_then(|value| value.split(',').next().map(|ip| ip.trim().to_string()))
+        .unwrap_or_else(|| remote_addr.ip().to_string());
+    let requester_user_agent = header_str(&headers, header::USER_AGENT.as_str());
 
     let bitrate = normalize_bitrate(request.bitrate.as_deref());
     let discovery = request.discovery.unwrap_or(DiscoveryMode::Direct);
@@ -177,7 +189,8 @@ async fn create_job(
             profile_id,
             auth_mode,
         },
-    );
+    )
+    .with_requester(Some(requester_ip), requester_user_agent, None);
     let view = state.insert_and_enqueue(record).await?;
 
     Ok((StatusCode::ACCEPTED, Json(view)))
@@ -216,6 +229,19 @@ async fn list_artifacts(
     Path(id): Path<Uuid>,
 ) -> Result<Json<Vec<reflection_core::models::ArtifactView>>, ApiError> {
     Ok(Json(state.list_artifacts(id).await?))
+}
+
+/// Full observability timeline for a job: every step, outbound request, browser
+/// session, ffprobe, and ffmpeg run.
+async fn get_trace(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<reflection_core::observability::JobTrace>, ApiError> {
+    state
+        .get_job(id)
+        .await
+        .and_then(|job| job.ok_or_else(|| RkError::NotFound(format!("job {id}"))))?;
+    Ok(Json(state.get_trace(id).await?))
 }
 
 async fn get_media(
@@ -334,6 +360,13 @@ impl IntoResponse for ApiError {
 
         (status, body).into_response()
     }
+}
+
+fn header_str(headers: &HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.to_string())
 }
 
 fn infer_platform(source_url: &str) -> PlatformHint {

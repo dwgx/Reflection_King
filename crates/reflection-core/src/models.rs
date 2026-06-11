@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+use crate::observability::ErrorClass;
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum JobStatus {
@@ -49,6 +51,17 @@ pub struct JobView {
     pub outputs: Vec<OutputKind>,
     pub profile_id: String,
     pub auth_mode: AuthMode,
+    pub trace_url: String,
+    pub requester_ip: Option<String>,
+    pub requester_user_agent: Option<String>,
+    pub requester_label: Option<String>,
+    pub resolved_extractor: Option<String>,
+    pub error_class: ErrorClass,
+    pub attempt_count: i64,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub started_at: Option<OffsetDateTime>,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub completed_at: Option<OffsetDateTime>,
 }
 
 #[derive(Debug, Clone)]
@@ -68,6 +81,17 @@ pub struct JobRecord {
     pub profile_id: String,
     pub auth_mode: AuthMode,
     pub selected_candidate_ids: Vec<Uuid>,
+    /// Who created the job (observability: "who / what IP / what browser").
+    pub requester_ip: Option<String>,
+    pub requester_user_agent: Option<String>,
+    pub requester_label: Option<String>,
+    /// The extractor chain that actually produced the result, e.g.
+    /// "street_voice>browser_probe".
+    pub resolved_extractor: Option<String>,
+    pub error_class: ErrorClass,
+    pub attempt_count: i64,
+    pub started_at: Option<OffsetDateTime>,
+    pub completed_at: Option<OffsetDateTime>,
 }
 
 #[derive(Debug, Clone)]
@@ -125,7 +149,28 @@ impl JobRecord {
             profile_id: options.profile_id,
             auth_mode: options.auth_mode,
             selected_candidate_ids: Vec::new(),
+            requester_ip: None,
+            requester_user_agent: None,
+            requester_label: None,
+            resolved_extractor: None,
+            error_class: ErrorClass::None,
+            attempt_count: 0,
+            started_at: None,
+            completed_at: None,
         }
+    }
+
+    /// Attach requester provenance captured from the inbound HTTP request.
+    pub fn with_requester(
+        mut self,
+        ip: Option<String>,
+        user_agent: Option<String>,
+        label: Option<String>,
+    ) -> Self {
+        self.requester_ip = ip;
+        self.requester_user_agent = user_agent;
+        self.requester_label = label;
+        self
     }
 
     pub fn update_status(&mut self, status: JobStatus) {
@@ -201,6 +246,15 @@ impl From<JobRecord> for JobView {
             outputs: value.outputs,
             profile_id: value.profile_id,
             auth_mode: value.auth_mode,
+            trace_url: format!("/api/jobs/{}/trace", value.id),
+            requester_ip: value.requester_ip,
+            requester_user_agent: value.requester_user_agent,
+            requester_label: value.requester_label,
+            resolved_extractor: value.resolved_extractor,
+            error_class: value.error_class,
+            attempt_count: value.attempt_count,
+            started_at: value.started_at,
+            completed_at: value.completed_at,
         }
     }
 }
@@ -369,6 +423,23 @@ pub struct MediaCandidate {
     pub metadata_json: serde_json::Value,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
+    /// Per-component breakdown of how `score` was computed (auditability:
+    /// "how we calculated"). Empty object when not supplied by the extractor.
+    #[serde(default)]
+    pub score_breakdown_json: serde_json::Value,
+    /// Whether this candidate was selected for capture.
+    #[serde(default)]
+    pub selected: bool,
+    pub selection_reason: Option<String>,
+    /// Result of the pre-capture URL policy re-check ("passed" / "blocked: ...").
+    pub validation_status: Option<String>,
+    pub resolved_ip: Option<String>,
+    pub final_url_after_redirects: Option<String>,
+    /// Expiry parsed from a signed media URL, if any.
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    pub expires_at: Option<OffsetDateTime>,
+    /// The pipeline event that first surfaced this candidate.
+    pub discovered_by_event_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

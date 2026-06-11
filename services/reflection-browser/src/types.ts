@@ -34,6 +34,9 @@ export interface ProbeResponse {
   warnings: string[];
   eventCount: number;
   timedOut: boolean;
+  userAgent?: string;
+  playbackTriggered?: boolean;
+  consoleErrors?: string[];
 }
 
 export interface HeadersForUrlRequest {
