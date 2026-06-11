@@ -12,7 +12,8 @@ use axum::{
 };
 use reflection_core::{
     models::{
-        normalize_bitrate, normalize_outputs, normalize_profile_id, AuthMode, CreateJobRequest,
+        normalize_bitrate, normalize_outputs, normalize_profile_id, ApiKeyRecord, ApiKeyRole,
+        ApiKeyView, AuthMode, CreateJobRequest, CreateUserKeyRequest, CreatedUserKeyResponse,
         DiscoveryMode, JobCreateOptions, JobRecord, JobView, PlatformHint, SelectCandidatesRequest,
     },
     AppConfig, RkError,
@@ -65,6 +66,19 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/jobs/{id}/select-candidates", post(select_candidates))
         .route("/api/jobs/{id}/artifacts", get(list_artifacts))
         .route("/api/jobs/{id}/trace", get(get_trace))
+        .route(
+            "/api/admin/user-keys",
+            get(list_user_keys).post(create_user_key),
+        )
+        .route("/api/admin/user-keys/{id}/revoke", post(revoke_user_key))
+        .route(
+            "/api/admin/browser-profiles/{profile_id}/cookies/import",
+            post(import_profile_cookies),
+        )
+        .route(
+            "/api/admin/browser-profiles/{profile_id}/login-session",
+            post(start_login_session),
+        )
         .route("/media/{id}/{filename}", get(get_media))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
@@ -113,13 +127,15 @@ async fn capabilities(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    authorize(&state, &headers)?;
+    let principal = authorize(&state, &headers).await?;
+    let allow_browser_probe = principal.allow_browser_probe && state.browser_probe_configured();
+    let allow_ytdlp = principal.allow_ytdlp && state.yt_dlp_configured();
 
     Ok(Json(serde_json::json!({
         "service": "reflection-king",
         "version": env!("CARGO_PKG_VERSION"),
-        "browser_probe_configured": state.browser_probe_configured(),
-        "yt_dlp_configured": state.yt_dlp_configured(),
+        "browser_probe_configured": allow_browser_probe,
+        "yt_dlp_configured": allow_ytdlp,
         "ffmpeg_path": state.config.ffmpeg_path.display().to_string(),
         "yt_dlp_path": state.config.yt_dlp_path.as_ref().map(|path| path.display().to_string()),
         "public_base_url": state.config.public_base_url,
@@ -129,9 +145,15 @@ async fn capabilities(
         "yt_dlp_timeout_seconds": state.config.yt_dlp_timeout.as_secs(),
         "yt_dlp_max_json_bytes": state.config.yt_dlp_max_json_bytes,
         "download_timeout_seconds": state.config.download_timeout.as_secs(),
-        "supported_discovery": ["direct", "external", "browser", "auto"],
+        "supported_discovery": supported_discovery_modes(&principal),
         "supported_platform_hints": ["auto", "bilibili", "youtube", "soundcloud"],
         "supported_outputs": ["audio", "video", "image", "page_html"],
+        "auth": {
+            "role": principal.role.as_str(),
+            "label": principal.label,
+            "allow_browser_probe": principal.allow_browser_probe,
+            "allow_ytdlp": principal.allow_ytdlp,
+        },
     })))
 }
 
@@ -145,9 +167,15 @@ async fn list_jobs(
     headers: HeaderMap,
     Query(query): Query<ListJobsQuery>,
 ) -> Result<Json<Vec<JobView>>, ApiError> {
-    authorize(&state, &headers)?;
+    let principal = authorize(&state, &headers).await?;
     let limit = query.limit.unwrap_or(50).clamp(1, 200);
-    Ok(Json(state.list_jobs(limit).await?))
+    if principal.role == ApiKeyRole::Admin {
+        Ok(Json(state.list_jobs(limit).await?))
+    } else if let Some(key_id) = principal.key_id {
+        Ok(Json(state.list_jobs_for_key(key_id, limit).await?))
+    } else {
+        Err(RkError::Unauthorized.into())
+    }
 }
 
 async fn create_job(
@@ -156,7 +184,7 @@ async fn create_job(
     headers: HeaderMap,
     Json(request): Json<CreateJobRequest>,
 ) -> Result<(StatusCode, Json<JobView>), ApiError> {
-    authorize(&state, &headers)?;
+    let principal = authorize(&state, &headers).await?;
 
     let source_url = request.url.trim();
     if source_url.is_empty() {
@@ -171,7 +199,8 @@ async fn create_job(
     let requester_user_agent = header_str(&headers, header::USER_AGENT.as_str());
 
     let bitrate = normalize_bitrate(request.bitrate.as_deref());
-    let discovery = request.discovery.unwrap_or(DiscoveryMode::Direct);
+    let requested_discovery = request.discovery.unwrap_or(DiscoveryMode::Direct);
+    let discovery = authorized_discovery(requested_discovery, &principal)?;
     let platform_hint = request
         .platform_hint
         .unwrap_or_else(|| infer_platform(source_url));
@@ -190,7 +219,12 @@ async fn create_job(
             auth_mode,
         },
     )
-    .with_requester(Some(requester_ip), requester_user_agent, None);
+    .with_requester(
+        Some(requester_ip),
+        requester_user_agent,
+        Some(principal.label.clone()),
+        principal.key_id,
+    );
     let view = state.insert_and_enqueue(record).await?;
 
     Ok((StatusCode::ACCEPTED, Json(view)))
@@ -198,8 +232,11 @@ async fn create_job(
 
 async fn get_job(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> Result<Json<JobView>, ApiError> {
+    let principal = authorize(&state, &headers).await?;
+    ensure_job_access(&state, &principal, id).await?;
     let job = state
         .get_job(id)
         .await
@@ -209,16 +246,22 @@ async fn get_job(
 
 async fn list_candidates(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Vec<reflection_core::models::MediaCandidate>>, ApiError> {
+    let principal = authorize(&state, &headers).await?;
+    ensure_job_access(&state, &principal, id).await?;
     Ok(Json(state.list_candidates(id).await?))
 }
 
 async fn select_candidates(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
     Json(request): Json<SelectCandidatesRequest>,
 ) -> Result<Json<JobView>, ApiError> {
+    let principal = authorize(&state, &headers).await?;
+    ensure_job_access(&state, &principal, id).await?;
     Ok(Json(
         state.select_candidates(id, request.candidate_ids).await?,
     ))
@@ -226,8 +269,11 @@ async fn select_candidates(
 
 async fn list_artifacts(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Vec<reflection_core::models::ArtifactView>>, ApiError> {
+    let principal = authorize(&state, &headers).await?;
+    ensure_job_access(&state, &principal, id).await?;
     Ok(Json(state.list_artifacts(id).await?))
 }
 
@@ -235,13 +281,94 @@ async fn list_artifacts(
 /// session, ffprobe, and ffmpeg run.
 async fn get_trace(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> Result<Json<reflection_core::observability::JobTrace>, ApiError> {
+    let principal = authorize(&state, &headers).await?;
+    ensure_job_access(&state, &principal, id).await?;
     state
         .get_job(id)
         .await
         .and_then(|job| job.ok_or_else(|| RkError::NotFound(format!("job {id}"))))?;
     Ok(Json(state.get_trace(id).await?))
+}
+
+async fn list_user_keys(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<ApiKeyView>>, ApiError> {
+    let principal = authorize(&state, &headers).await?;
+    ensure_admin(&principal)?;
+    Ok(Json(state.list_api_keys().await?))
+}
+
+async fn create_user_key(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<CreateUserKeyRequest>,
+) -> Result<(StatusCode, Json<CreatedUserKeyResponse>), ApiError> {
+    let principal = authorize(&state, &headers).await?;
+    ensure_admin(&principal)?;
+    Ok((
+        StatusCode::CREATED,
+        Json(state.create_user_key(request).await?),
+    ))
+}
+
+async fn revoke_user_key(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, ApiError> {
+    let principal = authorize(&state, &headers).await?;
+    ensure_admin(&principal)?;
+    if state.revoke_api_key(id).await? {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(RkError::NotFound(format!("api key {id}")).into())
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ImportCookiesRequest {
+    cookies: Vec<serde_json::Value>,
+}
+
+async fn import_profile_cookies(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(profile_id): Path<String>,
+    Json(request): Json<ImportCookiesRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let principal = authorize(&state, &headers).await?;
+    ensure_admin(&principal)?;
+    let profile_id = normalize_profile_id(Some(profile_id));
+    Ok(Json(
+        state
+            .import_browser_profile_cookies(&profile_id, request.cookies)
+            .await?,
+    ))
+}
+
+#[derive(Debug, Deserialize)]
+struct LoginSessionRequest {
+    headed: Option<bool>,
+}
+
+async fn start_login_session(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(profile_id): Path<String>,
+    Json(request): Json<LoginSessionRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let principal = authorize(&state, &headers).await?;
+    ensure_admin(&principal)?;
+    let profile_id = normalize_profile_id(Some(profile_id));
+    Ok(Json(
+        state
+            .start_browser_login_session(&profile_id, request.headed.unwrap_or(true))
+            .await?,
+    ))
 }
 
 async fn get_media(
@@ -295,20 +422,122 @@ async fn get_media(
         .map_err(|error| RkError::Source(format!("failed to build response: {error}")))?)
 }
 
-fn authorize(state: &AppState, headers: &HeaderMap) -> Result<(), RkError> {
+#[derive(Debug, Clone)]
+struct AuthPrincipal {
+    key_id: Option<Uuid>,
+    label: String,
+    role: ApiKeyRole,
+    allow_browser_probe: bool,
+    allow_ytdlp: bool,
+}
+
+async fn authorize(state: &AppState, headers: &HeaderMap) -> Result<AuthPrincipal, RkError> {
     let Some(expected) = &state.config.api_key else {
-        return Ok(());
+        return Ok(AuthPrincipal {
+            label: "未配置管理密钥".to_string(),
+            key_id: None,
+            role: ApiKeyRole::Admin,
+            allow_browser_probe: true,
+            allow_ytdlp: true,
+        });
     };
 
     let provided = headers
         .get("x-api-key")
-        .and_then(|value| value.to_str().ok());
+        .and_then(|value| value.to_str().ok())
+        .or_else(|| {
+            headers
+                .get(header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.strip_prefix("Bearer "))
+        });
 
     if provided == Some(expected.as_str()) {
+        return Ok(AuthPrincipal {
+            label: "管理密钥".to_string(),
+            key_id: None,
+            role: ApiKeyRole::Admin,
+            allow_browser_probe: true,
+            allow_ytdlp: true,
+        });
+    }
+
+    if let Some(provided) = provided {
+        if let Some(record) = state.find_api_key(provided).await? {
+            return Ok(principal_from_record(record));
+        }
+    }
+
+    Err(RkError::Unauthorized)
+}
+
+fn principal_from_record(record: ApiKeyRecord) -> AuthPrincipal {
+    AuthPrincipal {
+        key_id: Some(record.id),
+        label: record.label,
+        role: record.role,
+        allow_browser_probe: record.role == ApiKeyRole::Admin || record.allow_browser_probe,
+        allow_ytdlp: record.role == ApiKeyRole::Admin || record.allow_ytdlp,
+    }
+}
+
+fn ensure_admin(principal: &AuthPrincipal) -> Result<(), RkError> {
+    if principal.role == ApiKeyRole::Admin {
         Ok(())
     } else {
         Err(RkError::Unauthorized)
     }
+}
+
+async fn ensure_job_access(
+    state: &AppState,
+    principal: &AuthPrincipal,
+    id: Uuid,
+) -> Result<(), RkError> {
+    if principal.role == ApiKeyRole::Admin {
+        return Ok(());
+    }
+    let Some(key_id) = principal.key_id else {
+        return Err(RkError::Unauthorized);
+    };
+    if state.job_belongs_to_key(id, key_id).await? {
+        Ok(())
+    } else {
+        Err(RkError::NotFound(format!("job {id}")))
+    }
+}
+
+fn authorized_discovery(
+    requested: DiscoveryMode,
+    principal: &AuthPrincipal,
+) -> Result<DiscoveryMode, RkError> {
+    match requested {
+        DiscoveryMode::Direct => Ok(DiscoveryMode::Direct),
+        DiscoveryMode::External if principal.allow_ytdlp => Ok(DiscoveryMode::External),
+        DiscoveryMode::Browser if principal.allow_browser_probe => Ok(DiscoveryMode::Browser),
+        DiscoveryMode::Auto if principal.allow_browser_probe && principal.allow_ytdlp => {
+            Ok(DiscoveryMode::Auto)
+        }
+        DiscoveryMode::Auto if principal.allow_browser_probe => Ok(DiscoveryMode::Browser),
+        DiscoveryMode::Auto if principal.allow_ytdlp => Ok(DiscoveryMode::External),
+        DiscoveryMode::Auto => Ok(DiscoveryMode::Direct),
+        DiscoveryMode::External => Err(RkError::Unauthorized),
+        DiscoveryMode::Browser => Err(RkError::Unauthorized),
+    }
+}
+
+fn supported_discovery_modes(principal: &AuthPrincipal) -> Vec<&'static str> {
+    let mut modes = vec!["direct"];
+    if principal.allow_ytdlp {
+        modes.push("external");
+    }
+    if principal.allow_browser_probe {
+        modes.push("browser");
+    }
+    if principal.allow_ytdlp || principal.allow_browser_probe {
+        modes.push("auto");
+    }
+    modes
 }
 
 #[derive(Debug)]

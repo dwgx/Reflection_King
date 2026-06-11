@@ -31,6 +31,85 @@ pub struct CreateJobRequest {
     pub auth_mode: Option<AuthMode>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ApiKeyRole {
+    User,
+    Admin,
+}
+
+impl ApiKeyRole {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Admin => "admin",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "user" => Some(Self::User),
+            "admin" => Some(Self::Admin),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ApiKeyRecord {
+    pub id: Uuid,
+    pub label: String,
+    pub key_hash: String,
+    pub key_prefix: String,
+    pub role: ApiKeyRole,
+    pub allow_browser_probe: bool,
+    pub allow_ytdlp: bool,
+    pub created_at: OffsetDateTime,
+    pub revoked_at: Option<OffsetDateTime>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ApiKeyView {
+    pub id: Uuid,
+    pub label: String,
+    pub key_prefix: String,
+    pub role: ApiKeyRole,
+    pub allow_browser_probe: bool,
+    pub allow_ytdlp: bool,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub revoked_at: Option<OffsetDateTime>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CreateUserKeyRequest {
+    pub label: Option<String>,
+    pub allow_browser_probe: bool,
+    pub allow_ytdlp: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CreatedUserKeyResponse {
+    pub key: String,
+    pub record: ApiKeyView,
+}
+
+impl From<ApiKeyRecord> for ApiKeyView {
+    fn from(value: ApiKeyRecord) -> Self {
+        Self {
+            id: value.id,
+            label: value.label,
+            key_prefix: value.key_prefix,
+            role: value.role,
+            allow_browser_probe: value.allow_browser_probe,
+            allow_ytdlp: value.allow_ytdlp,
+            created_at: value.created_at,
+            revoked_at: value.revoked_at,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobView {
     pub id: Uuid,
@@ -55,6 +134,7 @@ pub struct JobView {
     pub requester_ip: Option<String>,
     pub requester_user_agent: Option<String>,
     pub requester_label: Option<String>,
+    pub requester_key_id: Option<Uuid>,
     pub resolved_extractor: Option<String>,
     pub error_class: ErrorClass,
     pub attempt_count: i64,
@@ -85,6 +165,7 @@ pub struct JobRecord {
     pub requester_ip: Option<String>,
     pub requester_user_agent: Option<String>,
     pub requester_label: Option<String>,
+    pub requester_key_id: Option<Uuid>,
     /// The extractor chain that actually produced the result, e.g.
     /// "street_voice>browser_probe".
     pub resolved_extractor: Option<String>,
@@ -152,6 +233,7 @@ impl JobRecord {
             requester_ip: None,
             requester_user_agent: None,
             requester_label: None,
+            requester_key_id: None,
             resolved_extractor: None,
             error_class: ErrorClass::None,
             attempt_count: 0,
@@ -166,10 +248,12 @@ impl JobRecord {
         ip: Option<String>,
         user_agent: Option<String>,
         label: Option<String>,
+        key_id: Option<Uuid>,
     ) -> Self {
         self.requester_ip = ip;
         self.requester_user_agent = user_agent;
         self.requester_label = label;
+        self.requester_key_id = key_id;
         self
     }
 
@@ -250,6 +334,7 @@ impl From<JobRecord> for JobView {
             requester_ip: value.requester_ip,
             requester_user_agent: value.requester_user_agent,
             requester_label: value.requester_label,
+            requester_key_id: value.requester_key_id,
             resolved_extractor: value.resolved_extractor,
             error_class: value.error_class,
             attempt_count: value.attempt_count,

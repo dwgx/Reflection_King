@@ -7,7 +7,8 @@ use reflection_core::{
     extractors::{ExtractContext, SourceResolver},
     job_store::JobStore,
     models::{
-        ArtifactView, CandidateKind, DiscoveryMode, JobRecord, JobStatus, JobView, MediaCandidate,
+        ApiKeyRecord, ApiKeyView, ArtifactView, CandidateKind, CreateUserKeyRequest,
+        CreatedUserKeyResponse, DiscoveryMode, JobRecord, JobStatus, JobView, MediaCandidate,
         OutputKind,
     },
     observability::{ErrorClass, JobTrace, PipelineEvent, PipelineEventType},
@@ -137,6 +138,42 @@ impl AppState {
             .map(|jobs| jobs.into_iter().map(JobView::from).collect())
     }
 
+    pub async fn list_jobs_for_key(
+        &self,
+        requester_key_id: Uuid,
+        limit: usize,
+    ) -> Result<Vec<JobView>> {
+        self.job_store
+            .list_recent_for_key(requester_key_id, limit)
+            .await
+            .map(|jobs| jobs.into_iter().map(JobView::from).collect())
+    }
+
+    pub async fn job_belongs_to_key(&self, id: Uuid, requester_key_id: Uuid) -> Result<bool> {
+        self.job_store
+            .job_belongs_to_key(id, requester_key_id)
+            .await
+    }
+
+    pub async fn find_api_key(&self, key: &str) -> Result<Option<ApiKeyRecord>> {
+        self.job_store.find_api_key(key).await
+    }
+
+    pub async fn list_api_keys(&self) -> Result<Vec<ApiKeyView>> {
+        self.job_store.list_api_keys().await
+    }
+
+    pub async fn create_user_key(
+        &self,
+        request: CreateUserKeyRequest,
+    ) -> Result<CreatedUserKeyResponse> {
+        self.job_store.create_user_key(request).await
+    }
+
+    pub async fn revoke_api_key(&self, id: Uuid) -> Result<bool> {
+        self.job_store.revoke_api_key(id).await
+    }
+
     pub async fn list_candidates(&self, id: Uuid) -> Result<Vec<MediaCandidate>> {
         self.job_store.list_candidates(id).await
     }
@@ -147,6 +184,32 @@ impl AppState {
 
     pub fn yt_dlp_configured(&self) -> bool {
         self.yt_dlp_probe.is_some()
+    }
+
+    pub async fn import_browser_profile_cookies(
+        &self,
+        profile_id: &str,
+        cookies: Vec<serde_json::Value>,
+    ) -> Result<serde_json::Value> {
+        let Some(browser_probe) = &self.browser_probe else {
+            return Err(RkError::Browser(
+                "RK_BROWSER_PROBE_URL is required for browser profile management".to_string(),
+            ));
+        };
+        browser_probe.import_cookies(profile_id, cookies).await
+    }
+
+    pub async fn start_browser_login_session(
+        &self,
+        profile_id: &str,
+        headed: bool,
+    ) -> Result<serde_json::Value> {
+        let Some(browser_probe) = &self.browser_probe else {
+            return Err(RkError::Browser(
+                "RK_BROWSER_PROBE_URL is required for browser profile management".to_string(),
+            ));
+        };
+        browser_probe.start_login_session(profile_id, headed).await
     }
 
     pub async fn list_artifacts(&self, id: Uuid) -> Result<Vec<ArtifactView>> {

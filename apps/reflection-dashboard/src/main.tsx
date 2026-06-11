@@ -26,6 +26,7 @@ type DiscoveryMode = "direct" | "external" | "browser" | "auto";
 type PlatformHint = "auto" | "bilibili" | "youtube" | "soundcloud";
 type OutputKind = "audio" | "video" | "image" | "page_html";
 type OutputMode = "auto" | "video" | "audio" | "image" | "page_html";
+type ViewMode = "console" | "admin" | "help";
 
 interface Health {
   ok: boolean;
@@ -55,6 +56,12 @@ interface Capabilities {
   supported_discovery: DiscoveryMode[];
   supported_platform_hints: PlatformHint[];
   supported_outputs: OutputKind[];
+  auth?: {
+    role: "admin" | "user";
+    label: string;
+    allow_browser_probe: boolean;
+    allow_ytdlp: boolean;
+  };
 }
 
 interface JobView {
@@ -117,6 +124,22 @@ interface CreateJobPayload {
   auth_mode: "auto" | "none" | "profile" | "cookies";
 }
 
+interface UserKeyView {
+  id: string;
+  label: string;
+  key_prefix: string;
+  role: "admin" | "user";
+  allow_browser_probe: boolean;
+  allow_ytdlp: boolean;
+  created_at: string;
+  revoked_at: string | null;
+}
+
+interface CreatedUserKeyResponse {
+  key: string;
+  record: UserKeyView;
+}
+
 const OUTPUTS: OutputKind[] = ["audio", "video", "image", "page_html"];
 const TERMINAL = new Set(["ready", "error", "candidates_ready"]);
 const PAGE_SIZE_OPTIONS = [3, 5, 10, 20, 50];
@@ -140,9 +163,22 @@ function App() {
   const [candidatePageSize, setCandidatePageSize] = useState(3);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string>("空闲");
+  const [viewMode, setViewMode] = useState<ViewMode>("console");
   const [pasteOpen, setPasteOpen] = useState(false);
   const [pasteText, setPasteText] = useState("");
+  const [waitingForPaste, setWaitingForPaste] = useState(false);
   const pasteInputRef = useRef<HTMLInputElement | null>(null);
+  const sourceInputRef = useRef<HTMLInputElement | null>(null);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [userKeys, setUserKeys] = useState<UserKeyView[]>([]);
+  const [newUserKey, setNewUserKey] = useState("");
+  const [keyForm, setKeyForm] = useState({
+    label: "普通用户",
+    allow_browser_probe: true,
+    allow_ytdlp: true,
+  });
+  const [profileId, setProfileId] = useState("admin_default");
+  const [cookieJson, setCookieJson] = useState("");
   const [form, setForm] = useState<CreateJobPayload>({
     url: "",
     bitrate: "auto",
@@ -222,6 +258,19 @@ function App() {
     if (!pasteOpen) return;
     window.setTimeout(() => pasteInputRef.current?.focus(), 0);
   }, [pasteOpen]);
+
+  useEffect(() => {
+    if (!waitingForPaste) return;
+    const onPaste = (event: ClipboardEvent) => {
+      const text = event.clipboardData?.getData("text/plain") ?? "";
+      if (!text.trim()) return;
+      event.preventDefault();
+      applyPastedUrl(text);
+      setWaitingForPaste(false);
+    };
+    window.addEventListener("paste", onPaste);
+    return () => window.removeEventListener("paste", onPaste);
+  }, [waitingForPaste, form]);
 
   async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const response = await fetch(path, {
@@ -341,18 +390,18 @@ function App() {
   async function pasteFromClipboard() {
     try {
       if (!navigator.clipboard?.readText) {
-        openPasteBox("浏览器不允许直接读取剪贴板，请在输入框粘贴 URL。");
+        focusForManualPaste("浏览器不允许直接读取剪贴板，已聚焦来源 URL；按 Ctrl+V 会自动填入。");
         return;
       }
       const text = await navigator.clipboard.readText();
       if (!text.trim()) {
         setMessage("剪贴板为空");
-        openPasteBox("剪贴板为空，可以手动粘贴 URL。");
+        focusForManualPaste("剪贴板为空，已聚焦来源 URL；按 Ctrl+V 会自动填入。");
         return;
       }
       applyPastedUrl(text);
     } catch {
-      openPasteBox("浏览器拦截了剪贴板读取，请在输入框粘贴 URL。");
+      focusForManualPaste("浏览器拦截剪贴板读取，已聚焦来源 URL；按 Ctrl+V 会自动填入。");
     }
   }
 
@@ -360,6 +409,14 @@ function App() {
     setPasteText("");
     setPasteOpen(true);
     setMessage(reason);
+  }
+
+  function focusForManualPaste(reason: string) {
+    setWaitingForPaste(true);
+    setPasteOpen(true);
+    setPasteText("");
+    setMessage(reason);
+    window.setTimeout(() => sourceInputRef.current?.focus(), 0);
   }
 
   function applyPastedUrl(text = pasteText) {
@@ -371,6 +428,7 @@ function App() {
     setForm({ ...form, url: value });
     setPasteText("");
     setPasteOpen(false);
+    setWaitingForPaste(false);
     setMessage("已填入粘贴内容");
   }
 
@@ -444,19 +502,571 @@ function App() {
     setSelectedCandidates(next);
   }
 
+  async function refreshUserKeys() {
+    try {
+      setUserKeys(await request<UserKeyView[]>("/api/admin/user-keys"));
+    } catch (error) {
+      setMessage(errorMessage(error));
+    }
+  }
+
+  async function createUserKey(event: React.FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    setNewUserKey("");
+    try {
+      const response = await request<CreatedUserKeyResponse>("/api/admin/user-keys", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(keyForm),
+      });
+      setNewUserKey(response.key);
+      await refreshUserKeys();
+      setMessage("已创建用户密钥，明文只显示这一次。");
+    } catch (error) {
+      setMessage(errorMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function revokeUserKey(id: string) {
+    setBusy(true);
+    try {
+      await request<void>(`/api/admin/user-keys/${id}/revoke`, { method: "POST" });
+      await refreshUserKeys();
+      setMessage("已撤销用户密钥");
+    } catch (error) {
+      setMessage(errorMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function startProfileLogin(platform: string) {
+    setBusy(true);
+    try {
+      const response = await request<{ message?: string; mode?: string }>(
+        `/api/admin/browser-profiles/${encodeURIComponent(profileId)}/login-session`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ headed: true, platform }),
+        },
+      );
+      setMessage(response.message ?? "已准备浏览器登录会话");
+    } catch (error) {
+      setMessage(errorMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function importProfileCookies(event: React.FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      const parsed = JSON.parse(cookieJson);
+      const cookies = Array.isArray(parsed) ? parsed : parsed.cookies;
+      if (!Array.isArray(cookies)) {
+        throw new Error("Cookie JSON 必须是数组，或包含 cookies 数组");
+      }
+      await request(`/api/admin/browser-profiles/${encodeURIComponent(profileId)}/cookies/import`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ cookies }),
+      });
+      setCookieJson("");
+      setMessage("已导入浏览器 Profile Cookie");
+    } catch (error) {
+      setMessage(errorMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const consoleView = (
+    <>
+      {!apiKey && (
+        <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
+          填写管理密钥或用户密钥后可查看任务、创建解析和选择资源。管理功能只对管理密钥开放。
+        </div>
+      )}
+
+      <section className="mx-auto w-full max-w-5xl">
+        <Card title="创建任务" icon={<Play size={16} />}>
+          <form className="space-y-4" onSubmit={createJob}>
+            <div className="grid gap-3 lg:grid-cols-[1fr_auto_auto]">
+              <Field label="来源 URL">
+                <Input
+                  ref={sourceInputRef}
+                  required
+                  type="url"
+                  placeholder="https://example.com/watch/123"
+                  value={form.url}
+                  onChange={(event) => setForm({ ...form, url: event.target.value })}
+                />
+              </Field>
+              <div className="flex items-end gap-2">
+                <Button type="button" variant="secondary" onClick={pasteFromClipboard} disabled={busy}>
+                  <ClipboardPaste size={16} /> 粘贴剪贴板
+                </Button>
+                <Button type="button" variant="secondary" onClick={clearForm} disabled={busy}>
+                  <X size={16} /> 清空
+                </Button>
+              </div>
+              <div className="flex items-end">
+                <Button className="w-full min-w-40" type="submit" disabled={busy}>
+                  {busy ? <Loader2 className="animate-spin" size={16} /> : <Search size={16} />}
+                  创建
+                </Button>
+              </div>
+            </div>
+
+            {pasteOpen && (
+              <div className="rounded-md border border-cyan-500/40 bg-cyan-500/10 p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm font-medium text-cyan-100">
+                    {waitingForPaste ? "等待粘贴" : "粘贴 URL"}
+                  </span>
+                  <button
+                    className="rounded p-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
+                    type="button"
+                    onClick={() => {
+                      setPasteOpen(false);
+                      setWaitingForPaste(false);
+                    }}
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
+                <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_auto]">
+                  <Input
+                    ref={pasteInputRef}
+                    value={pasteText}
+                    placeholder={waitingForPaste ? "已聚焦来源 URL，也可在这里 Ctrl+V" : "在这里按 Ctrl+V"}
+                    onPaste={(event) => {
+                      const text = event.clipboardData.getData("text/plain");
+                      if (text.trim()) {
+                        event.preventDefault();
+                        applyPastedUrl(text);
+                      }
+                    }}
+                    onChange={(event) => setPasteText(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        applyPastedUrl();
+                      }
+                    }}
+                  />
+                  <Button type="button" onClick={() => applyPastedUrl()}>
+                    填入
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            <div className="grid gap-4">
+              <ControlGroup label="解析方式">
+                <SegmentedControl
+                  value={form.discovery}
+                  options={["auto", "browser", "external", "direct"]}
+                  labelFor={discoveryLabel}
+                  onChange={(value) => setForm({ ...form, discovery: value as DiscoveryMode })}
+                />
+              </ControlGroup>
+              <ControlGroup label="码率">
+                <SegmentedControl
+                  value={form.bitrate}
+                  options={["auto", "2160p", "1440p", "1080p", "720p", "480p", "360p"]}
+                  labelFor={bitrateLabel}
+                  onChange={(value) => setForm({ ...form, bitrate: value })}
+                />
+              </ControlGroup>
+              <div className="grid gap-4 lg:grid-cols-2">
+                <ControlGroup label="平台">
+                  <SegmentedControl
+                    value={form.platform_hint}
+                    options={["auto", "bilibili", "youtube", "soundcloud"]}
+                    labelFor={platformLabel}
+                    onChange={(value) => setForm({ ...form, platform_hint: value as PlatformHint })}
+                  />
+                </ControlGroup>
+                <ControlGroup label="输出类型">
+                  <SegmentedControl
+                    value={outputMode}
+                    options={["auto", "video", "audio", "image", "page_html"]}
+                    labelFor={outputModeLabel}
+                    onChange={(value) => setOutputModeAndPayload(value as OutputMode)}
+                  />
+                </ControlGroup>
+              </div>
+            </div>
+
+            <div className="rounded-md border border-zinc-800 bg-zinc-950/70">
+              <button
+                className="flex w-full items-center justify-between px-3 py-2 text-left text-sm text-zinc-300"
+                type="button"
+                onClick={() => setAdvancedOpen(!advancedOpen)}
+              >
+                高级设置
+                {advancedOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+              </button>
+              {advancedOpen && (
+                <div className="grid gap-3 border-t border-zinc-800 p-3 lg:grid-cols-2">
+                  <Field label="授权模式">
+                    <Select
+                      value={form.auth_mode}
+                      onChange={(event) => setForm({ ...form, auth_mode: event.target.value as CreateJobPayload["auth_mode"] })}
+                      options={["auto", "none", "profile", "cookies"]}
+                      labelFor={authModeLabel}
+                    />
+                  </Field>
+                  <Info label="浏览器 Profile" value={form.profile_id} />
+                </div>
+              )}
+            </div>
+          </form>
+        </Card>
+      </section>
+
+      <section className="grid items-stretch gap-4 xl:grid-cols-2">
+        <Card
+          title="任务列表"
+          icon={<Activity size={16} />}
+          action={
+            <div className="flex flex-wrap gap-2">
+              <Button variant="secondary" onClick={restoreHiddenJobs} disabled={!hiddenJobIds.size}>
+                <Eye size={16} /> 恢复
+              </Button>
+              <Button variant="secondary" onClick={clearVisibleJobs} disabled={!jobs.length}>
+                <X size={16} /> 清空
+              </Button>
+              <Button variant="secondary" onClick={() => refreshJobs()}>
+                <ListRestart size={16} /> 刷新
+              </Button>
+            </div>
+          }
+          className="dashboard-panel"
+          bodyClassName="dashboard-panel-body"
+        >
+          <div className="flex h-full min-h-0 flex-col gap-3">
+            <div className="grid min-h-0 flex-1 auto-rows-max gap-2 overflow-y-auto pr-1">
+              {pagedJobs.items.map((job) => (
+                <button
+                  key={job.id}
+                  className={`grid w-full gap-2 rounded-md border p-3 text-left transition-colors ${
+                    job.id === selectedJobId
+                      ? "border-cyan-500/50 bg-cyan-500/10"
+                      : "border-zinc-800 bg-zinc-950 hover:border-zinc-700"
+                  }`}
+                  type="button"
+                  onClick={() => setSelectedJobId(job.id)}
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <Badge status={job.status} />
+                    <span className="text-xs text-zinc-500">{formatShortDate(job.updated_at)}</span>
+                  </div>
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-medium text-zinc-100">{sourceTitle(job.source_url)}</div>
+                    <div className="mt-1 line-clamp-2 break-all text-xs text-zinc-500">
+                      {job.error ? friendlyError(job.error) : job.source_url}
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-400">
+                    <span className="rounded bg-zinc-800 px-1.5 py-0.5">{discoveryLabel(job.discovery)}</span>
+                    <span className="rounded bg-zinc-800 px-1.5 py-0.5">{platformLabel(job.platform_hint)}</span>
+                    <span className="rounded bg-zinc-800 px-1.5 py-0.5">{outputsLabel(job.outputs)}</span>
+                  </div>
+                </button>
+              ))}
+            </div>
+            <Pager
+              page={pagedJobs.page}
+              pageSize={jobPageSize}
+              total={jobs.length}
+              onPageChange={setJobPage}
+              onPageSizeChange={(value) => {
+                setJobPageSize(value);
+                setJobPage(1);
+              }}
+            />
+          </div>
+        </Card>
+
+        <Card title="任务详情" icon={<Settings size={16} />} className="dashboard-panel" bodyClassName="dashboard-panel-body overflow-auto">
+          {selectedJob ? (
+            <div className="grid gap-3 text-sm">
+              <Info label="ID" value={selectedJob.id} />
+              <Info label="状态" value={statusLabel(selectedJob.status)} tone={selectedJob.status === "error" ? "danger" : "normal"} />
+              <Info label="输出类型" value={outputsLabel(selectedJob.outputs)} />
+              <Info label="解析方式" value={`${discoveryLabel(selectedJob.discovery)} / ${platformLabel(selectedJob.platform_hint)}`} />
+              {selectedJob.error && <Info label="错误摘要" value={friendlyError(selectedJob.error)} tone="danger" />}
+              <Info label="播放地址" value={selectedJob.media_url ?? "-"} copyable />
+              {selectedJob.media_url && <Player url={selectedJob.media_url} />}
+            </div>
+          ) : (
+            <Empty label="请选择一个任务" />
+          )}
+        </Card>
+      </section>
+
+      <section className="grid gap-4 xl:grid-cols-2">
+        <Card
+          title="资源选择"
+          icon={<FileAudio size={16} />}
+          className="resource-panel"
+          bodyClassName="resource-panel-body"
+          action={
+            <Button
+              onClick={selectCandidates}
+              disabled={!selectedJob || (!selectedCandidates.size && defaultCandidateIds.length === 0) || busy}
+            >
+              {busy ? <Loader2 className="animate-spin" size={16} /> : <Play size={16} />}
+              {selectedCandidates.size
+                ? "转换选中资源"
+                : defaultCandidateIds.length > 1
+                  ? `转换推荐资源 (${defaultCandidateIds.length})`
+                  : "转换推荐资源"}
+            </Button>
+          }
+        >
+          {candidates.length ? (
+            <div className="flex h-full min-h-0 flex-col gap-3">
+              <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-zinc-500">
+                <span>
+                  找到 {candidates.length} 个资源，当前显示 {pagedCandidates.items.length} 个。
+                  {selectedJob && ` ${qualityAvailabilityLabel(candidates, selectedJob.bitrate)}`}
+                </span>
+                <Button type="button" variant="secondary" className="h-8" onClick={() => setShowAllCandidates(!showAllCandidates)}>
+                  {showAllCandidates ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                  {showAllCandidates ? "只看推荐" : "显示全部"}
+                </Button>
+              </div>
+              <div className="grid min-h-0 flex-1 auto-rows-max gap-2 overflow-y-auto pr-1">
+                {pagedCandidates.items.map((candidate, index) => (
+                  <CandidateRow
+                    key={candidate.id}
+                    candidate={candidate}
+                    recommended={!selectedCandidates.size && defaultCandidateIds.includes(candidate.id)}
+                    index={pagedCandidates.start + index}
+                    selected={selectedCandidates.has(candidate.id)}
+                    onToggle={() => toggleCandidate(candidate.id)}
+                  />
+                ))}
+              </div>
+              <Pager
+                page={pagedCandidates.page}
+                pageSize={candidatePageSize}
+                total={visibleCandidates.length}
+                onPageChange={setCandidatePage}
+                onPageSizeChange={(value) => {
+                  setCandidatePageSize(value);
+                  setCandidatePage(1);
+                }}
+              />
+            </div>
+          ) : (
+            <Empty label={selectedJob?.status === "error" ? "解析失败，没有可用资源" : "还没有发现可用资源"} />
+          )}
+        </Card>
+
+        <Card title="产物" icon={<ExternalLink size={16} />} className="resource-panel" bodyClassName="resource-panel-body overflow-auto">
+          {artifacts.length ? (
+            <div className="grid gap-3">
+              {artifacts.map((artifact) => (
+                <div key={artifact.id} className="rounded-md border border-zinc-800 bg-zinc-950 p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <div className="font-medium">{outputLabel(artifact.kind)}</div>
+                      <div className="text-xs text-zinc-500">{artifact.content_type} / {formatBytes(artifact.bytes)}</div>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button variant="secondary" onClick={() => copy(artifact.media_url)}>
+                        <Clipboard size={16} /> 复制
+                      </Button>
+                      <a className="button secondary" href={artifact.media_url} target="_blank" rel="noreferrer">
+                        <ExternalLink size={16} /> 打开
+                      </a>
+                    </div>
+                  </div>
+                  <Player url={artifact.media_url} />
+                </div>
+              ))}
+            </div>
+          ) : (
+            <Empty label="暂无产物" />
+          )}
+        </Card>
+      </section>
+
+      <section className="grid gap-4 xl:grid-cols-[0.8fr_1.2fr]">
+        <Card title="系统状态" icon={<Server size={16} />}>
+          <div className="grid gap-3 text-sm">
+            <StatusLine label="API" ok={health?.ok} value={health?.service ? "正常" : "连接中"} />
+            <StatusLine
+              label="浏览器探测"
+              ok={capabilities?.browser_probe_configured}
+              value={capabilityStatus(capabilities?.browser_probe_configured, apiKey)}
+            />
+            <StatusLine
+              label="yt-dlp"
+              ok={capabilities?.yt_dlp_configured}
+              value={capabilityStatus(capabilities?.yt_dlp_configured, apiKey)}
+            />
+            <Info label="当前密钥" value={capabilities?.auth ? `${roleLabel(capabilities.auth.role)} / ${capabilities.auth.label}` : apiKey ? "读取中" : "未填写"} />
+            <Info label="公网基址" value={health?.public_base_url ?? "-"} />
+            <Info label="下载上限" value={formatBytes(health?.max_download_bytes)} />
+          </div>
+        </Card>
+
+        <div className="rounded-md border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm text-zinc-400">
+          {message}
+        </div>
+      </section>
+    </>
+  );
+
+  const adminView = (
+    <section className="grid gap-4 xl:grid-cols-2">
+      <Card
+        title="用户密钥"
+        icon={<Settings size={16} />}
+        action={<Button variant="secondary" onClick={refreshUserKeys}><RefreshCw size={16} /> 刷新</Button>}
+      >
+        <form className="grid gap-3" onSubmit={createUserKey}>
+          <Field label="名称">
+            <Input value={keyForm.label} onChange={(event) => setKeyForm({ ...keyForm, label: event.target.value })} />
+          </Field>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <Toggle
+              checked={keyForm.allow_browser_probe}
+              label="允许浏览器探测"
+              onChange={(checked) => setKeyForm({ ...keyForm, allow_browser_probe: checked })}
+            />
+            <Toggle
+              checked={keyForm.allow_ytdlp}
+              label="允许 yt-dlp"
+              onChange={(checked) => setKeyForm({ ...keyForm, allow_ytdlp: checked })}
+            />
+          </div>
+          <Button type="submit" disabled={busy}>创建用户密钥</Button>
+        </form>
+        {newUserKey && (
+          <div className="mt-3 rounded-md border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm">
+            <div className="text-emerald-200">明文密钥只显示一次</div>
+            <div className="mt-2 break-all font-mono text-xs text-zinc-100">{newUserKey}</div>
+            <Button className="mt-3 h-8" variant="secondary" onClick={() => copy(newUserKey)}>
+              <Clipboard size={14} /> 复制
+            </Button>
+          </div>
+        )}
+        <div className="mt-4 grid gap-2">
+          {userKeys.map((key) => (
+            <div key={key.id} className="rounded-md border border-zinc-800 bg-zinc-950 p-3 text-sm">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <div className="font-medium text-zinc-100">{key.label}</div>
+                  <div className="text-xs text-zinc-500">{key.key_prefix}... / {roleLabel(key.role)}</div>
+                </div>
+                <Button className="h-8" variant="secondary" disabled={Boolean(key.revoked_at) || busy} onClick={() => revokeUserKey(key.id)}>
+                  撤销
+                </Button>
+              </div>
+              <div className="mt-2 flex flex-wrap gap-2 text-xs text-zinc-400">
+                <span className="rounded bg-zinc-800 px-1.5 py-0.5">浏览器：{key.allow_browser_probe ? "允许" : "禁止"}</span>
+                <span className="rounded bg-zinc-800 px-1.5 py-0.5">yt-dlp：{key.allow_ytdlp ? "允许" : "禁止"}</span>
+                {key.revoked_at && <span className="rounded bg-red-500/15 px-1.5 py-0.5 text-red-200">已撤销</span>}
+              </div>
+            </div>
+          ))}
+          {!userKeys.length && <Empty label="暂无用户密钥，点击刷新或创建一个" />}
+        </div>
+      </Card>
+
+      <Card title="浏览器账号配置" icon={<Server size={16} />}>
+        <div className="grid gap-3">
+          <Field label="Profile ID">
+            <Input value={profileId} onChange={(event) => setProfileId(event.target.value)} />
+          </Field>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {["哔哩哔哩", "YouTube", "抖音", "快手"].map((platform) => (
+              <Button key={platform} type="button" variant="secondary" onClick={() => startProfileLogin(platform)} disabled={busy}>
+                <Play size={16} /> 准备登录 {platform}
+              </Button>
+            ))}
+          </div>
+          <form className="grid gap-2" onSubmit={importProfileCookies}>
+            <label className="grid gap-1.5 text-sm text-zinc-400">
+              <span>Cookie JSON</span>
+              <textarea
+                className="input min-h-32 py-2 font-mono text-xs"
+                placeholder='[{"name":"SESSDATA","value":"...","domain":".bilibili.com","path":"/"}]'
+                value={cookieJson}
+                onChange={(event) => setCookieJson(event.target.value)}
+              />
+            </label>
+            <Button type="submit" disabled={busy || !cookieJson.trim()}>导入 Cookie 到 Profile</Button>
+          </form>
+        </div>
+      </Card>
+    </section>
+  );
+
+  const helpView = (
+    <section className="grid gap-4 lg:grid-cols-2">
+      <HelpCard title="密钥逻辑" lines={[
+        "管理密钥来自服务器 RK_API_KEY，可以创建和撤销用户密钥。",
+        "用户密钥保存在数据库中，只存 SHA-256 摘要；明文只在创建时显示一次。",
+        "用户密钥可以被限制是否允许浏览器探测和 yt-dlp。",
+      ]} />
+      <HelpCard title="解析方式" lines={[
+        "自动解析会先走直链，再按当前密钥权限尝试 yt-dlp 和浏览器探测。",
+        "浏览器探测适合页面脚本生成、签名 URL、需要播放后才出现资源的站点。",
+        "yt-dlp 适合成熟站点规则；如果站点规则过期，需要更新 yt-dlp 或改用浏览器探测。",
+      ]} />
+      <HelpCard title="授权模式" lines={[
+        "自动会按任务和候选资源决定是否复用浏览器 Profile 的 Cookie/Header。",
+        "Profile/Cookie 适合哔哩哔哩、YouTube、抖音、快手等登录后清晰度或资源更完整的页面。",
+        "后台账号配置不会绕过验证码、DRM、年龄确认或登录风控。",
+      ]} />
+      <HelpCard title="剪贴板" lines={[
+        "HTTPS 或 localhost 页面通常可以在点击按钮后读取系统剪贴板。",
+        "当前公网 IP 使用 HTTP 时，Edge/Chrome 可能按安全策略拦截自动读取。",
+        "被拦截时按钮会自动聚焦来源 URL，按 Ctrl+V 会自动填入。稳定一键读取需要给服务配置域名和 HTTPS。",
+      ]} />
+    </section>
+  );
+
   return (
     <main className="min-h-screen bg-zinc-950 text-zinc-100">
       <header className="border-b border-zinc-800 bg-zinc-950/95 px-6 py-4">
-        <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-4">
+        <div className="mx-auto grid max-w-7xl gap-4 lg:grid-cols-[1fr_auto_auto] lg:items-center">
           <div>
             <h1 className="text-xl font-semibold tracking-normal">Reflection King</h1>
             <p className="text-sm text-zinc-400">媒体抓取与转码控制台</p>
           </div>
+          <nav className="segmented w-full lg:w-auto">
+            {(["console", "admin", "help"] as ViewMode[]).map((mode) => (
+              <button
+                key={mode}
+                className={viewMode === mode ? "active" : ""}
+                type="button"
+                onClick={() => {
+                  setViewMode(mode);
+                  if (mode === "admin" && apiKey) void refreshUserKeys();
+                }}
+              >
+                {viewModeLabel(mode)}
+              </button>
+            ))}
+          </nav>
           <div className="flex flex-wrap items-center gap-2">
             <Input
               className="w-64"
               type="password"
-              placeholder="输入管理密钥"
+              placeholder="输入管理密钥或用户密钥"
               value={apiKey}
               onChange={(event) => setApiKey(event.target.value)}
             />
@@ -468,315 +1078,9 @@ function App() {
       </header>
 
       <div className="mx-auto grid max-w-7xl gap-4 p-4">
-        {!apiKey && (
-          <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
-            填写管理密钥后可查看解析能力、任务列表、资源选择和产物。
-          </div>
-        )}
-
-        <section className="mx-auto w-full max-w-5xl">
-          <Card title="创建任务" icon={<Play size={16} />}>
-            <form className="space-y-3" onSubmit={createJob}>
-              <Field label="来源 URL">
-                <Input
-                  required
-                  type="url"
-                  placeholder="https://example.com/watch/123"
-                  value={form.url}
-                  onChange={(event) => setForm({ ...form, url: event.target.value })}
-                />
-              </Field>
-              {pasteOpen && (
-                <div className="rounded-md border border-cyan-500/40 bg-cyan-500/10 p-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-sm font-medium text-cyan-100">粘贴 URL</span>
-                    <button
-                      className="rounded p-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
-                      type="button"
-                      onClick={() => setPasteOpen(false)}
-                    >
-                      <X size={16} />
-                    </button>
-                  </div>
-                  <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_auto]">
-                    <Input
-                      ref={pasteInputRef}
-                      value={pasteText}
-                      placeholder="在这里按 Ctrl+V"
-                      onChange={(event) => setPasteText(event.target.value)}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter") {
-                          event.preventDefault();
-                          applyPastedUrl();
-                        }
-                      }}
-                    />
-                    <Button type="button" onClick={() => applyPastedUrl()}>
-                      填入
-                    </Button>
-                  </div>
-                </div>
-              )}
-              <div className="grid gap-3 md:grid-cols-4">
-                <Field label="解析方式">
-                  <Select
-                    value={form.discovery}
-                    onChange={(event) => setForm({ ...form, discovery: event.target.value as DiscoveryMode })}
-                    options={["auto", "external", "browser", "direct"]}
-                    labelFor={discoveryLabel}
-                  />
-                </Field>
-                <Field label="平台">
-                  <Select
-                    value={form.platform_hint}
-                    onChange={(event) => setForm({ ...form, platform_hint: event.target.value as PlatformHint })}
-                    options={["auto", "bilibili", "youtube", "soundcloud"]}
-                    labelFor={platformLabel}
-                  />
-                </Field>
-                <Field label="码率">
-                  <Select
-                    value={form.bitrate}
-                    onChange={(event) => setForm({ ...form, bitrate: event.target.value })}
-                    options={["auto", "2160p", "1440p", "1080p", "720p", "480p", "360p"]}
-                    labelFor={bitrateLabel}
-                  />
-                </Field>
-                <Field label="授权模式">
-                  <Select
-                    value={form.auth_mode}
-                    onChange={(event) => setForm({ ...form, auth_mode: event.target.value as CreateJobPayload["auth_mode"] })}
-                    options={["auto", "none", "profile", "cookies"]}
-                    labelFor={authModeLabel}
-                  />
-                </Field>
-              </div>
-              <div className="grid gap-3 md:grid-cols-[1fr_1.4fr]">
-                <Field label="浏览器配置 ID">
-                  <Input
-                    value={form.profile_id}
-                    onChange={(event) => setForm({ ...form, profile_id: event.target.value })}
-                  />
-                </Field>
-                <Field label="输出类型">
-                  <Select
-                    value={outputMode}
-                    onChange={(event) => setOutputModeAndPayload(event.target.value as OutputMode)}
-                    options={["auto", "video", "audio", "image", "page_html"]}
-                    labelFor={outputModeLabel}
-                  />
-                </Field>
-              </div>
-              <div className="grid gap-2 sm:grid-cols-[1fr_1fr_1.3fr]">
-                <Button type="button" variant="secondary" onClick={clearForm} disabled={busy}>
-                  清空内容
-                </Button>
-                <Button type="button" variant="secondary" onClick={pasteFromClipboard} disabled={busy}>
-                  <ClipboardPaste size={16} /> 粘贴剪贴板
-                </Button>
-                <Button type="submit" disabled={busy}>
-                  {busy ? <Loader2 className="animate-spin" size={16} /> : <Search size={16} />}
-                  创建
-                </Button>
-              </div>
-            </form>
-          </Card>
-        </section>
-
-        <section className="grid items-stretch gap-4 xl:grid-cols-2">
-          <Card
-            title="任务列表"
-            icon={<Activity size={16} />}
-            action={
-              <div className="flex gap-2">
-                <Button variant="secondary" onClick={restoreHiddenJobs} disabled={!hiddenJobIds.size}>
-                  <Eye size={16} /> 恢复
-                </Button>
-                <Button variant="secondary" onClick={clearVisibleJobs} disabled={!jobs.length}>
-                  <X size={16} /> 清空
-                </Button>
-                <Button variant="secondary" onClick={() => refreshJobs()}>
-                  <ListRestart size={16} /> 刷新
-                </Button>
-              </div>
-            }
-            className="h-[520px]"
-            bodyClassName="h-[455px]"
-          >
-            <div className="flex h-full flex-col gap-3">
-              <div className="grid flex-1 auto-rows-max gap-2 overflow-y-auto pr-1">
-                {pagedJobs.items.map((job) => (
-                  <button
-                    key={job.id}
-                    className={`grid w-full gap-2 rounded-md border p-3 text-left transition-colors ${
-                      job.id === selectedJobId
-                        ? "border-cyan-500/50 bg-cyan-500/10"
-                        : "border-zinc-800 bg-zinc-950 hover:border-zinc-700"
-                    }`}
-                    type="button"
-                    onClick={() => setSelectedJobId(job.id)}
-                  >
-                    <div className="flex items-center justify-between gap-3">
-                      <Badge status={job.status} />
-                      <span className="text-xs text-zinc-500">{formatShortDate(job.updated_at)}</span>
-                    </div>
-                    <div className="min-w-0">
-                      <div className="truncate text-sm font-medium text-zinc-100">{sourceTitle(job.source_url)}</div>
-                      <div className="mt-1 line-clamp-2 break-all text-xs text-zinc-500">
-                        {job.error ? friendlyError(job.error) : job.source_url}
-                      </div>
-                    </div>
-                    <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-400">
-                      <span className="rounded bg-zinc-800 px-1.5 py-0.5">{discoveryLabel(job.discovery)}</span>
-                      <span className="rounded bg-zinc-800 px-1.5 py-0.5">{platformLabel(job.platform_hint)}</span>
-                      <span className="rounded bg-zinc-800 px-1.5 py-0.5">{outputsLabel(job.outputs)}</span>
-                    </div>
-                  </button>
-                ))}
-              </div>
-            <Pager
-              page={pagedJobs.page}
-              pageSize={jobPageSize}
-              total={jobs.length}
-              onPageChange={setJobPage}
-              onPageSizeChange={(value) => {
-                setJobPageSize(value);
-                setJobPage(1);
-              }}
-            />
-            </div>
-          </Card>
-
-          <Card title="任务详情" icon={<Settings size={16} />} className="h-[520px]" bodyClassName="h-[455px] overflow-auto">
-              {selectedJob ? (
-                <div className="grid gap-3 text-sm">
-                  <Info label="ID" value={selectedJob.id} />
-                  <Info label="状态" value={statusLabel(selectedJob.status)} tone={selectedJob.status === "error" ? "danger" : "normal"} />
-                  <Info label="输出类型" value={outputsLabel(selectedJob.outputs)} />
-                  {selectedJob.error && <Info label="错误摘要" value={friendlyError(selectedJob.error)} tone="danger" />}
-                  <Info label="播放地址" value={selectedJob.media_url ?? "-"} copyable />
-                  {selectedJob.media_url && <Player url={selectedJob.media_url} />}
-                </div>
-              ) : (
-                <Empty label="请选择一个任务" />
-              )}
-          </Card>
-        </section>
-
-        <section className="grid gap-4 xl:grid-cols-2">
-          <Card
-            title="资源选择"
-            icon={<FileAudio size={16} />}
-            className="h-[620px]"
-            bodyClassName="h-[555px]"
-            action={
-              <Button
-                onClick={selectCandidates}
-                disabled={!selectedJob || (!selectedCandidates.size && defaultCandidateIds.length === 0) || busy}
-              >
-                {busy ? <Loader2 className="animate-spin" size={16} /> : <Play size={16} />}
-                {selectedCandidates.size
-                  ? "转换选中资源"
-                  : defaultCandidateIds.length > 1
-                    ? `转换推荐资源 (${defaultCandidateIds.length})`
-                    : "转换推荐资源"}
-              </Button>
-            }
-          >
-            {candidates.length ? (
-              <div className="flex h-full flex-col gap-3">
-                <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-zinc-500">
-                  <span>
-                    找到 {candidates.length} 个资源，当前显示 {pagedCandidates.items.length} 个。
-                    {selectedJob && ` ${qualityAvailabilityLabel(candidates, selectedJob.bitrate)}`}
-                  </span>
-                  <Button type="button" variant="secondary" className="h-8" onClick={() => setShowAllCandidates(!showAllCandidates)}>
-                    {showAllCandidates ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-                    {showAllCandidates ? "只看推荐" : "显示全部"}
-                  </Button>
-                </div>
-                <div className="grid flex-1 auto-rows-max gap-2 overflow-y-auto pr-1">
-                  {pagedCandidates.items.map((candidate, index) => (
-                    <CandidateRow
-                      key={candidate.id}
-                      candidate={candidate}
-                      recommended={!selectedCandidates.size && defaultCandidateIds.includes(candidate.id)}
-                      index={pagedCandidates.start + index}
-                      selected={selectedCandidates.has(candidate.id)}
-                      onToggle={() => toggleCandidate(candidate.id)}
-                    />
-                  ))}
-                </div>
-                <Pager
-                  page={pagedCandidates.page}
-                  pageSize={candidatePageSize}
-                  total={visibleCandidates.length}
-                  onPageChange={setCandidatePage}
-                  onPageSizeChange={(value) => {
-                    setCandidatePageSize(value);
-                    setCandidatePage(1);
-                  }}
-                />
-              </div>
-            ) : (
-              <Empty label={selectedJob?.status === "error" ? "解析失败，没有可用资源" : "还没有发现可用资源"} />
-            )}
-          </Card>
-
-          <Card title="产物" icon={<ExternalLink size={16} />}>
-            {artifacts.length ? (
-              <div className="grid gap-3">
-                {artifacts.map((artifact) => (
-                  <div key={artifact.id} className="rounded-md border border-zinc-800 bg-zinc-950 p-3">
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      <div>
-                        <div className="font-medium">{outputLabel(artifact.kind)}</div>
-                        <div className="text-xs text-zinc-500">{artifact.content_type} / {formatBytes(artifact.bytes)}</div>
-                      </div>
-                      <div className="flex gap-2">
-                        <Button variant="secondary" onClick={() => copy(artifact.media_url)}>
-                          <Clipboard size={16} /> 复制
-                        </Button>
-                        <a className="button secondary" href={artifact.media_url} target="_blank" rel="noreferrer">
-                          <ExternalLink size={16} /> 打开
-                        </a>
-                      </div>
-                    </div>
-                    <Player url={artifact.media_url} />
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <Empty label="暂无产物" />
-            )}
-          </Card>
-        </section>
-
-        <section className="grid gap-4 xl:grid-cols-[0.8fr_1.2fr]">
-          <Card title="系统状态" icon={<Server size={16} />}>
-            <div className="grid gap-3 text-sm">
-              <StatusLine label="API" ok={health?.ok} value={health?.service ? "正常" : "连接中"} />
-              <StatusLine
-                label="浏览器探测"
-                ok={capabilities?.browser_probe_configured}
-                value={capabilityStatus(capabilities?.browser_probe_configured, apiKey)}
-              />
-              <StatusLine
-                label="yt-dlp"
-                ok={capabilities?.yt_dlp_configured}
-                value={capabilityStatus(capabilities?.yt_dlp_configured, apiKey)}
-              />
-              <Info label="公网基址" value={health?.public_base_url ?? "-"} />
-              <Info label="ffmpeg" value={health?.ffmpeg_path ?? "-"} />
-              <Info label="yt-dlp" value={capabilities?.yt_dlp_path ?? (apiKey ? "-" : "需要管理密钥")} />
-              <Info label="下载上限" value={formatBytes(health?.max_download_bytes)} />
-            </div>
-          </Card>
-
-          <div className="rounded-md border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm text-zinc-400">
-            {message}
-          </div>
-        </section>
+        {viewMode === "console" && consoleView}
+        {viewMode === "admin" && adminView}
+        {viewMode === "help" && helpView}
       </div>
     </main>
   );
@@ -810,6 +1114,15 @@ function Field(props: { label: string; children: React.ReactNode }) {
   );
 }
 
+function ControlGroup(props: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="grid gap-2">
+      <div className="text-sm text-zinc-400">{props.label}</div>
+      {props.children}
+    </div>
+  );
+}
+
 const Input = React.forwardRef<HTMLInputElement, React.InputHTMLAttributes<HTMLInputElement>>(function Input(props, ref) {
   const { className = "", ...rest } = props;
   return <input ref={ref} className={`input ${className}`} {...rest} />;
@@ -831,6 +1144,54 @@ function Select(props: {
 function Button(props: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: "primary" | "secondary" }) {
   const { className = "", variant = "primary", ...rest } = props;
   return <button className={`button ${variant} ${className}`} {...rest} />;
+}
+
+function SegmentedControl(props: {
+  value: string;
+  options: string[];
+  labelFor?: (value: string) => string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <div className="segmented">
+      {props.options.map((option) => (
+        <button
+          key={option}
+          className={props.value === option ? "active" : ""}
+          type="button"
+          onClick={() => props.onChange(option)}
+        >
+          {props.labelFor?.(option) ?? option}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function Toggle(props: { checked: boolean; label: string; onChange: (checked: boolean) => void }) {
+  return (
+    <label className="flex cursor-pointer items-center justify-between gap-3 rounded-md border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm text-zinc-200">
+      <span>{props.label}</span>
+      <input
+        className="h-4 w-4"
+        type="checkbox"
+        checked={props.checked}
+        onChange={(event) => props.onChange(event.target.checked)}
+      />
+    </label>
+  );
+}
+
+function HelpCard(props: { title: string; lines: string[] }) {
+  return (
+    <Card title={props.title} icon={<Settings size={16} />}>
+      <div className="grid gap-3 text-sm text-zinc-300">
+        {props.lines.map((line) => (
+          <p key={line} className="leading-6">{line}</p>
+        ))}
+      </div>
+    </Card>
+  );
 }
 
 function CandidateRow(props: {
@@ -1057,6 +1418,21 @@ function capabilityStatus(value: boolean | undefined, apiKey: string): string {
   if (value === true) return "已配置";
   if (value === false) return "未配置";
   return apiKey ? "读取中" : "需要管理密钥";
+}
+
+function viewModeLabel(value: ViewMode): string {
+  return ({
+    console: "控制台",
+    admin: "管理",
+    help: "帮助",
+  } as Record<ViewMode, string>)[value];
+}
+
+function roleLabel(value: string): string {
+  return ({
+    admin: "管理密钥",
+    user: "用户密钥",
+  } as Record<string, string>)[value] ?? value;
 }
 
 function statusLabel(value: string): string {

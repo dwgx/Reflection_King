@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use sha2::{Digest, Sha256};
 use sqlx::{
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},
     Row, SqlitePool,
@@ -9,8 +10,9 @@ use uuid::Uuid;
 
 use crate::{
     models::{
-        ArtifactView, AuthMode, CandidateKind, DiscoveryMode, JobRecord, JobStatus, MediaCandidate,
-        OutputKind, PlatformHint,
+        ApiKeyRecord, ApiKeyRole, ApiKeyView, ArtifactView, AuthMode, CandidateKind,
+        CreateUserKeyRequest, CreatedUserKeyResponse, DiscoveryMode, JobRecord, JobStatus,
+        MediaCandidate, OutputKind, PlatformHint,
     },
     observability::{
         BrowserSession, DomainPolicy, ErrorClass, JobTrace, MediaProbe, PipelineEvent,
@@ -60,13 +62,14 @@ impl JobStore {
                 requester_ip,
                 requester_user_agent,
                 requester_label,
+                requester_key_id,
                 resolved_extractor,
                 error_class,
                 attempt_count,
                 started_at,
                 completed_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(record.id.to_string())
@@ -87,6 +90,7 @@ impl JobStore {
         .bind(&record.requester_ip)
         .bind(&record.requester_user_agent)
         .bind(&record.requester_label)
+        .bind(record.requester_key_id.map(|id| id.to_string()))
         .bind(&record.resolved_extractor)
         .bind(record.error_class.as_str())
         .bind(record.attempt_count)
@@ -119,6 +123,7 @@ impl JobStore {
                    requester_ip,
                    requester_user_agent,
                    requester_label,
+                   requester_key_id,
                    resolved_extractor,
                    error_class,
                    attempt_count,
@@ -160,6 +165,7 @@ impl JobStore {
                    requester_ip,
                    requester_user_agent,
                    requester_label,
+                   requester_key_id,
                    resolved_extractor,
                    error_class,
                    attempt_count,
@@ -175,6 +181,193 @@ impl JobStore {
         .await?;
 
         rows.into_iter().map(row_to_job).collect()
+    }
+
+    pub async fn list_recent_for_key(
+        &self,
+        requester_key_id: Uuid,
+        limit: usize,
+    ) -> Result<Vec<JobRecord>> {
+        let limit = limit.clamp(1, 200) as i64;
+        let rows = sqlx::query(
+            r#"
+            SELECT id,
+                   status,
+                   source_url,
+                   bitrate,
+                   created_at,
+                   updated_at,
+                   status_url,
+                   media_url,
+                   error,
+                   discovery,
+                   platform_hint,
+                   outputs_json,
+                   profile_id,
+                   auth_mode,
+                   selected_candidate_ids_json,
+                   requester_ip,
+                   requester_user_agent,
+                   requester_label,
+                   requester_key_id,
+                   resolved_extractor,
+                   error_class,
+                   attempt_count,
+                   started_at,
+                   completed_at
+            FROM jobs
+            WHERE requester_key_id = ?
+            ORDER BY created_at DESC
+            LIMIT ?
+            "#,
+        )
+        .bind(requester_key_id.to_string())
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter().map(row_to_job).collect()
+    }
+
+    pub async fn job_belongs_to_key(&self, id: Uuid, requester_key_id: Uuid) -> Result<bool> {
+        let count: i64 = sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*)
+            FROM jobs
+            WHERE id = ? AND requester_key_id = ?
+            "#,
+        )
+        .bind(id.to_string())
+        .bind(requester_key_id.to_string())
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(count > 0)
+    }
+
+    pub async fn find_api_key(&self, key: &str) -> Result<Option<ApiKeyRecord>> {
+        let key_hash = hash_api_key(key);
+        let Some(row) = sqlx::query(
+            r#"
+            SELECT id,
+                   label,
+                   key_hash,
+                   key_prefix,
+                   role,
+                   allow_browser_probe,
+                   allow_ytdlp,
+                   created_at,
+                   revoked_at
+            FROM api_keys
+            WHERE key_hash = ? AND revoked_at IS NULL
+            "#,
+        )
+        .bind(key_hash)
+        .fetch_optional(&self.pool)
+        .await?
+        else {
+            return Ok(None);
+        };
+
+        Ok(Some(row_to_api_key(row)?))
+    }
+
+    pub async fn list_api_keys(&self) -> Result<Vec<ApiKeyView>> {
+        let rows = sqlx::query(
+            r#"
+            SELECT id,
+                   label,
+                   key_hash,
+                   key_prefix,
+                   role,
+                   allow_browser_probe,
+                   allow_ytdlp,
+                   created_at,
+                   revoked_at
+            FROM api_keys
+            ORDER BY created_at DESC
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter()
+            .map(row_to_api_key)
+            .map(|record| record.map(ApiKeyView::from))
+            .collect()
+    }
+
+    pub async fn create_user_key(
+        &self,
+        request: CreateUserKeyRequest,
+    ) -> Result<CreatedUserKeyResponse> {
+        let key = format!(
+            "rk_user_{}{}",
+            Uuid::new_v4().simple(),
+            Uuid::new_v4().simple()
+        );
+        let now = OffsetDateTime::now_utc();
+        let label = normalize_api_key_label(request.label.as_deref());
+        let record = ApiKeyRecord {
+            id: Uuid::new_v4(),
+            label,
+            key_hash: hash_api_key(&key),
+            key_prefix: key.chars().take(16).collect(),
+            role: ApiKeyRole::User,
+            allow_browser_probe: request.allow_browser_probe,
+            allow_ytdlp: request.allow_ytdlp,
+            created_at: now,
+            revoked_at: None,
+        };
+
+        sqlx::query(
+            r#"
+            INSERT INTO api_keys (
+                id,
+                label,
+                key_hash,
+                key_prefix,
+                role,
+                allow_browser_probe,
+                allow_ytdlp,
+                created_at,
+                revoked_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(record.id.to_string())
+        .bind(&record.label)
+        .bind(&record.key_hash)
+        .bind(&record.key_prefix)
+        .bind(record.role.as_str())
+        .bind(record.allow_browser_probe)
+        .bind(record.allow_ytdlp)
+        .bind(format_time(record.created_at)?)
+        .bind(record.revoked_at.map(format_time).transpose()?)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(CreatedUserKeyResponse {
+            key,
+            record: record.into(),
+        })
+    }
+
+    pub async fn revoke_api_key(&self, id: Uuid) -> Result<bool> {
+        let result = sqlx::query(
+            r#"
+            UPDATE api_keys
+            SET revoked_at = ?
+            WHERE id = ? AND revoked_at IS NULL
+            "#,
+        )
+        .bind(format_time(OffsetDateTime::now_utc())?)
+        .bind(id.to_string())
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected() > 0)
     }
 
     pub async fn set_selected_candidates(&self, id: Uuid, candidate_ids: &[Uuid]) -> Result<()> {
@@ -948,6 +1141,30 @@ impl JobStore {
         )
         .await?;
 
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS api_keys (
+                id TEXT PRIMARY KEY NOT NULL,
+                label TEXT NOT NULL,
+                key_hash TEXT NOT NULL UNIQUE,
+                key_prefix TEXT NOT NULL,
+                role TEXT NOT NULL,
+                allow_browser_probe INTEGER NOT NULL,
+                allow_ytdlp INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                revoked_at TEXT
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_api_keys_role_created_at ON api_keys(role, created_at)",
+        )
+        .execute(&self.pool)
+        .await?;
+
         // Observability: requester provenance, resolved extractor chain, error
         // classification, attempt counter, and lifecycle timestamps.
         self.add_column_if_missing("jobs", "requester_ip", "TEXT")
@@ -955,6 +1172,8 @@ impl JobStore {
         self.add_column_if_missing("jobs", "requester_user_agent", "TEXT")
             .await?;
         self.add_column_if_missing("jobs", "requester_label", "TEXT")
+            .await?;
+        self.add_column_if_missing("jobs", "requester_key_id", "TEXT")
             .await?;
         self.add_column_if_missing("jobs", "resolved_extractor", "TEXT")
             .await?;
@@ -1280,11 +1499,33 @@ fn row_to_job(row: sqlx::sqlite::SqliteRow) -> Result<JobRecord> {
         requester_ip: row.get("requester_ip"),
         requester_user_agent: row.get("requester_user_agent"),
         requester_label: row.get("requester_label"),
+        requester_key_id: row
+            .get::<Option<String>, _>("requester_key_id")
+            .and_then(|raw| Uuid::parse_str(&raw).ok()),
         resolved_extractor: row.get("resolved_extractor"),
         error_class: ErrorClass::parse(&row.get::<String, _>("error_class")),
         attempt_count: row.get("attempt_count"),
         started_at: parse_time_opt(row.get::<Option<String>, _>("started_at"))?,
         completed_at: parse_time_opt(row.get::<Option<String>, _>("completed_at"))?,
+    })
+}
+
+fn row_to_api_key(row: sqlx::sqlite::SqliteRow) -> Result<ApiKeyRecord> {
+    let id: String = row.get("id");
+    let role: String = row.get("role");
+    let created_at: String = row.get("created_at");
+
+    Ok(ApiKeyRecord {
+        id: Uuid::parse_str(&id)
+            .map_err(|error| RkError::BadRequest(format!("invalid stored api key id: {error}")))?,
+        label: row.get("label"),
+        key_hash: row.get("key_hash"),
+        key_prefix: row.get("key_prefix"),
+        role: ApiKeyRole::parse(&role).unwrap_or(ApiKeyRole::User),
+        allow_browser_probe: row.get::<i64, _>("allow_browser_probe") != 0,
+        allow_ytdlp: row.get::<i64, _>("allow_ytdlp") != 0,
+        created_at: parse_time(&created_at)?,
+        revoked_at: parse_time_opt(row.get::<Option<String>, _>("revoked_at"))?,
     })
 }
 
@@ -1542,6 +1783,19 @@ fn parse_uuid_list_json(value: &str) -> Result<Vec<Uuid>> {
         .collect()
 }
 
+fn hash_api_key(value: &str) -> String {
+    format!("{:x}", Sha256::digest(value.as_bytes()))
+}
+
+fn normalize_api_key_label(value: Option<&str>) -> String {
+    let label = value.unwrap_or("用户密钥").trim();
+    if label.is_empty() {
+        "用户密钥".to_string()
+    } else {
+        label.chars().take(80).collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1567,6 +1821,7 @@ mod tests {
             Some("203.0.113.7".to_string()),
             Some("Mozilla/5.0 ReflectionKing".to_string()),
             Some("admin".to_string()),
+            None,
         );
         let job_id = record.id;
         store.insert(&record).await.unwrap();
@@ -1669,6 +1924,39 @@ mod tests {
             stored_policy.learned_api_pattern.as_deref(),
             Some("/api/v6/songs/{id}/")
         );
+
+        drop(store);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[tokio::test]
+    async fn api_keys_are_hashed_listed_and_revoked() {
+        let path = temp_db_path();
+        let store = JobStore::connect(&path).await.unwrap();
+
+        let created = store
+            .create_user_key(CreateUserKeyRequest {
+                label: Some("tester".to_string()),
+                allow_browser_probe: true,
+                allow_ytdlp: false,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(created.record.label, "tester");
+        assert!(created.record.allow_browser_probe);
+        assert!(!created.record.allow_ytdlp);
+        assert!(created.key.starts_with("rk_user_"));
+
+        let found = store.find_api_key(&created.key).await.unwrap().unwrap();
+        assert_eq!(found.id, created.record.id);
+        assert_ne!(found.key_hash, created.key);
+
+        let listed = store.list_api_keys().await.unwrap();
+        assert_eq!(listed.len(), 1);
+
+        assert!(store.revoke_api_key(created.record.id).await.unwrap());
+        assert!(store.find_api_key(&created.key).await.unwrap().is_none());
 
         drop(store);
         std::fs::remove_file(&path).ok();
