@@ -8,16 +8,20 @@ import {
   CheckCircle2,
   Clipboard,
   ClipboardPaste,
+  Database,
   Eye,
   ExternalLink,
   FileAudio,
+  HelpCircle,
+  KeyRound,
   ListRestart,
   Loader2,
   Play,
   RefreshCw,
   Search,
-  Server,
   Settings,
+  Shield,
+  UserCog,
   X,
 } from "lucide-react";
 import "./styles.css";
@@ -169,7 +173,6 @@ function App() {
   const [waitingForPaste, setWaitingForPaste] = useState(false);
   const pasteInputRef = useRef<HTMLInputElement | null>(null);
   const sourceInputRef = useRef<HTMLInputElement | null>(null);
-  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [userKeys, setUserKeys] = useState<UserKeyView[]>([]);
   const [newUserKey, setNewUserKey] = useState("");
   const [keyForm, setKeyForm] = useState({
@@ -586,157 +589,142 @@ function App() {
   }
 
   const consoleView = (
-    <>
+    <div className="view-stack">
       {!apiKey && (
-        <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
+        <div className="notice-strip warn">
           填写管理密钥或用户密钥后可查看任务、创建解析和选择资源。管理功能只对管理密钥开放。
         </div>
       )}
 
-      <section className="mx-auto w-full max-w-5xl">
-        <Card title="创建任务" icon={<Play size={16} />}>
-          <form className="space-y-4" onSubmit={createJob}>
-            <div className="grid gap-3 lg:grid-cols-[1fr_auto_auto]">
-              <Field label="来源 URL">
+      <section className="panel composer-panel">
+        <div className="panel-header composer-header">
+          <div>
+            <h2><Play size={16} /> 新建解析任务</h2>
+            <p>粘贴链接后自动选择可用的最高质量资源，必要时再手动调整参数。</p>
+          </div>
+          <div className="profile-pill">
+            Profile <strong>{form.profile_id}</strong>
+          </div>
+        </div>
+
+        <form className="composer-form" onSubmit={createJob}>
+          <div className="url-command-row">
+            <label className="url-field">
+              <span>来源 URL</span>
+              <Input
+                ref={sourceInputRef}
+                required
+                type="url"
+                placeholder="https://example.com/watch/123"
+                value={form.url}
+                onChange={(event) => setForm({ ...form, url: event.target.value })}
+              />
+            </label>
+            <Button type="button" variant="secondary" onClick={pasteFromClipboard} disabled={busy}>
+              <ClipboardPaste size={16} /> 粘贴
+            </Button>
+            <Button type="button" variant="secondary" onClick={clearForm} disabled={busy}>
+              <X size={16} /> 清空
+            </Button>
+            <Button className="create-button" type="submit" disabled={busy}>
+              {busy ? <Loader2 className="animate-spin" size={16} /> : <Search size={16} />}
+              创建任务
+            </Button>
+          </div>
+
+          {pasteOpen && (
+            <div className="paste-panel">
+              <div className="paste-title">
+                <span>{waitingForPaste ? "等待粘贴" : "手动粘贴"}</span>
+                <button
+                  className="icon-button"
+                  type="button"
+                  onClick={() => {
+                    setPasteOpen(false);
+                    setWaitingForPaste(false);
+                  }}
+                >
+                  <X size={16} />
+                </button>
+              </div>
+              <div className="paste-grid">
                 <Input
-                  ref={sourceInputRef}
-                  required
-                  type="url"
-                  placeholder="https://example.com/watch/123"
-                  value={form.url}
-                  onChange={(event) => setForm({ ...form, url: event.target.value })}
+                  ref={pasteInputRef}
+                  value={pasteText}
+                  placeholder={waitingForPaste ? "已聚焦来源 URL，也可在这里 Ctrl+V" : "在这里按 Ctrl+V"}
+                  onPaste={(event) => {
+                    const text = event.clipboardData.getData("text/plain");
+                    if (text.trim()) {
+                      event.preventDefault();
+                      applyPastedUrl(text);
+                    }
+                  }}
+                  onChange={(event) => setPasteText(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      applyPastedUrl();
+                    }
+                  }}
                 />
-              </Field>
-              <div className="flex items-end gap-2">
-                <Button type="button" variant="secondary" onClick={pasteFromClipboard} disabled={busy}>
-                  <ClipboardPaste size={16} /> 粘贴剪贴板
-                </Button>
-                <Button type="button" variant="secondary" onClick={clearForm} disabled={busy}>
-                  <X size={16} /> 清空
-                </Button>
-              </div>
-              <div className="flex items-end">
-                <Button className="w-full min-w-40" type="submit" disabled={busy}>
-                  {busy ? <Loader2 className="animate-spin" size={16} /> : <Search size={16} />}
-                  创建
+                <Button type="button" onClick={() => applyPastedUrl()}>
+                  填入
                 </Button>
               </div>
             </div>
+          )}
 
-            {pasteOpen && (
-              <div className="rounded-md border border-cyan-500/40 bg-cyan-500/10 p-3">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-sm font-medium text-cyan-100">
-                    {waitingForPaste ? "等待粘贴" : "粘贴 URL"}
-                  </span>
-                  <button
-                    className="rounded p-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
-                    type="button"
-                    onClick={() => {
-                      setPasteOpen(false);
-                      setWaitingForPaste(false);
-                    }}
-                  >
-                    <X size={16} />
-                  </button>
-                </div>
-                <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_auto]">
-                  <Input
-                    ref={pasteInputRef}
-                    value={pasteText}
-                    placeholder={waitingForPaste ? "已聚焦来源 URL，也可在这里 Ctrl+V" : "在这里按 Ctrl+V"}
-                    onPaste={(event) => {
-                      const text = event.clipboardData.getData("text/plain");
-                      if (text.trim()) {
-                        event.preventDefault();
-                        applyPastedUrl(text);
-                      }
-                    }}
-                    onChange={(event) => setPasteText(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") {
-                        event.preventDefault();
-                        applyPastedUrl();
-                      }
-                    }}
-                  />
-                  <Button type="button" onClick={() => applyPastedUrl()}>
-                    填入
-                  </Button>
-                </div>
-              </div>
-            )}
-
-            <div className="grid gap-4">
-              <ControlGroup label="解析方式">
-                <SegmentedControl
-                  value={form.discovery}
-                  options={["auto", "browser", "external", "direct"]}
-                  labelFor={discoveryLabel}
-                  onChange={(value) => setForm({ ...form, discovery: value as DiscoveryMode })}
-                />
-              </ControlGroup>
-              <ControlGroup label="码率">
-                <SegmentedControl
-                  value={form.bitrate}
-                  options={["auto", "2160p", "1440p", "1080p", "720p", "480p", "360p"]}
-                  labelFor={bitrateLabel}
-                  onChange={(value) => setForm({ ...form, bitrate: value })}
-                />
-              </ControlGroup>
-              <div className="grid gap-4 lg:grid-cols-2">
-                <ControlGroup label="平台">
-                  <SegmentedControl
-                    value={form.platform_hint}
-                    options={["auto", "bilibili", "youtube", "soundcloud"]}
-                    labelFor={platformLabel}
-                    onChange={(value) => setForm({ ...form, platform_hint: value as PlatformHint })}
-                  />
-                </ControlGroup>
-                <ControlGroup label="输出类型">
-                  <SegmentedControl
-                    value={outputMode}
-                    options={["auto", "video", "audio", "image", "page_html"]}
-                    labelFor={outputModeLabel}
-                    onChange={(value) => setOutputModeAndPayload(value as OutputMode)}
-                  />
-                </ControlGroup>
-              </div>
-            </div>
-
-            <div className="rounded-md border border-zinc-800 bg-zinc-950/70">
-              <button
-                className="flex w-full items-center justify-between px-3 py-2 text-left text-sm text-zinc-300"
-                type="button"
-                onClick={() => setAdvancedOpen(!advancedOpen)}
-              >
-                高级设置
-                {advancedOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-              </button>
-              {advancedOpen && (
-                <div className="grid gap-3 border-t border-zinc-800 p-3 lg:grid-cols-2">
-                  <Field label="授权模式">
-                    <Select
-                      value={form.auth_mode}
-                      onChange={(event) => setForm({ ...form, auth_mode: event.target.value as CreateJobPayload["auth_mode"] })}
-                      options={["auto", "none", "profile", "cookies"]}
-                      labelFor={authModeLabel}
-                    />
-                  </Field>
-                  <Info label="浏览器 Profile" value={form.profile_id} />
-                </div>
-              )}
-            </div>
-          </form>
-        </Card>
+          <div className="parameter-grid">
+            <ControlGroup label="解析方式">
+              <SegmentedControl
+                value={form.discovery}
+                options={["auto", "browser", "external", "direct"]}
+                labelFor={discoveryLabel}
+                onChange={(value) => setForm({ ...form, discovery: value as DiscoveryMode })}
+              />
+            </ControlGroup>
+            <ControlGroup label="清晰度">
+              <Dropdown
+                value={form.bitrate}
+                options={["auto", "2160p", "1440p", "1080p", "720p", "480p", "360p"]}
+                labelFor={bitrateLabel}
+                onChange={(value) => setForm({ ...form, bitrate: value })}
+              />
+            </ControlGroup>
+            <ControlGroup label="站点">
+              <SegmentedControl
+                value={form.platform_hint}
+                options={["auto", "bilibili", "youtube", "soundcloud"]}
+                labelFor={platformLabel}
+                onChange={(value) => setForm({ ...form, platform_hint: value as PlatformHint })}
+              />
+            </ControlGroup>
+            <ControlGroup label="输出">
+              <SegmentedControl
+                value={outputMode}
+                options={["auto", "video", "audio", "image", "page_html"]}
+                labelFor={outputModeLabel}
+                onChange={(value) => setOutputModeAndPayload(value as OutputMode)}
+              />
+            </ControlGroup>
+            <ControlGroup label="授权">
+              <Dropdown
+                value={form.auth_mode}
+                options={["auto", "none", "profile", "cookies"]}
+                labelFor={authModeLabel}
+                onChange={(value) => setForm({ ...form, auth_mode: value as CreateJobPayload["auth_mode"] })}
+              />
+            </ControlGroup>
+          </div>
+        </form>
       </section>
 
-      <section className="grid items-stretch gap-4 xl:grid-cols-2">
+      <section className="workbench-grid">
         <Card
           title="任务列表"
           icon={<Activity size={16} />}
           action={
-            <div className="flex flex-wrap gap-2">
+            <div className="panel-actions">
               <Button variant="secondary" onClick={restoreHiddenJobs} disabled={!hiddenJobIds.size}>
                 <Eye size={16} /> 恢复
               </Button>
@@ -751,36 +739,35 @@ function App() {
           className="dashboard-panel"
           bodyClassName="dashboard-panel-body"
         >
-          <div className="flex h-full min-h-0 flex-col gap-3">
-            <div className="grid min-h-0 flex-1 auto-rows-max gap-2 overflow-y-auto pr-1">
+          <div className="panel-scroll-layout">
+            <div className="task-list-head">
+              <span>状态</span>
+              <span>来源</span>
+              <span>策略</span>
+              <span>更新</span>
+            </div>
+            <div className="task-list">
               {pagedJobs.items.map((job) => (
                 <button
                   key={job.id}
-                  className={`grid w-full gap-2 rounded-md border p-3 text-left transition-colors ${
-                    job.id === selectedJobId
-                      ? "border-cyan-500/50 bg-cyan-500/10"
-                      : "border-zinc-800 bg-zinc-950 hover:border-zinc-700"
-                  }`}
+                  className={`task-row ${job.id === selectedJobId ? "selected" : ""}`}
                   type="button"
                   onClick={() => setSelectedJobId(job.id)}
                 >
-                  <div className="flex items-center justify-between gap-3">
-                    <Badge status={job.status} />
-                    <span className="text-xs text-zinc-500">{formatShortDate(job.updated_at)}</span>
-                  </div>
-                  <div className="min-w-0">
-                    <div className="truncate text-sm font-medium text-zinc-100">{sourceTitle(job.source_url)}</div>
-                    <div className="mt-1 line-clamp-2 break-all text-xs text-zinc-500">
-                      {job.error ? friendlyError(job.error) : job.source_url}
-                    </div>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-400">
-                    <span className="rounded bg-zinc-800 px-1.5 py-0.5">{discoveryLabel(job.discovery)}</span>
-                    <span className="rounded bg-zinc-800 px-1.5 py-0.5">{platformLabel(job.platform_hint)}</span>
-                    <span className="rounded bg-zinc-800 px-1.5 py-0.5">{outputsLabel(job.outputs)}</span>
-                  </div>
+                  <span className="task-status"><Badge status={job.status} /></span>
+                  <span className="task-source">
+                    <strong>{sourceTitle(job.source_url)}</strong>
+                    <small>{job.error ? friendlyError(job.error) : job.source_url}</small>
+                  </span>
+                  <span className="task-tags">
+                    <em>{discoveryLabel(job.discovery)}</em>
+                    <em>{platformLabel(job.platform_hint)}</em>
+                    <em>{outputsLabel(job.outputs)}</em>
+                  </span>
+                  <span className="task-time">{formatShortDate(job.updated_at)}</span>
                 </button>
               ))}
+              {!pagedJobs.items.length && <Empty label="当前没有任务" />}
             </div>
             <Pager
               page={pagedJobs.page}
@@ -795,15 +782,30 @@ function App() {
           </div>
         </Card>
 
-        <Card title="任务详情" icon={<Settings size={16} />} className="dashboard-panel" bodyClassName="dashboard-panel-body overflow-auto">
+        <Card title="任务详情" icon={<Settings size={16} />} className="dashboard-panel" bodyClassName="dashboard-panel-body">
           {selectedJob ? (
-            <div className="grid gap-3 text-sm">
-              <Info label="ID" value={selectedJob.id} />
-              <Info label="状态" value={statusLabel(selectedJob.status)} tone={selectedJob.status === "error" ? "danger" : "normal"} />
-              <Info label="输出类型" value={outputsLabel(selectedJob.outputs)} />
-              <Info label="解析方式" value={`${discoveryLabel(selectedJob.discovery)} / ${platformLabel(selectedJob.platform_hint)}`} />
-              {selectedJob.error && <Info label="错误摘要" value={friendlyError(selectedJob.error)} tone="danger" />}
-              <Info label="播放地址" value={selectedJob.media_url ?? "-"} copyable />
+            <div className="detail-layout">
+              <div className="detail-title-row">
+                <Badge status={selectedJob.status} />
+                <div>
+                  <strong>{sourceTitle(selectedJob.source_url)}</strong>
+                  <span>{selectedJob.id}</span>
+                </div>
+              </div>
+              <div className="meta-list">
+                <MetaLine label="输出" value={outputsLabel(selectedJob.outputs)} />
+                <MetaLine label="解析" value={`${discoveryLabel(selectedJob.discovery)} / ${platformLabel(selectedJob.platform_hint)}`} />
+                <MetaLine label="清晰度" value={bitrateLabel(selectedJob.bitrate)} />
+                <MetaLine label="授权" value={authModeLabel(selectedJob.auth_mode)} />
+                <MetaLine label="更新时间" value={formatShortDate(selectedJob.updated_at)} />
+                <MetaLine label="播放地址" value={selectedJob.media_url ?? "-"} copyable />
+              </div>
+              {selectedJob.error && (
+                <div className="error-line">
+                  <AlertTriangle size={16} />
+                  <span>{friendlyError(selectedJob.error)}</span>
+                </div>
+              )}
               {selectedJob.media_url && <Player url={selectedJob.media_url} />}
             </div>
           ) : (
@@ -812,7 +814,7 @@ function App() {
         </Card>
       </section>
 
-      <section className="grid gap-4 xl:grid-cols-2">
+      <section className="media-grid">
         <Card
           title="资源选择"
           icon={<FileAudio size={16} />}
@@ -825,18 +827,18 @@ function App() {
             >
               {busy ? <Loader2 className="animate-spin" size={16} /> : <Play size={16} />}
               {selectedCandidates.size
-                ? "转换选中资源"
+                ? "转换选中"
                 : defaultCandidateIds.length > 1
-                  ? `转换推荐资源 (${defaultCandidateIds.length})`
-                  : "转换推荐资源"}
+                  ? `转换推荐 (${defaultCandidateIds.length})`
+                  : "转换推荐"}
             </Button>
           }
         >
           {candidates.length ? (
-            <div className="flex h-full min-h-0 flex-col gap-3">
-              <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-zinc-500">
+            <div className="panel-scroll-layout">
+              <div className="resource-toolbar">
                 <span>
-                  找到 {candidates.length} 个资源，当前显示 {pagedCandidates.items.length} 个。
+                  找到 {candidates.length} 个，显示 {pagedCandidates.items.length} 个。
                   {selectedJob && ` ${qualityAvailabilityLabel(candidates, selectedJob.bitrate)}`}
                 </span>
                 <Button type="button" variant="secondary" className="h-8" onClick={() => setShowAllCandidates(!showAllCandidates)}>
@@ -844,7 +846,7 @@ function App() {
                   {showAllCandidates ? "只看推荐" : "显示全部"}
                 </Button>
               </div>
-              <div className="grid min-h-0 flex-1 auto-rows-max gap-2 overflow-y-auto pr-1">
+              <div className="resource-list">
                 {pagedCandidates.items.map((candidate, index) => (
                   <CandidateRow
                     key={candidate.id}
@@ -872,17 +874,17 @@ function App() {
           )}
         </Card>
 
-        <Card title="产物" icon={<ExternalLink size={16} />} className="resource-panel" bodyClassName="resource-panel-body overflow-auto">
+        <Card title="产物" icon={<ExternalLink size={16} />} className="resource-panel" bodyClassName="resource-panel-body">
           {artifacts.length ? (
-            <div className="grid gap-3">
+            <div className="artifact-list">
               {artifacts.map((artifact) => (
-                <div key={artifact.id} className="rounded-md border border-zinc-800 bg-zinc-950 p-3">
-                  <div className="flex flex-wrap items-center justify-between gap-3">
+                <div key={artifact.id} className="artifact-item">
+                  <div className="artifact-head">
                     <div>
-                      <div className="font-medium">{outputLabel(artifact.kind)}</div>
-                      <div className="text-xs text-zinc-500">{artifact.content_type} / {formatBytes(artifact.bytes)}</div>
+                      <strong>{outputLabel(artifact.kind)}</strong>
+                      <span>{artifact.content_type} / {formatBytes(artifact.bytes)}</span>
                     </div>
-                    <div className="flex gap-2">
+                    <div className="panel-actions">
                       <Button variant="secondary" onClick={() => copy(artifact.media_url)}>
                         <Clipboard size={16} /> 复制
                       </Button>
@@ -900,171 +902,193 @@ function App() {
           )}
         </Card>
       </section>
-
-      <section className="grid gap-4 xl:grid-cols-[0.8fr_1.2fr]">
-        <Card title="系统状态" icon={<Server size={16} />}>
-          <div className="grid gap-3 text-sm">
-            <StatusLine label="API" ok={health?.ok} value={health?.service ? "正常" : "连接中"} />
-            <StatusLine
-              label="浏览器探测"
-              ok={capabilities?.browser_probe_configured}
-              value={capabilityStatus(capabilities?.browser_probe_configured, apiKey)}
-            />
-            <StatusLine
-              label="yt-dlp"
-              ok={capabilities?.yt_dlp_configured}
-              value={capabilityStatus(capabilities?.yt_dlp_configured, apiKey)}
-            />
-            <Info label="当前密钥" value={capabilities?.auth ? `${roleLabel(capabilities.auth.role)} / ${capabilities.auth.label}` : apiKey ? "读取中" : "未填写"} />
-            <Info label="公网基址" value={health?.public_base_url ?? "-"} />
-            <Info label="下载上限" value={formatBytes(health?.max_download_bytes)} />
-          </div>
-        </Card>
-
-        <div className="rounded-md border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm text-zinc-400">
-          {message}
-        </div>
-      </section>
-    </>
+    </div>
   );
 
   const adminView = (
-    <section className="grid gap-4 xl:grid-cols-2">
-      <Card
-        title="用户密钥"
-        icon={<Settings size={16} />}
-        action={<Button variant="secondary" onClick={refreshUserKeys}><RefreshCw size={16} /> 刷新</Button>}
-      >
-        <form className="grid gap-3" onSubmit={createUserKey}>
-          <Field label="名称">
-            <Input value={keyForm.label} onChange={(event) => setKeyForm({ ...keyForm, label: event.target.value })} />
-          </Field>
-          <div className="grid gap-2 sm:grid-cols-2">
-            <Toggle
-              checked={keyForm.allow_browser_probe}
-              label="允许浏览器探测"
-              onChange={(checked) => setKeyForm({ ...keyForm, allow_browser_probe: checked })}
-            />
-            <Toggle
-              checked={keyForm.allow_ytdlp}
-              label="允许 yt-dlp"
-              onChange={(checked) => setKeyForm({ ...keyForm, allow_ytdlp: checked })}
-            />
-          </div>
-          <Button type="submit" disabled={busy}>创建用户密钥</Button>
-        </form>
-        {newUserKey && (
-          <div className="mt-3 rounded-md border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm">
-            <div className="text-emerald-200">明文密钥只显示一次</div>
-            <div className="mt-2 break-all font-mono text-xs text-zinc-100">{newUserKey}</div>
-            <Button className="mt-3 h-8" variant="secondary" onClick={() => copy(newUserKey)}>
-              <Clipboard size={14} /> 复制
-            </Button>
-          </div>
-        )}
-        <div className="mt-4 grid gap-2">
-          {userKeys.map((key) => (
-            <div key={key.id} className="rounded-md border border-zinc-800 bg-zinc-950 p-3 text-sm">
-              <div className="flex flex-wrap items-center justify-between gap-2">
+    <div className="view-stack">
+      <section className="admin-grid">
+        <Card
+          title="用户密钥"
+          icon={<KeyRound size={16} />}
+          action={<Button variant="secondary" onClick={refreshUserKeys}><RefreshCw size={16} /> 刷新</Button>}
+        >
+          <form className="admin-form" onSubmit={createUserKey}>
+            <Field label="名称">
+              <Input value={keyForm.label} onChange={(event) => setKeyForm({ ...keyForm, label: event.target.value })} />
+            </Field>
+            <div className="permission-grid">
+              <Toggle
+                checked={keyForm.allow_browser_probe}
+                label="允许浏览器探测"
+                onChange={(checked) => setKeyForm({ ...keyForm, allow_browser_probe: checked })}
+              />
+              <Toggle
+                checked={keyForm.allow_ytdlp}
+                label="允许 yt-dlp"
+                onChange={(checked) => setKeyForm({ ...keyForm, allow_ytdlp: checked })}
+              />
+            </div>
+            <Button type="submit" disabled={busy}>创建用户密钥</Button>
+          </form>
+          {newUserKey && (
+            <div className="key-result">
+              <strong>明文密钥只显示一次</strong>
+              <code>{newUserKey}</code>
+              <Button className="h-8" variant="secondary" onClick={() => copy(newUserKey)}>
+                <Clipboard size={14} /> 复制
+              </Button>
+            </div>
+          )}
+          <div className="key-table">
+            {userKeys.map((key) => (
+              <div key={key.id} className="key-row">
                 <div>
-                  <div className="font-medium text-zinc-100">{key.label}</div>
-                  <div className="text-xs text-zinc-500">{key.key_prefix}... / {roleLabel(key.role)}</div>
+                  <strong>{key.label}</strong>
+                  <span>{key.key_prefix}... / {roleLabel(key.role)}</span>
+                </div>
+                <div className="key-flags">
+                  <em>浏览器：{key.allow_browser_probe ? "允许" : "禁止"}</em>
+                  <em>yt-dlp：{key.allow_ytdlp ? "允许" : "禁止"}</em>
+                  {key.revoked_at && <em className="danger">已撤销</em>}
                 </div>
                 <Button className="h-8" variant="secondary" disabled={Boolean(key.revoked_at) || busy} onClick={() => revokeUserKey(key.id)}>
                   撤销
                 </Button>
               </div>
-              <div className="mt-2 flex flex-wrap gap-2 text-xs text-zinc-400">
-                <span className="rounded bg-zinc-800 px-1.5 py-0.5">浏览器：{key.allow_browser_probe ? "允许" : "禁止"}</span>
-                <span className="rounded bg-zinc-800 px-1.5 py-0.5">yt-dlp：{key.allow_ytdlp ? "允许" : "禁止"}</span>
-                {key.revoked_at && <span className="rounded bg-red-500/15 px-1.5 py-0.5 text-red-200">已撤销</span>}
-              </div>
-            </div>
-          ))}
-          {!userKeys.length && <Empty label="暂无用户密钥，点击刷新或创建一个" />}
-        </div>
-      </Card>
-
-      <Card title="浏览器账号配置" icon={<Server size={16} />}>
-        <div className="grid gap-3">
-          <Field label="Profile ID">
-            <Input value={profileId} onChange={(event) => setProfileId(event.target.value)} />
-          </Field>
-          <div className="grid gap-2 sm:grid-cols-2">
-            {["哔哩哔哩", "YouTube", "抖音", "快手"].map((platform) => (
-              <Button key={platform} type="button" variant="secondary" onClick={() => startProfileLogin(platform)} disabled={busy}>
-                <Play size={16} /> 准备登录 {platform}
-              </Button>
             ))}
+            {!userKeys.length && <Empty label="暂无用户密钥，点击刷新或创建一个" />}
           </div>
-          <form className="grid gap-2" onSubmit={importProfileCookies}>
-            <label className="grid gap-1.5 text-sm text-zinc-400">
-              <span>Cookie JSON</span>
-              <textarea
-                className="input min-h-32 py-2 font-mono text-xs"
-                placeholder='[{"name":"SESSDATA","value":"...","domain":".bilibili.com","path":"/"}]'
-                value={cookieJson}
-                onChange={(event) => setCookieJson(event.target.value)}
-              />
-            </label>
-            <Button type="submit" disabled={busy || !cookieJson.trim()}>导入 Cookie 到 Profile</Button>
-          </form>
-        </div>
-      </Card>
-    </section>
+        </Card>
+
+        <Card title="浏览器账号配置" icon={<UserCog size={16} />}>
+          <div className="admin-form">
+            <Field label="Profile ID">
+              <Input value={profileId} onChange={(event) => setProfileId(event.target.value)} />
+            </Field>
+            <div className="login-grid">
+              {["哔哩哔哩", "YouTube", "抖音", "快手"].map((platform) => (
+                <Button key={platform} type="button" variant="secondary" onClick={() => startProfileLogin(platform)} disabled={busy}>
+                  <Play size={16} /> 登录 {platform}
+                </Button>
+              ))}
+            </div>
+            <form className="admin-form" onSubmit={importProfileCookies}>
+              <label className="field">
+                <span>Cookie JSON</span>
+                <textarea
+                  className="input cookie-input"
+                  placeholder='[{"name":"SESSDATA","value":"...","domain":".bilibili.com","path":"/"}]'
+                  value={cookieJson}
+                  onChange={(event) => setCookieJson(event.target.value)}
+                />
+              </label>
+              <Button type="submit" disabled={busy || !cookieJson.trim()}>导入 Cookie 到 Profile</Button>
+            </form>
+          </div>
+        </Card>
+      </section>
+    </div>
   );
 
   const helpView = (
-    <section className="grid gap-4 lg:grid-cols-2">
-      <HelpCard title="密钥逻辑" lines={[
-        "管理密钥来自服务器 RK_API_KEY，可以创建和撤销用户密钥。",
-        "用户密钥保存在数据库中，只存 SHA-256 摘要；明文只在创建时显示一次。",
-        "用户密钥可以被限制是否允许浏览器探测和 yt-dlp。",
-      ]} />
-      <HelpCard title="解析方式" lines={[
-        "自动解析会先走直链，再按当前密钥权限尝试 yt-dlp 和浏览器探测。",
-        "浏览器探测适合页面脚本生成、签名 URL、需要播放后才出现资源的站点。",
-        "yt-dlp 适合成熟站点规则；如果站点规则过期，需要更新 yt-dlp 或改用浏览器探测。",
-      ]} />
-      <HelpCard title="授权模式" lines={[
-        "自动会按任务和候选资源决定是否复用浏览器 Profile 的 Cookie/Header。",
-        "Profile/Cookie 适合哔哩哔哩、YouTube、抖音、快手等登录后清晰度或资源更完整的页面。",
-        "后台账号配置不会绕过验证码、DRM、年龄确认或登录风控。",
-      ]} />
-      <HelpCard title="剪贴板" lines={[
-        "HTTPS 或 localhost 页面通常可以在点击按钮后读取系统剪贴板。",
-        "当前公网 IP 使用 HTTP 时，Edge/Chrome 可能按安全策略拦截自动读取。",
-        "被拦截时按钮会自动聚焦来源 URL，按 Ctrl+V 会自动填入。稳定一键读取需要给服务配置域名和 HTTPS。",
-      ]} />
-    </section>
+    <div className="view-stack">
+      <section className="help-grid">
+        <HelpCard title="密钥逻辑" lines={[
+          "管理密钥来自服务器 RK_API_KEY，可以创建和撤销用户密钥。",
+          "用户密钥保存在数据库中，只存 SHA-256 摘要；明文只在创建时显示一次。",
+          "用户密钥可以被限制是否允许浏览器探测和 yt-dlp。",
+        ]} />
+        <HelpCard title="解析方式" lines={[
+          "自动解析会先走直链，再按当前密钥权限尝试 yt-dlp 和浏览器探测。",
+          "浏览器探测适合页面脚本生成、签名 URL、需要播放后才出现资源的站点。",
+          "yt-dlp 适合成熟站点规则；如果站点规则过期，需要更新 yt-dlp 或改用浏览器探测。",
+        ]} />
+        <HelpCard title="授权模式" lines={[
+          "自动会按任务和候选资源决定是否复用浏览器 Profile 的 Cookie/Header。",
+          "Profile/Cookie 适合哔哩哔哩、YouTube、抖音、快手等登录后清晰度或资源更完整的页面。",
+          "后台账号配置不会绕过验证码、DRM、年龄确认或登录风控。",
+        ]} />
+        <HelpCard title="剪贴板" lines={[
+          "HTTPS 或 localhost 页面通常可以在点击按钮后读取系统剪贴板。",
+          "当前公网 IP 使用 HTTP 时，Edge/Chrome 可能按安全策略拦截自动读取。",
+          "被拦截时按钮会自动聚焦来源 URL，按 Ctrl+V 会自动填入。稳定一键读取需要给服务配置域名和 HTTPS。",
+        ]} />
+      </section>
+    </div>
   );
 
+  const navItems: Array<{ mode: ViewMode; icon: React.ReactNode }> = [
+    { mode: "console", icon: <Activity size={16} /> },
+    { mode: "admin", icon: <Shield size={16} /> },
+    { mode: "help", icon: <HelpCircle size={16} /> },
+  ];
+
   return (
-    <main className="min-h-screen bg-zinc-950 text-zinc-100">
-      <header className="border-b border-zinc-800 bg-zinc-950/95 px-6 py-4">
-        <div className="mx-auto grid max-w-7xl gap-4 lg:grid-cols-[1fr_auto_auto] lg:items-center">
+    <main className="app-shell">
+      <aside className="sidebar">
+        <div className="brand-block">
+          <div className="brand-mark">RK</div>
           <div>
-            <h1 className="text-xl font-semibold tracking-normal">Reflection King</h1>
-            <p className="text-sm text-zinc-400">媒体抓取与转码控制台</p>
+            <h1>Reflection King</h1>
+            <p>媒体抓取与转码</p>
           </div>
-          <nav className="segmented w-full lg:w-auto">
-            {(["console", "admin", "help"] as ViewMode[]).map((mode) => (
-              <button
-                key={mode}
-                className={viewMode === mode ? "active" : ""}
-                type="button"
-                onClick={() => {
-                  setViewMode(mode);
-                  if (mode === "admin" && apiKey) void refreshUserKeys();
-                }}
-              >
-                {viewModeLabel(mode)}
-              </button>
-            ))}
-          </nav>
-          <div className="flex flex-wrap items-center gap-2">
+        </div>
+
+        <nav className="side-nav">
+          {navItems.map((item) => (
+            <button
+              key={item.mode}
+              className={viewMode === item.mode ? "active" : ""}
+              type="button"
+              onClick={() => {
+                setViewMode(item.mode);
+                if (item.mode === "admin" && apiKey) void refreshUserKeys();
+              }}
+            >
+              {item.icon}
+              {viewModeLabel(item.mode)}
+            </button>
+          ))}
+        </nav>
+
+        <div className="side-section">
+          <span className="side-label">系统状态</span>
+          <StatusLine label="API" ok={health?.ok} value={health?.service ? "正常" : "连接中"} />
+          <StatusLine
+            label="浏览器"
+            ok={capabilities?.browser_probe_configured}
+            value={capabilityStatus(capabilities?.browser_probe_configured, apiKey)}
+          />
+          <StatusLine
+            label="yt-dlp"
+            ok={capabilities?.yt_dlp_configured}
+            value={capabilityStatus(capabilities?.yt_dlp_configured, apiKey)}
+          />
+        </div>
+
+        <div className="side-section">
+          <span className="side-label">当前密钥</span>
+          <div className="identity-box">
+            <Shield size={16} />
+            <span>{capabilities?.auth ? `${roleLabel(capabilities.auth.role)} / ${capabilities.auth.label}` : apiKey ? "读取中" : "未填写"}</span>
+          </div>
+          <div className="identity-box">
+            <Database size={16} />
+            <span>{formatBytes(health?.max_download_bytes)}</span>
+          </div>
+        </div>
+      </aside>
+
+      <section className="workspace">
+        <header className="topbar">
+          <div className="topbar-title">
+            <strong>{viewModeLabel(viewMode)}</strong>
+            <span>{message}</span>
+          </div>
+          <div className="topbar-actions">
             <Input
-              className="w-64"
+              className="key-input"
               type="password"
               placeholder="输入管理密钥或用户密钥"
               value={apiKey}
@@ -1074,14 +1098,14 @@ function App() {
               <RefreshCw size={16} /> 刷新
             </Button>
           </div>
-        </div>
-      </header>
+        </header>
 
-      <div className="mx-auto grid max-w-7xl gap-4 p-4">
-        {viewMode === "console" && consoleView}
-        {viewMode === "admin" && adminView}
-        {viewMode === "help" && helpView}
-      </div>
+        <div className="workspace-body">
+          {viewMode === "console" && consoleView}
+          {viewMode === "admin" && adminView}
+          {viewMode === "help" && helpView}
+        </div>
+      </section>
     </main>
   );
 }
@@ -1095,19 +1119,19 @@ function Card(props: {
   bodyClassName?: string;
 }) {
   return (
-    <section className={`rounded-lg border border-zinc-800 bg-zinc-900/80 ${props.className ?? ""}`}>
-      <div className="flex items-center justify-between gap-3 border-b border-zinc-800 px-4 py-3">
-        <h2 className="flex items-center gap-2 text-sm font-semibold text-zinc-100">{props.icon}{props.title}</h2>
+    <section className={`panel ${props.className ?? ""}`}>
+      <div className="panel-header">
+        <h2>{props.icon}{props.title}</h2>
         {props.action}
       </div>
-      <div className={`p-4 ${props.bodyClassName ?? ""}`}>{props.children}</div>
+      <div className={`panel-body ${props.bodyClassName ?? ""}`}>{props.children}</div>
     </section>
   );
 }
 
 function Field(props: { label: string; children: React.ReactNode }) {
   return (
-    <label className="grid gap-1.5 text-sm text-zinc-400">
+    <label className="field">
       <span>{props.label}</span>
       {props.children}
     </label>
@@ -1116,8 +1140,8 @@ function Field(props: { label: string; children: React.ReactNode }) {
 
 function ControlGroup(props: { label: string; children: React.ReactNode }) {
   return (
-    <div className="grid gap-2">
-      <div className="text-sm text-zinc-400">{props.label}</div>
+    <div className="control-group">
+      <div>{props.label}</div>
       {props.children}
     </div>
   );
@@ -1128,22 +1152,70 @@ const Input = React.forwardRef<HTMLInputElement, React.InputHTMLAttributes<HTMLI
   return <input ref={ref} className={`input ${className}`} {...rest} />;
 });
 
-function Select(props: {
-  value: string;
-  options: string[];
-  onChange: React.ChangeEventHandler<HTMLSelectElement>;
-  labelFor?: (value: string) => string;
-}) {
-  return (
-    <select className="input" value={props.value} onChange={props.onChange}>
-      {props.options.map((option) => <option key={option} value={option}>{props.labelFor?.(option) ?? option}</option>)}
-    </select>
-  );
-}
-
 function Button(props: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: "primary" | "secondary" }) {
   const { className = "", variant = "primary", ...rest } = props;
   return <button className={`button ${variant} ${className}`} {...rest} />;
+}
+
+function Dropdown(props: {
+  value: string;
+  options: string[];
+  labelFor?: (value: string) => string;
+  onChange: (value: string) => void;
+  className?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setOpen(false);
+      }
+    };
+    window.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
+  const label = props.labelFor?.(props.value) ?? props.value;
+
+  return (
+    <div ref={rootRef} className={`custom-select ${open ? "open" : ""} ${props.className ?? ""}`}>
+      <button className="custom-select-trigger" type="button" onClick={() => setOpen(!open)}>
+        <span>{label}</span>
+        <ChevronDown size={15} />
+      </button>
+      {open && (
+        <div className="custom-select-menu" role="listbox">
+          {props.options.map((option) => (
+            <button
+              key={option}
+              className={props.value === option ? "active" : ""}
+              type="button"
+              role="option"
+              aria-selected={props.value === option}
+              onClick={() => {
+                props.onChange(option);
+                setOpen(false);
+              }}
+            >
+              {props.labelFor?.(option) ?? option}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function SegmentedControl(props: {
@@ -1170,10 +1242,9 @@ function SegmentedControl(props: {
 
 function Toggle(props: { checked: boolean; label: string; onChange: (checked: boolean) => void }) {
   return (
-    <label className="flex cursor-pointer items-center justify-between gap-3 rounded-md border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm text-zinc-200">
+    <label className="toggle">
       <span>{props.label}</span>
       <input
-        className="h-4 w-4"
         type="checkbox"
         checked={props.checked}
         onChange={(event) => props.onChange(event.target.checked)}
@@ -1185,9 +1256,9 @@ function Toggle(props: { checked: boolean; label: string; onChange: (checked: bo
 function HelpCard(props: { title: string; lines: string[] }) {
   return (
     <Card title={props.title} icon={<Settings size={16} />}>
-      <div className="grid gap-3 text-sm text-zinc-300">
+      <div className="help-copy">
         {props.lines.map((line) => (
-          <p key={line} className="leading-6">{line}</p>
+          <p key={line}>{line}</p>
         ))}
       </div>
     </Card>
@@ -1206,55 +1277,39 @@ function CandidateRow(props: {
   const isBad = Boolean(validation?.startsWith("failed"));
   return (
     <label
-      className={`grid cursor-pointer gap-3 rounded-md border p-3 text-sm transition-colors md:grid-cols-[24px_1fr] ${
+      className={`candidate-row ${
         isBad
-          ? "border-red-500/30 bg-red-500/5"
+          ? "bad"
           : props.selected || props.recommended
-          ? "border-cyan-500/50 bg-cyan-500/10"
-          : "border-zinc-800 bg-zinc-950 hover:border-zinc-700"
+          ? "selected"
+          : ""
       }`}
     >
       <input
-        className="mt-1 h-4 w-4"
         type="checkbox"
         checked={props.selected}
         onChange={props.onToggle}
       />
-      <div className="min-w-0 overflow-hidden">
-        <div className="flex flex-wrap items-start justify-between gap-2">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="font-medium text-zinc-100">
-              {props.recommended ? "推荐 " : ""}
-              {candidateKindLabel(props.candidate.kind)}
-            </span>
-            <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-xs text-zinc-300">{summary.quality}</span>
-            <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-xs text-zinc-300">{summary.source}</span>
-          </div>
-          <div className="text-xs text-zinc-500">
-            {formatBytes(props.candidate.content_length)}
-          </div>
+      <div className="candidate-main">
+        <div className="candidate-title">
+          <strong>{props.recommended ? "推荐 " : ""}{candidateKindLabel(props.candidate.kind)}</strong>
+          <span>{summary.quality}</span>
+          <span>{summary.source}</span>
         </div>
-        <div className="mt-2 grid gap-1 text-xs text-zinc-400 sm:grid-cols-3">
-          <span className="truncate">类型：{summary.kindDetail}</span>
-          <span className="truncate">来源：{extractorLabel(props.candidate.extractor)}</span>
-          <span className="truncate">评分：{props.candidate.score}</span>
+        <div className="candidate-meta">
+          <span>类型：{summary.kindDetail}</span>
+          <span>来源：{extractorLabel(props.candidate.extractor)}</span>
+          <span>评分：{props.candidate.score}</span>
+          <span>大小：{formatBytes(props.candidate.content_length)}</span>
         </div>
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          {props.recommended && <span className="rounded bg-cyan-500/15 px-1.5 py-0.5 text-xs text-cyan-200">自动推荐</span>}
-          {props.candidate.kind === "manifest" && <span className="rounded bg-blue-500/15 px-1.5 py-0.5 text-xs text-blue-200">清单流</span>}
-          {props.candidate.requires_authorization && (
-            <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-xs text-amber-200">需要页面授权</span>
-          )}
-          {summary.adRisk && <span className="rounded bg-red-500/15 px-1.5 py-0.5 text-xs text-red-200">广告/跟踪嫌疑</span>}
-          {validation && (
-            <span className={`rounded px-1.5 py-0.5 text-xs ${isBad ? "bg-red-500/15 text-red-200" : "bg-emerald-500/15 text-emerald-200"}`}>
-              {validationLabel(validation)}
-            </span>
-          )}
+        <div className="candidate-flags">
+          {props.recommended && <em>自动推荐</em>}
+          {props.candidate.kind === "manifest" && <em>清单流</em>}
+          {props.candidate.requires_authorization && <em className="warn">需要页面授权</em>}
+          {summary.adRisk && <em className="danger">广告/跟踪嫌疑</em>}
+          {validation && <em className={isBad ? "danger" : "ok"}>{validationLabel(validation)}</em>}
         </div>
-        <div className="mt-2 max-h-9 overflow-hidden break-all text-xs leading-4 text-zinc-500">
-          第 {props.index + 1} 项 · {compactUrl(props.candidate.url)}
-        </div>
+        <div className="candidate-url">第 {props.index + 1} 项 · {compactUrl(props.candidate.url)}</div>
       </div>
     </label>
   );
@@ -1269,18 +1324,16 @@ function Pager(props: {
 }) {
   const pageCount = Math.max(1, Math.ceil(props.total / props.pageSize));
   return (
-    <div className="flex flex-wrap items-center justify-between gap-2 border-t border-zinc-900 pt-3 text-xs text-zinc-500">
+    <div className="pager">
       <span>第 {props.page} / {pageCount} 页，共 {props.total} 条</span>
-      <div className="flex items-center gap-2">
-        <select
-          className="h-8 rounded-md border border-zinc-800 bg-zinc-950 px-2 text-xs text-zinc-200 outline-none"
-          value={props.pageSize}
-          onChange={(event) => props.onPageSizeChange(Number(event.target.value))}
-        >
-          {PAGE_SIZE_OPTIONS.map((value) => (
-            <option key={value} value={value}>每页 {value}</option>
-          ))}
-        </select>
+      <div className="pager-actions">
+        <Dropdown
+          className="pager-select"
+          value={String(props.pageSize)}
+          options={PAGE_SIZE_OPTIONS.map(String)}
+          labelFor={(value) => `每页 ${value}`}
+          onChange={(value) => props.onPageSizeChange(Number(value))}
+        />
         <Button
           type="button"
           variant="secondary"
@@ -1304,60 +1357,58 @@ function Pager(props: {
   );
 }
 
-function Info(props: {
+function MetaLine(props: {
   label: string;
   value: string | number | null | undefined;
   copyable?: boolean;
-  tone?: "normal" | "danger";
 }) {
   const value = String(props.value ?? "-");
-  const valueTone = props.tone === "danger" ? "text-red-200" : "text-zinc-200";
   return (
-    <div className="grid gap-1 rounded-md border border-zinc-800 bg-zinc-950 px-3 py-2">
-      <span className="text-xs uppercase text-zinc-500">{props.label}</span>
-      <span className={`break-all ${valueTone}`}>
+    <div className="meta-line">
+      <span>{props.label}</span>
+      <strong>
         {value}
         {props.copyable && value !== "-" && (
-          <button className="ml-2 text-cyan-300" onClick={() => copy(value)} type="button">复制</button>
+          <button onClick={() => copy(value)} type="button">复制</button>
         )}
-      </span>
+      </strong>
     </div>
   );
 }
 
 function StatusLine(props: { label: string; ok?: boolean; value: string }) {
   return (
-    <div className="flex items-center justify-between rounded-md border border-zinc-800 bg-zinc-950 px-3 py-2">
-      <span className="text-zinc-400">{props.label}</span>
-      <span className="flex items-center gap-2">
+    <div className="system-row">
+      <span>{props.label}</span>
+      <strong>
         {props.ok ? <CheckCircle2 className="text-emerald-400" size={16} /> : <AlertTriangle className="text-yellow-400" size={16} />}
         {props.value}
-      </span>
+      </strong>
     </div>
   );
 }
 
 function Badge(props: { status: string }) {
   const tone = props.status === "ready"
-    ? "bg-emerald-500/15 text-emerald-300"
+    ? "ready"
     : props.status === "error"
-      ? "bg-red-500/15 text-red-300"
+      ? "error"
       : props.status === "candidates_ready"
-        ? "bg-cyan-500/15 text-cyan-300"
-        : "bg-zinc-700 text-zinc-200";
-  return <span className={`inline-flex h-6 min-w-16 items-center justify-center rounded-full px-2 text-xs font-medium ${tone}`}>{statusLabel(props.status)}</span>;
+        ? "candidates"
+        : "progress";
+  return <span className={`badge ${tone}`}>{statusLabel(props.status)}</span>;
 }
 
 function Empty(props: { label: string }) {
-  return <div className="rounded-md border border-dashed border-zinc-800 p-6 text-center text-sm text-zinc-500">{props.label}</div>;
+  return <div className="empty-state">{props.label}</div>;
 }
 
 function Player(props: { url: string }) {
   const lower = props.url.toLowerCase();
   if (lower.endsWith(".mp4")) {
-    return <video className="mt-3 w-full rounded-md border border-zinc-800" controls src={props.url} />;
+    return <video className="player" controls src={props.url} />;
   }
-  return <audio className="mt-3 w-full" controls src={props.url} />;
+  return <audio className="player" controls src={props.url} />;
 }
 
 function apiHeaders(apiKey: string): Record<string, string> {
