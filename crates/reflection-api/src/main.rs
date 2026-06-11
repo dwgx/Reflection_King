@@ -13,8 +13,10 @@ use axum::{
 use reflection_core::{
     models::{
         normalize_bitrate, normalize_outputs, normalize_profile_id, ApiKeyRecord, ApiKeyRole,
-        ApiKeyView, AuthMode, CreateJobRequest, CreateUserKeyRequest, CreatedUserKeyResponse,
-        DiscoveryMode, JobCreateOptions, JobRecord, JobView, PlatformHint, SelectCandidatesRequest,
+        ApiKeyView, AuthMode, BrowserLoginTokenResponse, ClearJobsResponse, CreateJobRequest,
+        CreateUserKeyRequest, CreatedUserKeyResponse, DiscoveryMode, HiddenJobBatchView,
+        JobCreateOptions, JobRecord, JobView, PlatformHint, RestoreJobsResponse,
+        SelectCandidatesRequest,
     },
     AppConfig, RkError,
 };
@@ -63,6 +65,11 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/jobs", get(list_jobs).post(create_job))
         .route("/api/jobs/clear", post(clear_jobs))
         .route("/api/jobs/restore", post(restore_jobs))
+        .route("/api/jobs/hidden-batches", get(list_hidden_batches))
+        .route(
+            "/api/jobs/hidden-batches/{id}/restore",
+            post(restore_hidden_batch),
+        )
         .route("/api/jobs/{id}", get(get_job))
         .route("/api/jobs/{id}/candidates", get(list_candidates))
         .route("/api/jobs/{id}/select-candidates", post(select_candidates))
@@ -77,6 +84,14 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route(
             "/api/admin/browser-profiles/{profile_id}/cookies/import",
             post(import_profile_cookies),
+        )
+        .route(
+            "/api/admin/browser-login-tokens",
+            post(create_browser_login_token),
+        )
+        .route(
+            "/api/browser-login-tokens/cookies/import",
+            post(import_profile_cookies_with_token),
         )
         .route(
             "/api/admin/browser-profiles/{profile_id}/login-session",
@@ -149,7 +164,7 @@ async fn capabilities(
         "yt_dlp_max_json_bytes": state.config.yt_dlp_max_json_bytes,
         "download_timeout_seconds": state.config.download_timeout.as_secs(),
         "supported_discovery": supported_discovery_modes(&principal),
-        "supported_platform_hints": ["auto", "bilibili", "youtube", "soundcloud"],
+        "supported_platform_hints": ["auto", "bilibili", "youtube", "soundcloud", "douyin", "kuaishou", "pornhub"],
         "supported_outputs": ["audio", "video", "image", "page_html"],
         "auth": {
             "role": principal.role.as_str(),
@@ -184,39 +199,72 @@ async fn list_jobs(
 async fn clear_jobs(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-) -> Result<Json<serde_json::Value>, ApiError> {
+) -> Result<Json<ClearJobsResponse>, ApiError> {
     let principal = authorize(&state, &headers).await?;
-    let hidden = if principal.role == ApiKeyRole::Admin {
-        state.hide_visible_jobs().await?
+    let response = if principal.role == ApiKeyRole::Admin {
+        state
+            .hide_visible_jobs(principal.key_id, Some(&principal.label))
+            .await?
     } else if let Some(key_id) = principal.key_id {
-        state.hide_visible_jobs_for_key(key_id).await?
+        state
+            .hide_visible_jobs_for_key(key_id, Some(&principal.label))
+            .await?
     } else {
         return Err(RkError::Unauthorized.into());
     };
 
-    Ok(Json(serde_json::json!({
-        "hidden": hidden,
-        "history_deleted": false
-    })))
+    Ok(Json(response))
 }
 
 async fn restore_jobs(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-) -> Result<Json<serde_json::Value>, ApiError> {
+) -> Result<Json<RestoreJobsResponse>, ApiError> {
     let principal = authorize(&state, &headers).await?;
-    let restored = if principal.role == ApiKeyRole::Admin {
-        state.restore_hidden_jobs().await?
+    let response = if principal.role == ApiKeyRole::Admin {
+        state.restore_latest_hidden_job_batch(None).await?
     } else if let Some(key_id) = principal.key_id {
-        state.restore_hidden_jobs_for_key(key_id).await?
+        state.restore_latest_hidden_job_batch(Some(key_id)).await?
     } else {
         return Err(RkError::Unauthorized.into());
     };
 
-    Ok(Json(serde_json::json!({
-        "restored": restored,
-        "history_deleted": false
-    })))
+    Ok(Json(response))
+}
+
+async fn list_hidden_batches(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<ListJobsQuery>,
+) -> Result<Json<Vec<HiddenJobBatchView>>, ApiError> {
+    let principal = authorize(&state, &headers).await?;
+    let limit = query.limit.unwrap_or(50).clamp(1, 200);
+    if principal.role == ApiKeyRole::Admin {
+        Ok(Json(state.list_hidden_job_batches(None, limit).await?))
+    } else if let Some(key_id) = principal.key_id {
+        Ok(Json(
+            state.list_hidden_job_batches(Some(key_id), limit).await?,
+        ))
+    } else {
+        Err(RkError::Unauthorized.into())
+    }
+}
+
+async fn restore_hidden_batch(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<RestoreJobsResponse>, ApiError> {
+    let principal = authorize(&state, &headers).await?;
+    let response = if principal.role == ApiKeyRole::Admin {
+        state.restore_hidden_job_batch(None, id).await?
+    } else if let Some(key_id) = principal.key_id {
+        state.restore_hidden_job_batch(Some(key_id), id).await?
+    } else {
+        return Err(RkError::Unauthorized.into());
+    };
+
+    Ok(Json(response))
 }
 
 async fn create_job(
@@ -382,6 +430,14 @@ async fn rotate_admin_key(
 #[derive(Debug, Deserialize)]
 struct ImportCookiesRequest {
     cookies: Vec<serde_json::Value>,
+    profile_id: Option<String>,
+    login_token: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateBrowserLoginTokenRequest {
+    profile_id: Option<String>,
+    platform: Option<String>,
 }
 
 async fn import_profile_cookies(
@@ -396,6 +452,37 @@ async fn import_profile_cookies(
     Ok(Json(
         state
             .import_browser_profile_cookies(&profile_id, request.cookies)
+            .await?,
+    ))
+}
+
+async fn create_browser_login_token(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<CreateBrowserLoginTokenRequest>,
+) -> Result<Json<BrowserLoginTokenResponse>, ApiError> {
+    let principal = authorize(&state, &headers).await?;
+    ensure_admin(&principal)?;
+    let profile_id = normalize_profile_id(request.profile_id);
+    let platform = request.platform.unwrap_or_else(|| "bilibili".to_string());
+    Ok(Json(
+        state
+            .create_browser_login_token(&profile_id, &platform, principal.key_id)
+            .await?,
+    ))
+}
+
+async fn import_profile_cookies_with_token(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<ImportCookiesRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let profile_id = normalize_profile_id(request.profile_id);
+    let Some(token) = request.login_token else {
+        return Err(RkError::Unauthorized.into());
+    };
+    Ok(Json(
+        state
+            .import_browser_profile_cookies_with_login_token(&profile_id, &token, request.cookies)
             .await?,
     ))
 }
@@ -639,6 +726,15 @@ fn infer_platform(source_url: &str) -> PlatformHint {
         PlatformHint::Youtube
     } else if host.contains("soundcloud.com") {
         PlatformHint::Soundcloud
+    } else if host.contains("douyin.com") || host.contains("iesdouyin.com") {
+        PlatformHint::Douyin
+    } else if host.contains("kuaishou.com")
+        || host.contains("v.kuaishou.com")
+        || host.contains("gifshow.com")
+    {
+        PlatformHint::Kuaishou
+    } else if host.contains("pornhub.") || host.contains("phncdn.com") {
+        PlatformHint::Pornhub
     } else {
         PlatformHint::Auto
     }

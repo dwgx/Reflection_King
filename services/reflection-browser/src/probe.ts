@@ -172,6 +172,12 @@ export class BrowserProbeService {
     if (isDouyinUrl(request.url) || isDouyinUrl(finalUrl)) {
       filtered = filterDouyinCandidates(filtered);
     }
+    if (isKuaishouUrl(request.url) || isKuaishouUrl(finalUrl)) {
+      filtered = filterKuaishouCandidates(filtered);
+    }
+    if (isAdultVideoPage(request.url) || isAdultVideoPage(finalUrl)) {
+      filtered = filterAdultVideoCandidates(filtered);
+    }
 
     return {
       finalUrl,
@@ -941,6 +947,8 @@ function isAllowedMainMediaHost(host: string): boolean {
     host.endsWith("sndcdn.com") ||
     host.endsWith("douyinvod.com") ||
     host.endsWith("douyinpic.com") ||
+    host.endsWith("kwaicdn.com") ||
+    host.endsWith("gifshow.com") ||
     host.endsWith("phncdn.com")
   );
 }
@@ -1030,6 +1038,97 @@ function filterDouyinCandidates(candidates: BrowserCandidate[]): BrowserCandidat
         out.push(candidate);
       }
     }
+  }
+  return out;
+}
+
+function isKuaishouUrl(value: string): boolean {
+  try {
+    const host = new URL(value).hostname.toLowerCase();
+    return (
+      host === "kuaishou.com" ||
+      host.endsWith(".kuaishou.com") ||
+      host === "v.kuaishou.com" ||
+      host.endsWith(".gifshow.com")
+    );
+  } catch {
+    return false;
+  }
+}
+
+function filterKuaishouCandidates(candidates: BrowserCandidate[]): BrowserCandidate[] {
+  const out: BrowserCandidate[] = [];
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    let host = "";
+    let pathname = "";
+    try {
+      const parsed = new URL(candidate.url);
+      host = parsed.hostname.toLowerCase();
+      pathname = parsed.pathname.toLowerCase();
+    } catch {
+      continue;
+    }
+
+    const allowedHost =
+      host.endsWith("kwaicdn.com") ||
+      host.endsWith("gifshow.com") ||
+      host.endsWith("kuaishou.com");
+    if (!allowedHost || isLikelyAdOrTrackingUrl(candidate.url)) {
+      continue;
+    }
+    if (candidate.kind === "image" && /(avatar|profile|icon|logo|emoji|sprite|badge)/i.test(pathname)) {
+      continue;
+    }
+    const key = `${candidate.kind}:${pathname}:${candidate.qualityLabel ?? ""}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    out.push({
+      ...candidate,
+      score: candidate.score + (candidate.kind === "video" || candidate.kind === "manifest" ? 30 : 8),
+      metadata: { ...(candidate.metadata ?? {}), source: "kuaishou_filter" },
+    });
+  }
+  return out;
+}
+
+function filterAdultVideoCandidates(candidates: BrowserCandidate[]): BrowserCandidate[] {
+  const out: BrowserCandidate[] = [];
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    let host = "";
+    let pathname = "";
+    try {
+      const parsed = new URL(candidate.url);
+      host = parsed.hostname.toLowerCase();
+      pathname = parsed.pathname.toLowerCase();
+    } catch {
+      continue;
+    }
+
+    const isMainMedia =
+      host.endsWith("phncdn.com") ||
+      host.includes("pornhub.") ||
+      pathname.includes("/videos/") ||
+      pathname.includes("/hls/");
+    if (!isMainMedia || isLikelyAdOrTrackingUrl(candidate.url)) {
+      continue;
+    }
+    if (candidate.kind === "image") {
+      continue;
+    }
+    const key = `${candidate.kind}:${pathname}:${candidate.qualityLabel ?? ""}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    out.push({
+      ...candidate,
+      score: candidate.score + (candidate.resourceType?.includes("adult") ? 60 : 20),
+      metadata: { ...(candidate.metadata ?? {}), source: "adult_video_filter" },
+    });
   }
   return out;
 }

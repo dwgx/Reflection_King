@@ -11,10 +11,12 @@ const platformUrls = {
   youtube: "https://www.youtube.com/",
   douyin: "https://www.douyin.com/",
   kuaishou: "https://www.kuaishou.com/",
+  pornhub: "https://www.pornhub.com/",
 };
 
 const baseUrl = process.env.RK_LOGIN_BASE_URL?.replace(/\/+$/, "");
 const apiKey = process.env.RK_LOGIN_API_KEY;
+const loginToken = process.env.RK_LOGIN_TOKEN;
 const profileId = process.env.RK_LOGIN_PROFILE_ID;
 const platform = process.env.RK_LOGIN_PLATFORM;
 const userDataDir = process.env.RK_LOGIN_USER_DATA_DIR;
@@ -34,12 +36,13 @@ if (dryRun) {
     profileId,
     platform,
     userDataDir: path.normalize(userDataDir),
+    authMode: loginToken ? "login-token" : apiKey ? "api-key" : "none",
   }, null, 2));
   process.exit(0);
 }
 
-if (!apiKey) {
-  throw new Error("Missing admin API key");
+if (!apiKey && !loginToken) {
+  throw new Error("Missing admin API key or login token");
 }
 
 const context = await chromium.launchPersistentContext(userDataDir, {
@@ -63,13 +66,20 @@ try {
     throw new Error("Browser profile has no cookies to upload");
   }
 
-  const response = await fetch(`${baseUrl}/api/admin/browser-profiles/${encodeURIComponent(profileId)}/cookies/import`, {
+  const endpoint = loginToken
+    ? `${baseUrl}/api/browser-login-tokens/cookies/import`
+    : `${baseUrl}/api/admin/browser-profiles/${encodeURIComponent(profileId)}/cookies/import`;
+  const headers = {
+    "content-type": "application/json",
+  };
+  if (apiKey) {
+    headers["x-api-key"] = apiKey;
+  }
+
+  const response = await fetch(endpoint, {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": apiKey,
-    },
-    body: JSON.stringify({ cookies }),
+    headers,
+    body: JSON.stringify({ profile_id: profileId, login_token: loginToken, cookies }),
   });
 
   const text = await response.text();

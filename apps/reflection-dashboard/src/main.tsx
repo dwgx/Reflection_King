@@ -12,6 +12,7 @@ import {
   Eye,
   ExternalLink,
   FileAudio,
+  History,
   HelpCircle,
   KeyRound,
   ListRestart,
@@ -27,10 +28,10 @@ import {
 import "./styles.css";
 
 type DiscoveryMode = "direct" | "external" | "browser" | "auto";
-type PlatformHint = "auto" | "bilibili" | "youtube" | "soundcloud";
+type PlatformHint = "auto" | "bilibili" | "youtube" | "soundcloud" | "douyin" | "kuaishou" | "pornhub";
 type OutputKind = "audio" | "video" | "image" | "page_html";
 type OutputMode = "auto" | "video" | "audio" | "image" | "page_html";
-type ViewMode = "console" | "admin" | "help";
+type ViewMode = "console" | "history" | "admin" | "help";
 
 interface Health {
   ok: boolean;
@@ -149,6 +150,50 @@ interface RotatedAdminKeyResponse {
   record: UserKeyView;
 }
 
+interface HiddenJobBatchView {
+  id: string;
+  actor_key_id: string | null;
+  actor_label: string | null;
+  hidden_count: number;
+  restored_count: number;
+  created_at: string;
+  restored_at: string | null;
+}
+
+interface ClearJobsResponse {
+  batch_id: string | null;
+  hidden: number;
+  history_deleted: boolean;
+}
+
+interface RestoreJobsResponse {
+  batch_id: string | null;
+  restored: number;
+  history_deleted: boolean;
+}
+
+interface BrowserLoginTokenResponse {
+  token: string;
+  profile_id: string;
+  platform: string;
+  expires_at: string;
+  protocol_url: string;
+}
+
+interface NotificationItem {
+  id: number;
+  tone: "info" | "success" | "error" | "warn";
+  text: string;
+}
+
+interface ConfirmDialogState {
+  title: string;
+  message: string;
+  confirmLabel: string;
+  danger?: boolean;
+  onConfirm: () => Promise<void> | void;
+}
+
 const OUTPUTS: OutputKind[] = ["audio", "video", "image", "page_html"];
 const TERMINAL = new Set(["ready", "error", "candidates_ready"]);
 const PAGE_SIZE_OPTIONS = [3, 5, 10, 20, 50];
@@ -157,6 +202,7 @@ const LOGIN_PLATFORMS = [
   { value: "youtube", label: "YouTube" },
   { value: "douyin", label: "抖音" },
   { value: "kuaishou", label: "快手" },
+  { value: "pornhub", label: "Pornhub" },
 ];
 
 function App() {
@@ -177,6 +223,9 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string>("空闲");
   const [viewMode, setViewMode] = useState<ViewMode>("console");
+  const [notifications, setNotifications] = useState<NotificationItem[]>([]);
+  const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
+  const notificationIdRef = useRef(0);
   const [pasteOpen, setPasteOpen] = useState(false);
   const [pasteText, setPasteText] = useState("");
   const [waitingForPaste, setWaitingForPaste] = useState(false);
@@ -192,7 +241,7 @@ function App() {
   });
   const [profileId, setProfileId] = useState("admin_default");
   const [cookieJson, setCookieJson] = useState("");
-  const [loginCommand, setLoginCommand] = useState("");
+  const [hiddenBatches, setHiddenBatches] = useState<HiddenJobBatchView[]>([]);
   const [form, setForm] = useState<CreateJobPayload>({
     url: "",
     bitrate: "auto",
@@ -223,6 +272,12 @@ function App() {
       setViewMode("console");
     }
   }, [isAdmin, viewMode]);
+
+  useEffect(() => {
+    if (viewMode === "history" && apiKey) {
+      void refreshHiddenBatches();
+    }
+  }, [viewMode, headers]);
 
   useEffect(() => {
     if (!selectedJobId) return;
@@ -325,12 +380,25 @@ function App() {
     return text ? (JSON.parse(text) as T) : (undefined as T);
   }
 
+  function notify(text: string, tone: NotificationItem["tone"] = "info") {
+    setMessage(text);
+    const id = ++notificationIdRef.current;
+    setNotifications((items) => [...items.slice(-3), { id, tone, text }]);
+    window.setTimeout(() => {
+      setNotifications((items) => items.filter((item) => item.id !== id));
+    }, tone === "error" ? 7000 : 4200);
+  }
+
+  function askConfirm(dialog: ConfirmDialogState) {
+    setConfirmDialog(dialog);
+  }
+
   async function refreshSystem() {
     try {
       const healthData = await requestWithoutAuth<Health>("/api/health");
       setHealth(healthData);
     } catch (error) {
-      setMessage(errorMessage(error));
+      notify(errorMessage(error), "error");
     }
 
     try {
@@ -339,7 +407,7 @@ function App() {
     } catch (error) {
       setCapabilities(null);
       if (apiKey) {
-        setMessage(errorMessage(error));
+        notify(errorMessage(error), "error");
       } else {
         setMessage("系统状态已加载；填写管理密钥后可查看解析能力和任务。");
       }
@@ -357,7 +425,16 @@ function App() {
         setSelectedJobId(data[0].id);
       }
     } catch (error) {
-      setMessage(errorMessage(error));
+      notify(errorMessage(error), "error");
+    }
+  }
+
+  async function refreshHiddenBatches() {
+    try {
+      const data = await request<HiddenJobBatchView[]>("/api/jobs/hidden-batches?limit=100");
+      setHiddenBatches(data);
+    } catch (error) {
+      notify(errorMessage(error), "error");
     }
   }
 
@@ -376,7 +453,7 @@ function App() {
         await refreshJobs();
       }
     } catch (error) {
-      if (!quiet) setMessage(errorMessage(error));
+      if (!quiet) notify(errorMessage(error), "error");
     }
   }
 
@@ -393,11 +470,11 @@ function App() {
       });
       setSelectedJobId(job.id);
       setSelectedCandidates(new Set());
-      setMessage(`已创建任务 ${job.id}`);
+      notify(`已创建任务 ${job.id}`, "success");
       await refreshJobs();
       await loadJob(job.id);
     } catch (error) {
-      setMessage(errorMessage(error));
+      notify(errorMessage(error), "error");
     } finally {
       setBusy(false);
     }
@@ -411,7 +488,7 @@ function App() {
       }
       const text = await navigator.clipboard.readText();
       if (!text.trim()) {
-        setMessage("剪贴板为空");
+        notify("剪贴板为空", "warn");
         focusForManualPaste("剪贴板为空，已聚焦来源 URL；按 Ctrl+V 会自动填入。");
         return;
       }
@@ -424,69 +501,92 @@ function App() {
   function openPasteBox(reason: string) {
     setPasteText("");
     setPasteOpen(true);
-    setMessage(reason);
+    notify(reason, "info");
   }
 
   function focusForManualPaste(reason: string) {
     setWaitingForPaste(true);
     setPasteOpen(true);
     setPasteText("");
-    setMessage(reason);
+    notify(reason, reason.includes("拦截") || reason.includes("不允许") ? "warn" : "info");
     window.setTimeout(() => sourceInputRef.current?.focus(), 0);
   }
 
   function applyPastedUrl(text = pasteText) {
     const value = text.trim();
     if (!value) {
-      setMessage("未粘贴内容");
+      notify("未粘贴内容", "warn");
       return;
     }
     setForm({ ...form, url: value });
     setPasteText("");
     setPasteOpen(false);
     setWaitingForPaste(false);
-    setMessage("已填入粘贴内容");
+    notify("已填入粘贴内容", "success");
   }
 
   function clearForm() {
     setForm({ ...form, url: "" });
-    setMessage("已清空来源 URL");
+    notify("已清空来源 URL", "info");
   }
 
   async function clearVisibleJobs() {
     if (!jobs.length) {
-      setMessage("任务列表已经为空");
+      notify("任务列表已经为空", "info");
       return;
     }
-    if (!window.confirm("清空会隐藏当前密钥可见的任务列表，但不会删除数据库历史。继续吗？")) {
-      return;
-    }
-    setBusy(true);
-    try {
-      const response = await request<{ hidden: number; history_deleted: boolean }>("/api/jobs/clear", {
-        method: "POST",
-      });
-      setJobs([]);
-      clearSelection();
-      setJobPage(1);
-      setMessage(`已隐藏 ${response.hidden} 个任务；数据库历史未删除`);
-    } catch (error) {
-      setMessage(errorMessage(error));
-    } finally {
-      setBusy(false);
-    }
+    askConfirm({
+      title: "清空任务列表",
+      message: "清空只会隐藏当前密钥可见的任务列表，不会删除数据库历史。可以恢复上一批，也可以在隐藏历史页恢复更早批次。",
+      confirmLabel: "清空列表",
+      danger: true,
+      onConfirm: async () => {
+        setBusy(true);
+        try {
+          const response = await request<ClearJobsResponse>("/api/jobs/clear", {
+            method: "POST",
+          });
+          setJobs([]);
+          clearSelection();
+          setJobPage(1);
+          await refreshHiddenBatches();
+          notify(`已隐藏 ${response.hidden} 个任务；数据库历史未删除`, "success");
+        } catch (error) {
+          notify(errorMessage(error), "error");
+        } finally {
+          setBusy(false);
+        }
+      },
+    });
   }
 
   async function restoreHiddenJobs() {
     setBusy(true);
     try {
-      const response = await request<{ restored: number; history_deleted: boolean }>("/api/jobs/restore", {
+      const response = await request<RestoreJobsResponse>("/api/jobs/restore", {
         method: "POST",
       });
       await refreshJobs();
-      setMessage(`已恢复 ${response.restored} 个隐藏任务`);
+      await refreshHiddenBatches();
+      notify(response.restored ? `已恢复上一批 ${response.restored} 个隐藏任务` : "没有可恢复的隐藏批次", response.restored ? "success" : "info");
     } catch (error) {
-      setMessage(errorMessage(error));
+      notify(errorMessage(error), "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function restoreHiddenBatch(id: string) {
+    setBusy(true);
+    try {
+      const response = await request<RestoreJobsResponse>(`/api/jobs/hidden-batches/${id}/restore`, {
+        method: "POST",
+      });
+      await refreshJobs();
+      await refreshHiddenBatches();
+      notify(response.restored ? `已恢复 ${response.restored} 个隐藏任务` : "这个批次已经恢复或不可见", response.restored ? "success" : "info");
+    } catch (error) {
+      notify(errorMessage(error), "error");
     } finally {
       setBusy(false);
     }
@@ -514,9 +614,9 @@ function App() {
       });
       setSelectedCandidates(new Set());
       await loadJob(selectedJob.id);
-      setMessage("已提交转码任务");
+      notify("已提交转码任务", "success");
     } catch (error) {
-      setMessage(errorMessage(error));
+      notify(errorMessage(error), "error");
     } finally {
       setBusy(false);
     }
@@ -538,7 +638,7 @@ function App() {
     try {
       setUserKeys(await request<UserKeyView[]>("/api/admin/user-keys"));
     } catch (error) {
-      setMessage(errorMessage(error));
+      notify(errorMessage(error), "error");
     }
   }
 
@@ -554,9 +654,9 @@ function App() {
       });
       setNewUserKey(response.key);
       await refreshUserKeys();
-      setMessage("已创建用户密钥，明文只显示这一次。");
+      notify("已创建用户密钥，明文只显示这一次。", "success");
     } catch (error) {
-      setMessage(errorMessage(error));
+      notify(errorMessage(error), "error");
     } finally {
       setBusy(false);
     }
@@ -567,44 +667,55 @@ function App() {
     try {
       await request<void>(`/api/admin/user-keys/${id}/revoke`, { method: "POST" });
       await refreshUserKeys();
-      setMessage("已撤销用户密钥");
+      notify("已撤销用户密钥", "success");
     } catch (error) {
-      setMessage(errorMessage(error));
+      notify(errorMessage(error), "error");
     } finally {
       setBusy(false);
     }
   }
 
   async function rotateAdminKey() {
-    if (!window.confirm("确定要轮换管理员密钥吗？旧管理员密钥会立即失效。")) {
-      return;
-    }
+    askConfirm({
+      title: "轮换管理员密钥",
+      message: "旧管理员密钥会立即失效。新管理员密钥只显示一次，并会自动填入当前页面。",
+      confirmLabel: "轮换密钥",
+      danger: true,
+      onConfirm: async () => {
+        setBusy(true);
+        setNewAdminKey("");
+        try {
+          const response = await request<RotatedAdminKeyResponse>("/api/admin/admin-key/rotate", {
+            method: "POST",
+          });
+          setNewAdminKey(response.key);
+          setApiKey(response.key);
+          await refreshUserKeys();
+          notify("已轮换管理员密钥，明文只显示这一次。", "success");
+        } catch (error) {
+          notify(errorMessage(error), "error");
+        } finally {
+          setBusy(false);
+        }
+      },
+    });
+  }
+
+  async function openLocalProfileLogin(platform: string) {
     setBusy(true);
-    setNewAdminKey("");
     try {
-      const response = await request<RotatedAdminKeyResponse>("/api/admin/admin-key/rotate", {
+      const response = await request<BrowserLoginTokenResponse>("/api/admin/browser-login-tokens", {
         method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ profile_id: profileId, platform }),
       });
-      setNewAdminKey(response.key);
-      setApiKey(response.key);
-      await refreshUserKeys();
-      setMessage("已轮换管理员密钥，明文只显示这一次。");
+      window.location.href = response.protocol_url;
+      notify(`已请求打开本机登录助手：${platformLabel(platform)}`, "success");
     } catch (error) {
-      setMessage(errorMessage(error));
+      notify(errorMessage(error), "error");
     } finally {
       setBusy(false);
     }
-  }
-
-  async function prepareLocalProfileLogin(platform: string) {
-    const command = localLoginCommand(platform, profileId, health?.public_base_url ?? window.location.origin);
-    setLoginCommand(command);
-    const copied = await copy(command);
-    setMessage(
-      copied
-        ? `已复制 ${platform} 本机登录命令；在 PowerShell 执行后按提示登录。`
-        : `浏览器阻止自动复制；已生成 ${platform} 本机登录命令，请手动复制。`,
-    );
   }
 
   async function importProfileCookies(event: React.FormEvent) {
@@ -622,9 +733,9 @@ function App() {
         body: JSON.stringify({ cookies }),
       });
       setCookieJson("");
-      setMessage("已导入浏览器 Profile Cookie");
+      notify("已导入浏览器 Profile Cookie", "success");
     } catch (error) {
-      setMessage(errorMessage(error));
+      notify(errorMessage(error), "error");
     } finally {
       setBusy(false);
     }
@@ -736,7 +847,7 @@ function App() {
             <ControlGroup label="站点">
               <SegmentedControl
                 value={form.platform_hint}
-                options={["auto", "bilibili", "youtube", "soundcloud"]}
+                options={["auto", "bilibili", "youtube", "soundcloud", "douyin", "kuaishou", "pornhub"]}
                 labelFor={platformLabel}
                 onChange={(value) => setForm({ ...form, platform_hint: value as PlatformHint })}
               />
@@ -1036,26 +1147,15 @@ function App() {
               <Input value={profileId} onChange={(event) => setProfileId(event.target.value)} />
             </Field>
             <div className="admin-note">
-              VPS 没有桌面时无法直接弹出登录窗口。点击下面按钮会复制本机登录命令，在当前仓库的 PowerShell 里执行；完成登录后脚本会把 Cookie 导入服务器 Profile。
+              先在本机安装一次协议处理器：运行 scripts/dev/install-protocol.ps1。之后点击按钮会直接打开本机浏览器登录助手，完成登录后自动把 Cookie 导入服务器 Profile。
             </div>
             <div className="login-grid">
               {LOGIN_PLATFORMS.map((platform) => (
-                <Button key={platform.value} type="button" variant="secondary" onClick={() => prepareLocalProfileLogin(platform.value)} disabled={busy}>
-                  <Play size={16} /> 复制登录命令 {platform.label}
+                <Button key={platform.value} type="button" variant="secondary" onClick={() => openLocalProfileLogin(platform.value)} disabled={busy}>
+                  <Play size={16} /> 打开本机登录 {platform.label}
                 </Button>
               ))}
             </div>
-            {loginCommand && (
-              <div className="command-box">
-                <div>
-                  <strong>本机登录命令</strong>
-                  <Button type="button" variant="secondary" onClick={() => copy(loginCommand)}>
-                    <Clipboard size={16} /> 复制
-                  </Button>
-                </div>
-                <textarea className="input command-text" readOnly value={loginCommand} onFocus={(event) => event.currentTarget.select()} />
-              </div>
-            )}
             <form className="admin-form" onSubmit={importProfileCookies}>
               <label className="field">
                 <span>Cookie JSON</span>
@@ -1071,6 +1171,56 @@ function App() {
           </div>
         </Card>
       </section>
+    </div>
+  );
+
+  const historyView = (
+    <div className="view-stack">
+      {!apiKey && (
+        <div className="notice-strip warn">
+          填写管理密钥或用户密钥后可以查看当前密钥可见的隐藏批次。
+        </div>
+      )}
+      <Card
+        title="隐藏历史"
+        icon={<History size={16} />}
+        action={
+          <div className="panel-actions">
+            <Button variant="secondary" onClick={restoreHiddenJobs} disabled={busy}>
+              <Eye size={16} /> 恢复上一批
+            </Button>
+            <Button variant="secondary" onClick={refreshHiddenBatches} disabled={!apiKey}>
+              <RefreshCw size={16} /> 刷新
+            </Button>
+          </div>
+        }
+      >
+        <div className="history-list">
+          {hiddenBatches.map((batch) => (
+            <div key={batch.id} className={`history-row ${batch.restored_at ? "restored" : ""}`}>
+              <div>
+                <strong>{batch.actor_label ?? "未知密钥"}</strong>
+                <span>{batch.id}</span>
+              </div>
+              <div className="history-stats">
+                <em>隐藏 {batch.hidden_count}</em>
+                <em>已恢复 {batch.restored_count}</em>
+                <em>{formatShortDate(batch.created_at)}</em>
+                {batch.restored_at && <em>恢复于 {formatShortDate(batch.restored_at)}</em>}
+              </div>
+              <Button
+                className="h-8"
+                variant="secondary"
+                disabled={busy || Boolean(batch.restored_at)}
+                onClick={() => restoreHiddenBatch(batch.id)}
+              >
+                恢复此批
+              </Button>
+            </div>
+          ))}
+          {!hiddenBatches.length && <Empty label={apiKey ? "暂无隐藏批次" : "需要先填写密钥"} />}
+        </div>
+      </Card>
     </div>
   );
 
@@ -1104,6 +1254,7 @@ function App() {
 
   const navItems: Array<{ mode: ViewMode; icon: React.ReactNode }> = [
     { mode: "console", icon: <Activity size={16} /> },
+    { mode: "history", icon: <History size={16} /> },
     ...(isAdmin ? [{ mode: "admin" as ViewMode, icon: <Shield size={16} /> }] : []),
     { mode: "help", icon: <HelpCircle size={16} /> },
   ];
@@ -1128,6 +1279,7 @@ function App() {
               onClick={() => {
                 setViewMode(item.mode);
                 if (item.mode === "admin" && isAdmin) void refreshUserKeys();
+                if (item.mode === "history" && apiKey) void refreshHiddenBatches();
               }}
             >
               {item.icon}
@@ -1186,6 +1338,7 @@ function App() {
 
         <div className="workspace-body">
           {viewMode === "console" && consoleView}
+          {viewMode === "history" && historyView}
           {viewMode === "admin" && isAdmin && adminView}
           {viewMode === "help" && helpView}
         </div>
@@ -1197,6 +1350,8 @@ function App() {
           <span>任务清空只隐藏列表，数据库历史保留</span>
         </footer>
       </section>
+      <NotificationStack items={notifications} onClose={(id) => setNotifications((items) => items.filter((item) => item.id !== id))} />
+      <ConfirmDialog state={confirmDialog} busy={busy} onClose={() => setConfirmDialog(null)} />
     </main>
   );
 }
@@ -1356,6 +1511,56 @@ function HelpCard(props: { title: string; lines: string[] }) {
   );
 }
 
+function NotificationStack(props: { items: NotificationItem[]; onClose: (id: number) => void }) {
+  return (
+    <div className="notification-stack" aria-live="polite">
+      {props.items.map((item) => (
+        <div key={item.id} className={`notification ${item.tone}`}>
+          <span>{item.text}</span>
+          <button type="button" onClick={() => props.onClose(item.id)} aria-label="关闭通知">
+            <X size={14} />
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ConfirmDialog(props: {
+  state: ConfirmDialogState | null;
+  busy: boolean;
+  onClose: () => void;
+}) {
+  if (!props.state) return null;
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section className="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+        <div>
+          <h2 id="confirm-title">{props.state.title}</h2>
+          <p>{props.state.message}</p>
+        </div>
+        <div className="modal-actions">
+          <Button type="button" variant="secondary" onClick={props.onClose} disabled={props.busy}>
+            取消
+          </Button>
+          <Button
+            type="button"
+            className={props.state.danger ? "danger-button" : ""}
+            disabled={props.busy}
+            onClick={async () => {
+              await props.state?.onConfirm();
+              props.onClose();
+            }}
+          >
+            {props.busy ? <Loader2 className="animate-spin" size={16} /> : null}
+            {props.state.confirmLabel}
+          </Button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function CandidateRow(props: {
   candidate: Candidate;
   index: number;
@@ -1510,23 +1715,6 @@ function apiHeaders(apiKey: string): Record<string, string> {
   return apiKey ? { "x-api-key": apiKey } : {};
 }
 
-function localLoginCommand(platform: string, profileId: string, baseUrl: string): string {
-  const safeProfile = profileId.trim() || "admin_default";
-  const safeBaseUrl = baseUrl.replace(/\/+$/, "");
-  return [
-    "powershell",
-    "-ExecutionPolicy Bypass",
-    "-File .\\scripts\\dev\\login-profile.ps1",
-    `-BaseUrl ${quotePowerShell(safeBaseUrl)}`,
-    `-ProfileId ${quotePowerShell(safeProfile)}`,
-    `-Platform ${quotePowerShell(platform)}`,
-  ].join(" ");
-}
-
-function quotePowerShell(value: string): string {
-  return `'${value.replace(/'/g, "''")}'`;
-}
-
 function formatShortDate(value: string): string {
   return new Date(value).toLocaleString("zh-CN", {
     month: "2-digit",
@@ -1572,6 +1760,7 @@ function capabilityStatus(value: boolean | undefined, apiKey: string): string {
 function viewModeLabel(value: ViewMode): string {
   return ({
     console: "控制台",
+    history: "隐藏历史",
     admin: "管理",
     help: "帮助",
   } as Record<ViewMode, string>)[value];
@@ -1615,6 +1804,9 @@ function platformLabel(value: string): string {
     bilibili: "哔哩哔哩",
     youtube: "YouTube",
     soundcloud: "SoundCloud",
+    douyin: "抖音",
+    kuaishou: "快手",
+    pornhub: "Pornhub",
   } as Record<string, string>)[value] ?? value;
 }
 

@@ -7,9 +7,10 @@ use reflection_core::{
     extractors::{ExtractContext, SourceResolver},
     job_store::JobStore,
     models::{
-        ApiKeyRecord, ApiKeyView, ArtifactView, CandidateKind, CreateUserKeyRequest,
-        CreatedUserKeyResponse, DiscoveryMode, JobRecord, JobStatus, JobView, MediaCandidate,
-        OutputKind, RotatedAdminKeyResponse,
+        ApiKeyRecord, ApiKeyView, ArtifactView, BrowserLoginTokenResponse, CandidateKind,
+        ClearJobsResponse, CreateUserKeyRequest, CreatedUserKeyResponse, DiscoveryMode,
+        HiddenJobBatchView, JobRecord, JobStatus, JobView, MediaCandidate, OutputKind,
+        RestoreJobsResponse, RotatedAdminKeyResponse,
     },
     observability::{ErrorClass, JobTrace, PipelineEvent, PipelineEventType},
     paths::StoragePaths,
@@ -152,23 +153,52 @@ impl AppState {
             .map(|jobs| jobs.into_iter().map(JobView::from).collect())
     }
 
-    pub async fn hide_visible_jobs(&self) -> Result<u64> {
-        self.job_store.hide_visible_jobs().await
-    }
-
-    pub async fn hide_visible_jobs_for_key(&self, requester_key_id: Uuid) -> Result<u64> {
+    pub async fn hide_visible_jobs(
+        &self,
+        actor_key_id: Option<Uuid>,
+        actor_label: Option<&str>,
+    ) -> Result<ClearJobsResponse> {
         self.job_store
-            .hide_visible_jobs_for_key(requester_key_id)
+            .hide_visible_jobs(actor_key_id, actor_label)
             .await
     }
 
-    pub async fn restore_hidden_jobs(&self) -> Result<u64> {
-        self.job_store.restore_hidden_jobs().await
+    pub async fn hide_visible_jobs_for_key(
+        &self,
+        requester_key_id: Uuid,
+        actor_label: Option<&str>,
+    ) -> Result<ClearJobsResponse> {
+        self.job_store
+            .hide_visible_jobs_for_key(requester_key_id, actor_label)
+            .await
     }
 
-    pub async fn restore_hidden_jobs_for_key(&self, requester_key_id: Uuid) -> Result<u64> {
+    pub async fn list_hidden_job_batches(
+        &self,
+        actor_key_id: Option<Uuid>,
+        limit: usize,
+    ) -> Result<Vec<HiddenJobBatchView>> {
         self.job_store
-            .restore_hidden_jobs_for_key(requester_key_id)
+            .list_hidden_job_batches(actor_key_id, limit)
+            .await
+    }
+
+    pub async fn restore_latest_hidden_job_batch(
+        &self,
+        actor_key_id: Option<Uuid>,
+    ) -> Result<RestoreJobsResponse> {
+        self.job_store
+            .restore_latest_hidden_job_batch(actor_key_id)
+            .await
+    }
+
+    pub async fn restore_hidden_job_batch(
+        &self,
+        actor_key_id: Option<Uuid>,
+        batch_id: Uuid,
+    ) -> Result<RestoreJobsResponse> {
+        self.job_store
+            .restore_hidden_job_batch(actor_key_id, batch_id)
             .await
     }
 
@@ -199,6 +229,56 @@ impl AppState {
 
     pub async fn revoke_api_key(&self, id: Uuid) -> Result<bool> {
         self.job_store.revoke_api_key(id).await
+    }
+
+    pub async fn create_browser_login_token(
+        &self,
+        profile_id: &str,
+        platform: &str,
+        created_by_key_id: Option<Uuid>,
+    ) -> Result<BrowserLoginTokenResponse> {
+        let profile_id =
+            reflection_core::models::normalize_profile_id(Some(profile_id.to_string()));
+        let platform = normalize_login_platform(platform)?;
+        let (token, expires_at) = self
+            .job_store
+            .create_browser_login_token(&profile_id, platform, created_by_key_id, 900)
+            .await?;
+        let mut protocol_url = url::Url::parse("reflection-king://login")
+            .map_err(|error| RkError::Source(format!("failed to build login url: {error}")))?;
+        protocol_url
+            .query_pairs_mut()
+            .append_pair("base", self.config.public_base_url.as_str())
+            .append_pair("profile", &profile_id)
+            .append_pair("platform", platform)
+            .append_pair("token", &token);
+
+        Ok(BrowserLoginTokenResponse {
+            token,
+            profile_id,
+            platform: platform.to_string(),
+            expires_at,
+            protocol_url: protocol_url.to_string(),
+        })
+    }
+
+    pub async fn import_browser_profile_cookies_with_login_token(
+        &self,
+        profile_id: &str,
+        token: &str,
+        cookies: Vec<serde_json::Value>,
+    ) -> Result<serde_json::Value> {
+        let profile_id =
+            reflection_core::models::normalize_profile_id(Some(profile_id.to_string()));
+        let Some(_platform) = self
+            .job_store
+            .consume_browser_login_token(token, &profile_id)
+            .await?
+        else {
+            return Err(RkError::Unauthorized);
+        };
+        self.import_browser_profile_cookies(&profile_id, cookies)
+            .await
     }
 
     pub async fn list_candidates(&self, id: Uuid) -> Result<Vec<MediaCandidate>> {
@@ -1113,4 +1193,17 @@ fn candidate_metadata_number(candidate: &MediaCandidate, key: &str) -> Option<i6
                 .as_i64()
                 .or_else(|| value.as_f64().map(|number| number as i64))
         })
+}
+
+fn normalize_login_platform(value: &str) -> Result<&'static str> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "bilibili" => Ok("bilibili"),
+        "youtube" => Ok("youtube"),
+        "douyin" => Ok("douyin"),
+        "kuaishou" => Ok("kuaishou"),
+        "pornhub" => Ok("pornhub"),
+        other => Err(RkError::BadRequest(format!(
+            "unsupported login platform `{other}`"
+        ))),
+    }
 }

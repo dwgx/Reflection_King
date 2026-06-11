@@ -1,10 +1,11 @@
 param(
     [string]$BaseUrl = "http://154.40.36.22:8780",
     [string]$ProfileId = "admin_default",
-    [ValidateSet("bilibili", "youtube", "douyin", "kuaishou")]
+    [ValidateSet("bilibili", "youtube", "douyin", "kuaishou", "pornhub")]
     [string]$Platform = "bilibili",
     [string]$ApiKey = "",
     [string]$ApiKeyFile = "",
+    [string]$LoginToken = "",
     [switch]$DryRun
 )
 
@@ -33,7 +34,10 @@ if (-not $ApiKey -and $ApiKeyFile) {
 if (-not $ApiKey -and $env:RK_API_KEY) {
     $ApiKey = $env:RK_API_KEY.Trim()
 }
-if (-not $ApiKey -and -not $DryRun) {
+if (-not $LoginToken -and $env:RK_LOGIN_TOKEN) {
+    $LoginToken = $env:RK_LOGIN_TOKEN.Trim()
+}
+if (-not $ApiKey -and -not $LoginToken -and -not $DryRun) {
     $ApiKey = Read-PlainTextSecret "Admin API key"
 }
 
@@ -55,6 +59,7 @@ New-Item -ItemType Directory -Force -Path $localProfileRoot | Out-Null
 try {
     $env:RK_LOGIN_BASE_URL = $BaseUrl
     $env:RK_LOGIN_API_KEY = $ApiKey
+    $env:RK_LOGIN_TOKEN = $LoginToken
     $env:RK_LOGIN_PROFILE_ID = $ProfileId
     $env:RK_LOGIN_PLATFORM = $Platform
     $env:RK_LOGIN_USER_DATA_DIR = $localProfileRoot
@@ -68,6 +73,7 @@ try {
 } finally {
     Remove-Item Env:\RK_LOGIN_BASE_URL -ErrorAction SilentlyContinue
     Remove-Item Env:\RK_LOGIN_API_KEY -ErrorAction SilentlyContinue
+    Remove-Item Env:\RK_LOGIN_TOKEN -ErrorAction SilentlyContinue
     Remove-Item Env:\RK_LOGIN_PROFILE_ID -ErrorAction SilentlyContinue
     Remove-Item Env:\RK_LOGIN_PLATFORM -ErrorAction SilentlyContinue
     Remove-Item Env:\RK_LOGIN_USER_DATA_DIR -ErrorAction SilentlyContinue

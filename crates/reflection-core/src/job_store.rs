@@ -11,8 +11,9 @@ use uuid::Uuid;
 use crate::{
     models::{
         ApiKeyRecord, ApiKeyRole, ApiKeyView, ArtifactView, AuthMode, CandidateKind,
-        CreateUserKeyRequest, CreatedUserKeyResponse, DiscoveryMode, JobRecord, JobStatus,
-        MediaCandidate, OutputKind, PlatformHint, RotatedAdminKeyResponse,
+        ClearJobsResponse, CreateUserKeyRequest, CreatedUserKeyResponse, DiscoveryMode,
+        HiddenJobBatchView, JobRecord, JobStatus, MediaCandidate, OutputKind, PlatformHint,
+        RestoreJobsResponse, RotatedAdminKeyResponse,
     },
     observability::{
         BrowserSession, DomainPolicy, ErrorClass, JobTrace, MediaProbe, PipelineEvent,
@@ -230,72 +231,348 @@ impl JobStore {
         rows.into_iter().map(row_to_job).collect()
     }
 
-    pub async fn hide_visible_jobs(&self) -> Result<u64> {
-        let result = sqlx::query(
-            r#"
-            UPDATE jobs
-            SET hidden_at = ?,
-                updated_at = ?
-            WHERE hidden_at IS NULL
-            "#,
-        )
-        .bind(format_time(OffsetDateTime::now_utc())?)
-        .bind(format_time(OffsetDateTime::now_utc())?)
-        .execute(&self.pool)
-        .await?;
-
-        Ok(result.rows_affected())
+    pub async fn hide_visible_jobs(
+        &self,
+        actor_key_id: Option<Uuid>,
+        actor_label: Option<&str>,
+    ) -> Result<ClearJobsResponse> {
+        self.hide_visible_jobs_inner(actor_key_id, actor_label, None)
+            .await
     }
 
-    pub async fn hide_visible_jobs_for_key(&self, requester_key_id: Uuid) -> Result<u64> {
-        let result = sqlx::query(
-            r#"
-            UPDATE jobs
-            SET hidden_at = ?,
-                updated_at = ?
-            WHERE requester_key_id = ? AND hidden_at IS NULL
-            "#,
-        )
-        .bind(format_time(OffsetDateTime::now_utc())?)
-        .bind(format_time(OffsetDateTime::now_utc())?)
-        .bind(requester_key_id.to_string())
-        .execute(&self.pool)
-        .await?;
-
-        Ok(result.rows_affected())
+    pub async fn hide_visible_jobs_for_key(
+        &self,
+        requester_key_id: Uuid,
+        actor_label: Option<&str>,
+    ) -> Result<ClearJobsResponse> {
+        self.hide_visible_jobs_inner(Some(requester_key_id), actor_label, Some(requester_key_id))
+            .await
     }
 
-    pub async fn restore_hidden_jobs(&self) -> Result<u64> {
-        let result = sqlx::query(
+    async fn hide_visible_jobs_inner(
+        &self,
+        actor_key_id: Option<Uuid>,
+        actor_label: Option<&str>,
+        requester_key_id: Option<Uuid>,
+    ) -> Result<ClearJobsResponse> {
+        let now = OffsetDateTime::now_utc();
+        let now_text = format_time(now)?;
+        let batch_id = Uuid::new_v4();
+        let mut tx = self.pool.begin().await?;
+
+        let rows = if let Some(requester_key_id) = requester_key_id {
+            sqlx::query(
+                r#"
+                SELECT id
+                FROM jobs
+                WHERE requester_key_id = ? AND hidden_at IS NULL
+                ORDER BY created_at DESC
+                "#,
+            )
+            .bind(requester_key_id.to_string())
+            .fetch_all(&mut *tx)
+            .await?
+        } else {
+            sqlx::query(
+                r#"
+                SELECT id
+                FROM jobs
+                WHERE hidden_at IS NULL
+                ORDER BY created_at DESC
+                "#,
+            )
+            .fetch_all(&mut *tx)
+            .await?
+        };
+
+        let job_ids = rows
+            .into_iter()
+            .map(|row| row.get::<String, _>("id"))
+            .collect::<Vec<_>>();
+        if job_ids.is_empty() {
+            tx.commit().await?;
+            return Ok(ClearJobsResponse {
+                batch_id: None,
+                hidden: 0,
+                history_deleted: false,
+            });
+        }
+
+        sqlx::query(
             r#"
-            UPDATE jobs
-            SET hidden_at = NULL,
-                updated_at = ?
-            WHERE hidden_at IS NOT NULL
+            INSERT INTO job_hide_batches (
+                id,
+                actor_key_id,
+                actor_label,
+                hidden_count,
+                restored_count,
+                created_at,
+                restored_at
+            )
+            VALUES (?, ?, ?, ?, 0, ?, NULL)
             "#,
         )
-        .bind(format_time(OffsetDateTime::now_utc())?)
-        .execute(&self.pool)
+        .bind(batch_id.to_string())
+        .bind(actor_key_id.map(|id| id.to_string()))
+        .bind(actor_label)
+        .bind(i64::try_from(job_ids.len()).unwrap_or(i64::MAX))
+        .bind(&now_text)
+        .execute(&mut *tx)
         .await?;
 
-        Ok(result.rows_affected())
+        for job_id in &job_ids {
+            sqlx::query(
+                r#"
+                INSERT INTO job_hide_entries (
+                    batch_id,
+                    job_id,
+                    created_at,
+                    restored_at
+                )
+                VALUES (?, ?, ?, NULL)
+                "#,
+            )
+            .bind(batch_id.to_string())
+            .bind(job_id)
+            .bind(&now_text)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        let result = if let Some(requester_key_id) = requester_key_id {
+            sqlx::query(
+                r#"
+                UPDATE jobs
+                SET hidden_at = ?,
+                    updated_at = ?
+                WHERE requester_key_id = ? AND hidden_at IS NULL
+                "#,
+            )
+            .bind(&now_text)
+            .bind(&now_text)
+            .bind(requester_key_id.to_string())
+            .execute(&mut *tx)
+            .await?
+        } else {
+            sqlx::query(
+                r#"
+                UPDATE jobs
+                SET hidden_at = ?,
+                    updated_at = ?
+                WHERE hidden_at IS NULL
+                "#,
+            )
+            .bind(&now_text)
+            .bind(&now_text)
+            .execute(&mut *tx)
+            .await?
+        };
+
+        tx.commit().await?;
+
+        Ok(ClearJobsResponse {
+            batch_id: Some(batch_id),
+            hidden: result.rows_affected(),
+            history_deleted: false,
+        })
     }
 
-    pub async fn restore_hidden_jobs_for_key(&self, requester_key_id: Uuid) -> Result<u64> {
-        let result = sqlx::query(
+    pub async fn list_hidden_job_batches(
+        &self,
+        actor_key_id: Option<Uuid>,
+        limit: usize,
+    ) -> Result<Vec<HiddenJobBatchView>> {
+        let limit = limit.clamp(1, 200) as i64;
+        let rows = if let Some(actor_key_id) = actor_key_id {
+            sqlx::query(
+                r#"
+                SELECT id, actor_key_id, actor_label, hidden_count, restored_count, created_at, restored_at
+                FROM job_hide_batches
+                WHERE actor_key_id = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                "#,
+            )
+            .bind(actor_key_id.to_string())
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?
+        } else {
+            sqlx::query(
+                r#"
+                SELECT id, actor_key_id, actor_label, hidden_count, restored_count, created_at, restored_at
+                FROM job_hide_batches
+                ORDER BY created_at DESC
+                LIMIT ?
+                "#,
+            )
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?
+        };
+
+        rows.into_iter().map(row_to_hidden_batch).collect()
+    }
+
+    pub async fn restore_latest_hidden_job_batch(
+        &self,
+        actor_key_id: Option<Uuid>,
+    ) -> Result<RestoreJobsResponse> {
+        let batch_id = self.latest_restorable_batch_id(actor_key_id).await?;
+        if let Some(batch_id) = batch_id {
+            self.restore_hidden_job_batch(actor_key_id, batch_id).await
+        } else {
+            Ok(RestoreJobsResponse {
+                batch_id: None,
+                restored: 0,
+                history_deleted: false,
+            })
+        }
+    }
+
+    async fn latest_restorable_batch_id(&self, actor_key_id: Option<Uuid>) -> Result<Option<Uuid>> {
+        let row = if let Some(actor_key_id) = actor_key_id {
+            sqlx::query(
+                r#"
+                SELECT id
+                FROM job_hide_batches
+                WHERE actor_key_id = ? AND restored_at IS NULL
+                ORDER BY created_at DESC
+                LIMIT 1
+                "#,
+            )
+            .bind(actor_key_id.to_string())
+            .fetch_optional(&self.pool)
+            .await?
+        } else {
+            sqlx::query(
+                r#"
+                SELECT id
+                FROM job_hide_batches
+                WHERE restored_at IS NULL
+                ORDER BY created_at DESC
+                LIMIT 1
+                "#,
+            )
+            .fetch_optional(&self.pool)
+            .await?
+        };
+
+        row.map(|row| {
+            let id: String = row.get("id");
+            Uuid::parse_str(&id)
+                .map_err(|error| RkError::BadRequest(format!("invalid hidden batch id: {error}")))
+        })
+        .transpose()
+    }
+
+    pub async fn restore_hidden_job_batch(
+        &self,
+        actor_key_id: Option<Uuid>,
+        batch_id: Uuid,
+    ) -> Result<RestoreJobsResponse> {
+        let now_text = format_time(OffsetDateTime::now_utc())?;
+        let mut tx = self.pool.begin().await?;
+
+        let batch_row = if let Some(actor_key_id) = actor_key_id {
+            sqlx::query(
+                r#"
+                SELECT id
+                FROM job_hide_batches
+                WHERE id = ? AND actor_key_id = ? AND restored_at IS NULL
+                "#,
+            )
+            .bind(batch_id.to_string())
+            .bind(actor_key_id.to_string())
+            .fetch_optional(&mut *tx)
+            .await?
+        } else {
+            sqlx::query(
+                r#"
+                SELECT id
+                FROM job_hide_batches
+                WHERE id = ? AND restored_at IS NULL
+                "#,
+            )
+            .bind(batch_id.to_string())
+            .fetch_optional(&mut *tx)
+            .await?
+        };
+
+        if batch_row.is_none() {
+            tx.commit().await?;
+            return Ok(RestoreJobsResponse {
+                batch_id: None,
+                restored: 0,
+                history_deleted: false,
+            });
+        }
+
+        let rows = sqlx::query(
             r#"
-            UPDATE jobs
-            SET hidden_at = NULL,
-                updated_at = ?
-            WHERE requester_key_id = ? AND hidden_at IS NOT NULL
+            SELECT job_id
+            FROM job_hide_entries
+            WHERE batch_id = ? AND restored_at IS NULL
             "#,
         )
-        .bind(format_time(OffsetDateTime::now_utc())?)
-        .bind(requester_key_id.to_string())
-        .execute(&self.pool)
+        .bind(batch_id.to_string())
+        .fetch_all(&mut *tx)
+        .await?;
+        let job_ids = rows
+            .into_iter()
+            .map(|row| row.get::<String, _>("job_id"))
+            .collect::<Vec<_>>();
+
+        let mut restored = 0u64;
+        for job_id in &job_ids {
+            let result = sqlx::query(
+                r#"
+                UPDATE jobs
+                SET hidden_at = NULL,
+                    updated_at = ?
+                WHERE id = ? AND hidden_at IS NOT NULL
+                "#,
+            )
+            .bind(&now_text)
+            .bind(job_id)
+            .execute(&mut *tx)
+            .await?;
+            restored += result.rows_affected();
+        }
+
+        sqlx::query(
+            r#"
+            UPDATE job_hide_entries
+            SET restored_at = ?
+            WHERE batch_id = ? AND restored_at IS NULL
+            "#,
+        )
+        .bind(&now_text)
+        .bind(batch_id.to_string())
+        .execute(&mut *tx)
         .await?;
 
-        Ok(result.rows_affected())
+        sqlx::query(
+            r#"
+            UPDATE job_hide_batches
+            SET restored_at = ?,
+                restored_count = ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(&now_text)
+        .bind(i64::try_from(restored).unwrap_or(i64::MAX))
+        .bind(batch_id.to_string())
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+
+        Ok(RestoreJobsResponse {
+            batch_id: Some(batch_id),
+            restored,
+            history_deleted: false,
+        })
     }
 
     pub async fn job_belongs_to_key(&self, id: Uuid, requester_key_id: Uuid) -> Result<bool> {
@@ -532,6 +809,97 @@ impl JobStore {
         .await?;
 
         Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn create_browser_login_token(
+        &self,
+        profile_id: &str,
+        platform: &str,
+        created_by_key_id: Option<Uuid>,
+        ttl_seconds: i64,
+    ) -> Result<(String, OffsetDateTime)> {
+        let token = format!(
+            "rk_login_{}{}",
+            Uuid::new_v4().simple(),
+            Uuid::new_v4().simple()
+        );
+        let now = OffsetDateTime::now_utc();
+        let expires_at = now + time::Duration::seconds(ttl_seconds.max(60));
+        sqlx::query(
+            r#"
+            INSERT INTO browser_login_tokens (
+                token_hash,
+                profile_id,
+                platform,
+                created_by_key_id,
+                created_at,
+                expires_at,
+                used_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, NULL)
+            "#,
+        )
+        .bind(hash_api_key(&token))
+        .bind(profile_id)
+        .bind(platform)
+        .bind(created_by_key_id.map(|id| id.to_string()))
+        .bind(format_time(now)?)
+        .bind(format_time(expires_at)?)
+        .execute(&self.pool)
+        .await?;
+
+        Ok((token, expires_at))
+    }
+
+    pub async fn consume_browser_login_token(
+        &self,
+        token: &str,
+        profile_id: &str,
+    ) -> Result<Option<String>> {
+        let token_hash = hash_api_key(token);
+        let now = OffsetDateTime::now_utc();
+        let now_text = format_time(now)?;
+        let mut tx = self.pool.begin().await?;
+        let row = sqlx::query(
+            r#"
+            SELECT platform, expires_at, used_at
+            FROM browser_login_tokens
+            WHERE token_hash = ? AND profile_id = ?
+            "#,
+        )
+        .bind(&token_hash)
+        .bind(profile_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        let Some(row) = row else {
+            tx.commit().await?;
+            return Ok(None);
+        };
+
+        let expires_at = parse_time(&row.get::<String, _>("expires_at"))?;
+        let used_at: Option<String> = row.get("used_at");
+        if used_at.is_some() || expires_at < now {
+            tx.commit().await?;
+            return Ok(None);
+        }
+
+        let platform: String = row.get("platform");
+        sqlx::query(
+            r#"
+            UPDATE browser_login_tokens
+            SET used_at = ?
+            WHERE token_hash = ? AND profile_id = ? AND used_at IS NULL
+            "#,
+        )
+        .bind(&now_text)
+        .bind(&token_hash)
+        .bind(profile_id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+
+        Ok(Some(platform))
     }
 
     pub async fn set_selected_candidates(&self, id: Uuid, candidate_ids: &[Uuid]) -> Result<()> {
@@ -1366,6 +1734,70 @@ impl JobStore {
 
         sqlx::query(
             r#"
+            CREATE TABLE IF NOT EXISTS job_hide_batches (
+                id TEXT PRIMARY KEY NOT NULL,
+                actor_key_id TEXT,
+                actor_label TEXT,
+                hidden_count INTEGER NOT NULL,
+                restored_count INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                restored_at TEXT
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_job_hide_batches_actor_created ON job_hide_batches(actor_key_id, created_at)",
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS job_hide_entries (
+                batch_id TEXT NOT NULL,
+                job_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                restored_at TEXT,
+                PRIMARY KEY (batch_id, job_id)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_job_hide_entries_job ON job_hide_entries(job_id)",
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS browser_login_tokens (
+                token_hash TEXT PRIMARY KEY NOT NULL,
+                profile_id TEXT NOT NULL,
+                platform TEXT NOT NULL,
+                created_by_key_id TEXT,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                used_at TEXT
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_browser_login_tokens_expires ON browser_login_tokens(expires_at)",
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
             CREATE TABLE IF NOT EXISTS source_candidates (
                 id TEXT PRIMARY KEY NOT NULL,
                 job_id TEXT NOT NULL,
@@ -1698,6 +2130,22 @@ fn row_to_api_key(row: sqlx::sqlite::SqliteRow) -> Result<ApiKeyRecord> {
         allow_ytdlp: row.get::<i64, _>("allow_ytdlp") != 0,
         created_at: parse_time(&created_at)?,
         revoked_at: parse_time_opt(row.get::<Option<String>, _>("revoked_at"))?,
+    })
+}
+
+fn row_to_hidden_batch(row: sqlx::sqlite::SqliteRow) -> Result<HiddenJobBatchView> {
+    let id: String = row.get("id");
+    let created_at: String = row.get("created_at");
+
+    Ok(HiddenJobBatchView {
+        id: Uuid::parse_str(&id)
+            .map_err(|error| RkError::BadRequest(format!("invalid hidden batch id: {error}")))?,
+        actor_key_id: opt_uuid(row.get("actor_key_id")),
+        actor_label: row.get("actor_label"),
+        hidden_count: row.get("hidden_count"),
+        restored_count: row.get("restored_count"),
+        created_at: parse_time(&created_at)?,
+        restored_at: parse_time_opt(row.get("restored_at"))?,
     })
 }
 
@@ -2170,7 +2618,18 @@ mod tests {
             1
         );
 
-        assert_eq!(store.hide_visible_jobs_for_key(key_id).await.unwrap(), 1);
+        let hidden = store
+            .hide_visible_jobs_for_key(key_id, Some("user"))
+            .await
+            .unwrap();
+        assert_eq!(hidden.hidden, 1);
+        assert!(hidden.batch_id.is_some());
+        let user_batches = store
+            .list_hidden_job_batches(Some(key_id), 10)
+            .await
+            .unwrap();
+        assert_eq!(user_batches.len(), 1);
+        assert_eq!(user_batches[0].hidden_count, 1);
         assert_eq!(store.list_recent(10).await.unwrap().len(), 1);
         assert_eq!(
             store.list_recent_for_key(key_id, 10).await.unwrap().len(),
@@ -2179,15 +2638,21 @@ mod tests {
         assert!(store.get(first_id).await.unwrap().is_some());
         assert!(store.get(second_id).await.unwrap().is_some());
 
-        assert_eq!(store.restore_hidden_jobs_for_key(key_id).await.unwrap(), 1);
+        let restored = store
+            .restore_latest_hidden_job_batch(Some(key_id))
+            .await
+            .unwrap();
+        assert_eq!(restored.restored, 1);
         assert_eq!(store.list_recent(10).await.unwrap().len(), 2);
 
-        assert_eq!(store.hide_visible_jobs().await.unwrap(), 2);
+        let hidden = store.hide_visible_jobs(None, Some("admin")).await.unwrap();
+        assert_eq!(hidden.hidden, 2);
         assert!(store.list_recent(10).await.unwrap().is_empty());
         assert!(store.get(first_id).await.unwrap().is_some());
         assert!(store.get(second_id).await.unwrap().is_some());
 
-        assert_eq!(store.restore_hidden_jobs().await.unwrap(), 2);
+        let restored = store.restore_latest_hidden_job_batch(None).await.unwrap();
+        assert_eq!(restored.restored, 2);
         assert_eq!(store.list_recent(10).await.unwrap().len(), 2);
 
         drop(store);

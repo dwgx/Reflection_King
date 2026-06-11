@@ -101,6 +101,43 @@ pub struct RotatedAdminKeyResponse {
     pub record: ApiKeyView,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct HiddenJobBatchView {
+    pub id: Uuid,
+    pub actor_key_id: Option<Uuid>,
+    pub actor_label: Option<String>,
+    pub hidden_count: i64,
+    pub restored_count: i64,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub restored_at: Option<OffsetDateTime>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ClearJobsResponse {
+    pub batch_id: Option<Uuid>,
+    pub hidden: u64,
+    pub history_deleted: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RestoreJobsResponse {
+    pub batch_id: Option<Uuid>,
+    pub restored: u64,
+    pub history_deleted: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BrowserLoginTokenResponse {
+    pub token: String,
+    pub profile_id: String,
+    pub platform: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub expires_at: OffsetDateTime,
+    pub protocol_url: String,
+}
+
 impl From<ApiKeyRecord> for ApiKeyView {
     fn from(value: ApiKeyRecord) -> Self {
         Self {
@@ -387,6 +424,9 @@ pub enum PlatformHint {
     Bilibili,
     Youtube,
     Soundcloud,
+    Douyin,
+    Kuaishou,
+    Pornhub,
 }
 
 impl PlatformHint {
@@ -396,6 +436,9 @@ impl PlatformHint {
             Self::Bilibili => "bilibili",
             Self::Youtube => "youtube",
             Self::Soundcloud => "soundcloud",
+            Self::Douyin => "douyin",
+            Self::Kuaishou => "kuaishou",
+            Self::Pornhub => "pornhub",
         }
     }
 
@@ -405,6 +448,9 @@ impl PlatformHint {
             "bilibili" => Some(Self::Bilibili),
             "youtube" => Some(Self::Youtube),
             "soundcloud" => Some(Self::Soundcloud),
+            "douyin" => Some(Self::Douyin),
+            "kuaishou" => Some(Self::Kuaishou),
+            "pornhub" => Some(Self::Pornhub),
             _ => None,
         }
     }
