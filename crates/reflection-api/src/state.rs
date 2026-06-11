@@ -9,7 +9,7 @@ use reflection_core::{
     models::{
         ApiKeyRecord, ApiKeyView, ArtifactView, CandidateKind, CreateUserKeyRequest,
         CreatedUserKeyResponse, DiscoveryMode, JobRecord, JobStatus, JobView, MediaCandidate,
-        OutputKind,
+        OutputKind, RotatedAdminKeyResponse,
     },
     observability::{ErrorClass, JobTrace, PipelineEvent, PipelineEventType},
     paths::StoragePaths,
@@ -79,6 +79,9 @@ impl AppState {
         let paths = StoragePaths::new(config.storage_dir.clone());
         paths.ensure().await?;
         let job_store = JobStore::connect(&paths.database_path()).await?;
+        if let Some(api_key) = config.api_key.as_deref() {
+            job_store.ensure_admin_key_from_secret(api_key).await?;
+        }
         let browser_probe = config
             .browser_probe_url
             .as_ref()
@@ -168,6 +171,10 @@ impl AppState {
         request: CreateUserKeyRequest,
     ) -> Result<CreatedUserKeyResponse> {
         self.job_store.create_user_key(request).await
+    }
+
+    pub async fn rotate_admin_key(&self) -> Result<RotatedAdminKeyResponse> {
+        self.job_store.rotate_admin_key().await
     }
 
     pub async fn revoke_api_key(&self, id: Uuid) -> Result<bool> {

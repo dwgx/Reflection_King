@@ -95,6 +95,12 @@ pub struct CreatedUserKeyResponse {
     pub record: ApiKeyView,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct RotatedAdminKeyResponse {
+    pub key: String,
+    pub record: ApiKeyView,
+}
+
 impl From<ApiKeyRecord> for ApiKeyView {
     fn from(value: ApiKeyRecord) -> Self {
         Self {

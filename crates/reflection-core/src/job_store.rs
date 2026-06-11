@@ -12,7 +12,7 @@ use crate::{
     models::{
         ApiKeyRecord, ApiKeyRole, ApiKeyView, ArtifactView, AuthMode, CandidateKind,
         CreateUserKeyRequest, CreatedUserKeyResponse, DiscoveryMode, JobRecord, JobStatus,
-        MediaCandidate, OutputKind, PlatformHint,
+        MediaCandidate, OutputKind, PlatformHint, RotatedAdminKeyResponse,
     },
     observability::{
         BrowserSession, DomainPolicy, ErrorClass, JobTrace, MediaProbe, PipelineEvent,
@@ -272,6 +272,19 @@ impl JobStore {
         Ok(Some(row_to_api_key(row)?))
     }
 
+    pub async fn has_active_admin_key(&self) -> Result<bool> {
+        let count: i64 = sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*)
+            FROM api_keys
+            WHERE role = 'admin' AND revoked_at IS NULL
+            "#,
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(count > 0)
+    }
+
     pub async fn list_api_keys(&self) -> Result<Vec<ApiKeyView>> {
         let rows = sqlx::query(
             r#"
@@ -301,25 +314,111 @@ impl JobStore {
         &self,
         request: CreateUserKeyRequest,
     ) -> Result<CreatedUserKeyResponse> {
-        let key = format!(
-            "rk_user_{}{}",
-            Uuid::new_v4().simple(),
-            Uuid::new_v4().simple()
-        );
+        let key = generate_api_key("rk_user");
+        let record = self
+            .insert_api_key(ApiKeyRecord {
+                id: Uuid::new_v4(),
+                label: normalize_api_key_label(request.label.as_deref()),
+                key_hash: hash_api_key(&key),
+                key_prefix: key.chars().take(16).collect(),
+                role: ApiKeyRole::User,
+                allow_browser_probe: request.allow_browser_probe,
+                allow_ytdlp: request.allow_ytdlp,
+                created_at: OffsetDateTime::now_utc(),
+                revoked_at: None,
+            })
+            .await?;
+
+        Ok(CreatedUserKeyResponse {
+            key,
+            record: record.into(),
+        })
+    }
+
+    pub async fn ensure_admin_key_from_secret(&self, key: &str) -> Result<()> {
+        let key = key.trim();
+        if key.is_empty() || self.has_active_admin_key().await? {
+            return Ok(());
+        }
+
+        self.insert_api_key(ApiKeyRecord {
+            id: Uuid::new_v4(),
+            label: "管理密钥".to_string(),
+            key_hash: hash_api_key(key),
+            key_prefix: key.chars().take(16).collect(),
+            role: ApiKeyRole::Admin,
+            allow_browser_probe: true,
+            allow_ytdlp: true,
+            created_at: OffsetDateTime::now_utc(),
+            revoked_at: None,
+        })
+        .await?;
+        Ok(())
+    }
+
+    pub async fn rotate_admin_key(&self) -> Result<RotatedAdminKeyResponse> {
+        let key = generate_api_key("rk_admin");
         let now = OffsetDateTime::now_utc();
-        let label = normalize_api_key_label(request.label.as_deref());
         let record = ApiKeyRecord {
             id: Uuid::new_v4(),
-            label,
+            label: "管理密钥".to_string(),
             key_hash: hash_api_key(&key),
             key_prefix: key.chars().take(16).collect(),
-            role: ApiKeyRole::User,
-            allow_browser_probe: request.allow_browser_probe,
-            allow_ytdlp: request.allow_ytdlp,
+            role: ApiKeyRole::Admin,
+            allow_browser_probe: true,
+            allow_ytdlp: true,
             created_at: now,
             revoked_at: None,
         };
 
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            r#"
+            UPDATE api_keys
+            SET revoked_at = ?
+            WHERE role = 'admin' AND revoked_at IS NULL
+            "#,
+        )
+        .bind(format_time(now)?)
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO api_keys (
+                id,
+                label,
+                key_hash,
+                key_prefix,
+                role,
+                allow_browser_probe,
+                allow_ytdlp,
+                created_at,
+                revoked_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(record.id.to_string())
+        .bind(&record.label)
+        .bind(&record.key_hash)
+        .bind(&record.key_prefix)
+        .bind(record.role.as_str())
+        .bind(record.allow_browser_probe)
+        .bind(record.allow_ytdlp)
+        .bind(format_time(record.created_at)?)
+        .bind(record.revoked_at.map(format_time).transpose()?)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+
+        Ok(RotatedAdminKeyResponse {
+            key,
+            record: record.into(),
+        })
+    }
+
+    async fn insert_api_key(&self, record: ApiKeyRecord) -> Result<ApiKeyRecord> {
         sqlx::query(
             r#"
             INSERT INTO api_keys (
@@ -347,11 +446,7 @@ impl JobStore {
         .bind(record.revoked_at.map(format_time).transpose()?)
         .execute(&self.pool)
         .await?;
-
-        Ok(CreatedUserKeyResponse {
-            key,
-            record: record.into(),
-        })
+        Ok(record)
     }
 
     pub async fn revoke_api_key(&self, id: Uuid) -> Result<bool> {
@@ -1787,6 +1882,14 @@ fn hash_api_key(value: &str) -> String {
     format!("{:x}", Sha256::digest(value.as_bytes()))
 }
 
+fn generate_api_key(prefix: &str) -> String {
+    format!(
+        "{prefix}_{}{}",
+        Uuid::new_v4().simple(),
+        Uuid::new_v4().simple()
+    )
+}
+
 fn normalize_api_key_label(value: Option<&str>) -> String {
     let label = value.unwrap_or("用户密钥").trim();
     if label.is_empty() {
@@ -1957,6 +2060,45 @@ mod tests {
 
         assert!(store.revoke_api_key(created.record.id).await.unwrap());
         assert!(store.find_api_key(&created.key).await.unwrap().is_none());
+
+        drop(store);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[tokio::test]
+    async fn admin_key_can_be_seeded_and_rotated() {
+        let path = temp_db_path();
+        let store = JobStore::connect(&path).await.unwrap();
+
+        store
+            .ensure_admin_key_from_secret("seed-admin-key")
+            .await
+            .unwrap();
+        let seeded = store.find_api_key("seed-admin-key").await.unwrap().unwrap();
+        assert_eq!(seeded.role, ApiKeyRole::Admin);
+
+        let rotated = store.rotate_admin_key().await.unwrap();
+        assert!(rotated.key.starts_with("rk_admin_"));
+        assert_eq!(rotated.record.role, ApiKeyRole::Admin);
+        assert!(store
+            .find_api_key("seed-admin-key")
+            .await
+            .unwrap()
+            .is_none());
+
+        let found = store.find_api_key(&rotated.key).await.unwrap().unwrap();
+        assert_eq!(found.id, rotated.record.id);
+        assert_eq!(found.role, ApiKeyRole::Admin);
+
+        store
+            .ensure_admin_key_from_secret("seed-admin-key")
+            .await
+            .unwrap();
+        assert!(store
+            .find_api_key("seed-admin-key")
+            .await
+            .unwrap()
+            .is_none());
 
         drop(store);
         std::fs::remove_file(&path).ok();

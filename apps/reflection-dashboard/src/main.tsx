@@ -144,6 +144,11 @@ interface CreatedUserKeyResponse {
   record: UserKeyView;
 }
 
+interface RotatedAdminKeyResponse {
+  key: string;
+  record: UserKeyView;
+}
+
 const OUTPUTS: OutputKind[] = ["audio", "video", "image", "page_html"];
 const TERMINAL = new Set(["ready", "error", "candidates_ready"]);
 const PAGE_SIZE_OPTIONS = [3, 5, 10, 20, 50];
@@ -175,6 +180,7 @@ function App() {
   const sourceInputRef = useRef<HTMLInputElement | null>(null);
   const [userKeys, setUserKeys] = useState<UserKeyView[]>([]);
   const [newUserKey, setNewUserKey] = useState("");
+  const [newAdminKey, setNewAdminKey] = useState("");
   const [keyForm, setKeyForm] = useState({
     label: "普通用户",
     allow_browser_probe: true,
@@ -194,6 +200,7 @@ function App() {
   const [outputMode, setOutputMode] = useState<OutputMode>("auto");
 
   const headers = useMemo(() => apiHeaders(apiKey), [apiKey]);
+  const isAdmin = capabilities?.auth?.role === "admin";
 
   useEffect(() => {
     localStorage.setItem("reflection_api_key", apiKey);
@@ -209,6 +216,12 @@ function App() {
       void refreshJobs();
     }
   }, [headers]);
+
+  useEffect(() => {
+    if (viewMode === "admin" && !isAdmin) {
+      setViewMode("console");
+    }
+  }, [isAdmin, viewMode]);
 
   useEffect(() => {
     if (!selectedJobId) return;
@@ -539,6 +552,27 @@ function App() {
       await request<void>(`/api/admin/user-keys/${id}/revoke`, { method: "POST" });
       await refreshUserKeys();
       setMessage("已撤销用户密钥");
+    } catch (error) {
+      setMessage(errorMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function rotateAdminKey() {
+    if (!window.confirm("确定要轮换管理员密钥吗？旧管理员密钥会立即失效。")) {
+      return;
+    }
+    setBusy(true);
+    setNewAdminKey("");
+    try {
+      const response = await request<RotatedAdminKeyResponse>("/api/admin/admin-key/rotate", {
+        method: "POST",
+      });
+      setNewAdminKey(response.key);
+      setApiKey(response.key);
+      await refreshUserKeys();
+      setMessage("已轮换管理员密钥，明文只显示这一次。");
     } catch (error) {
       setMessage(errorMessage(error));
     } finally {
@@ -907,6 +941,33 @@ function App() {
 
   const adminView = (
     <div className="view-stack">
+      <Card
+        title="管理员密钥"
+        icon={<Shield size={16} />}
+        action={
+          <Button variant="secondary" onClick={rotateAdminKey} disabled={busy || !isAdmin}>
+            <RefreshCw size={16} /> 轮换管理员密钥
+          </Button>
+        }
+      >
+        <div className="admin-key-panel">
+          <div>
+            <strong>当前管理权限</strong>
+            <span>{capabilities?.auth ? `${roleLabel(capabilities.auth.role)} / ${capabilities.auth.label}` : "未确认"}</span>
+          </div>
+          <p>轮换后旧管理员密钥立即失效。新密钥只在这里显示一次，并会自动填入顶部密钥输入框。</p>
+          {newAdminKey && (
+            <div className="key-result">
+              <strong>新管理员密钥，只显示一次</strong>
+              <code>{newAdminKey}</code>
+              <Button className="h-8" variant="secondary" onClick={() => copy(newAdminKey)}>
+                <Clipboard size={14} /> 复制
+              </Button>
+            </div>
+          )}
+        </div>
+      </Card>
+
       <section className="admin-grid">
         <Card
           title="用户密钥"
@@ -995,7 +1056,8 @@ function App() {
     <div className="view-stack">
       <section className="help-grid">
         <HelpCard title="密钥逻辑" lines={[
-          "管理密钥来自服务器 RK_API_KEY，可以创建和撤销用户密钥。",
+          "首次管理密钥来自服务器 RK_API_KEY，并会写入数据库；之后可以在管理页轮换。",
+          "轮换管理员密钥后，旧管理员密钥会立即失效，新密钥只显示一次。",
           "用户密钥保存在数据库中，只存 SHA-256 摘要；明文只在创建时显示一次。",
           "用户密钥可以被限制是否允许浏览器探测和 yt-dlp。",
         ]} />
@@ -1020,7 +1082,7 @@ function App() {
 
   const navItems: Array<{ mode: ViewMode; icon: React.ReactNode }> = [
     { mode: "console", icon: <Activity size={16} /> },
-    { mode: "admin", icon: <Shield size={16} /> },
+    ...(isAdmin ? [{ mode: "admin" as ViewMode, icon: <Shield size={16} /> }] : []),
     { mode: "help", icon: <HelpCircle size={16} /> },
   ];
 
@@ -1043,7 +1105,7 @@ function App() {
               type="button"
               onClick={() => {
                 setViewMode(item.mode);
-                if (item.mode === "admin" && apiKey) void refreshUserKeys();
+                if (item.mode === "admin" && isAdmin) void refreshUserKeys();
               }}
             >
               {item.icon}
@@ -1102,7 +1164,7 @@ function App() {
 
         <div className="workspace-body">
           {viewMode === "console" && consoleView}
-          {viewMode === "admin" && adminView}
+          {viewMode === "admin" && isAdmin && adminView}
           {viewMode === "help" && helpView}
         </div>
       </section>

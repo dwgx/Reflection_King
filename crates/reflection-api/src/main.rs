@@ -71,6 +71,7 @@ fn build_router(state: Arc<AppState>) -> Router {
             get(list_user_keys).post(create_user_key),
         )
         .route("/api/admin/user-keys/{id}/revoke", post(revoke_user_key))
+        .route("/api/admin/admin-key/rotate", post(rotate_admin_key))
         .route(
             "/api/admin/browser-profiles/{profile_id}/cookies/import",
             post(import_profile_cookies),
@@ -329,6 +330,15 @@ async fn revoke_user_key(
     }
 }
 
+async fn rotate_admin_key(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<reflection_core::models::RotatedAdminKeyResponse>, ApiError> {
+    let principal = authorize(&state, &headers).await?;
+    ensure_admin(&principal)?;
+    Ok(Json(state.rotate_admin_key().await?))
+}
+
 #[derive(Debug, Deserialize)]
 struct ImportCookiesRequest {
     cookies: Vec<serde_json::Value>,
@@ -432,16 +442,6 @@ struct AuthPrincipal {
 }
 
 async fn authorize(state: &AppState, headers: &HeaderMap) -> Result<AuthPrincipal, RkError> {
-    let Some(expected) = &state.config.api_key else {
-        return Ok(AuthPrincipal {
-            label: "未配置管理密钥".to_string(),
-            key_id: None,
-            role: ApiKeyRole::Admin,
-            allow_browser_probe: true,
-            allow_ytdlp: true,
-        });
-    };
-
     let provided = headers
         .get("x-api-key")
         .and_then(|value| value.to_str().ok())
@@ -451,16 +451,6 @@ async fn authorize(state: &AppState, headers: &HeaderMap) -> Result<AuthPrincipa
                 .and_then(|value| value.to_str().ok())
                 .and_then(|value| value.strip_prefix("Bearer "))
         });
-
-    if provided == Some(expected.as_str()) {
-        return Ok(AuthPrincipal {
-            label: "管理密钥".to_string(),
-            key_id: None,
-            role: ApiKeyRole::Admin,
-            allow_browser_probe: true,
-            allow_ytdlp: true,
-        });
-    }
 
     if let Some(provided) = provided {
         if let Some(record) = state.find_api_key(provided).await? {

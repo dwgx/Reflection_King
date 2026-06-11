@@ -986,6 +986,29 @@
     gap: 12px;
   }
 
+  .admin-key-panel {
+    display: grid;
+    gap: 10px;
+  }
+
+  .admin-key-panel > div:first-child {
+    display: grid;
+    gap: 3px;
+  }
+
+  .admin-key-panel strong {
+    color: #eef2f6;
+    font-size: 14px;
+  }
+
+  .admin-key-panel span,
+  .admin-key-panel p {
+    margin: 0;
+    color: #8f9aaa;
+    font-size: 13px;
+    line-height: 21px;
+  }
+
   .permission-grid,
   .login-grid {
     display: grid;
