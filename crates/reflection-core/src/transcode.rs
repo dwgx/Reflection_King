@@ -1,16 +1,18 @@
 use std::{
     ffi::{OsStr, OsString},
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 use reqwest::header::{HeaderMap, REFERER, USER_AGENT};
-use tokio::process::Command;
+use tokio::{process::Command, time as tokio_time};
 
 use crate::{Result, RkError};
 
 #[derive(Debug, Clone)]
 pub struct Transcoder {
     ffmpeg_path: PathBuf,
+    timeout: Duration,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,6 +25,14 @@ impl Transcoder {
     pub fn new(ffmpeg_path: impl Into<PathBuf>) -> Self {
         Self {
             ffmpeg_path: ffmpeg_path.into(),
+            timeout: Duration::from_secs(300),
+        }
+    }
+
+    pub fn with_timeout(ffmpeg_path: impl Into<PathBuf>, timeout: Duration) -> Self {
+        Self {
+            ffmpeg_path: ffmpeg_path.into(),
+            timeout,
         }
     }
 
@@ -98,31 +108,34 @@ impl Transcoder {
         let video_filter = format!(
             "fps=30,scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p"
         );
-        let output = command
-            .arg("-y")
-            .arg("-hide_banner")
-            .arg("-loglevel")
-            .arg("error")
-            .arg("-f")
-            .arg("concat")
-            .arg("-safe")
-            .arg("0")
-            .arg("-i")
-            .arg(concat_file)
-            .arg("-vf")
-            .arg(video_filter)
-            .arg("-c:v")
-            .arg("libx264")
-            .arg("-preset")
-            .arg("veryfast")
-            .arg("-crf")
-            .arg("23")
-            .arg("-movflags")
-            .arg("+faststart")
-            .arg("-an")
-            .arg(output)
-            .output()
-            .await?;
+        let output = run_process_with_timeout(
+            command
+                .arg("-y")
+                .arg("-hide_banner")
+                .arg("-loglevel")
+                .arg("error")
+                .arg("-f")
+                .arg("concat")
+                .arg("-safe")
+                .arg("0")
+                .arg("-i")
+                .arg(concat_file)
+                .arg("-vf")
+                .arg(video_filter)
+                .arg("-c:v")
+                .arg("libx264")
+                .arg("-preset")
+                .arg("veryfast")
+                .arg("-crf")
+                .arg("23")
+                .arg("-movflags")
+                .arg("+faststart")
+                .arg("-an")
+                .arg(output),
+            self.timeout,
+            "ffmpeg image slideshow",
+        )
+        .await?;
 
         if output.status.success() {
             return Ok(());
@@ -155,25 +168,28 @@ impl Transcoder {
             command.arg(arg);
         }
 
-        let output = command
-            .arg("-i")
-            .arg(input)
-            .arg("-vn")
-            .arg("-map")
-            .arg("0:a:0")
-            .arg("-map_metadata")
-            .arg("-1")
-            .arg("-codec:a")
-            .arg("libmp3lame")
-            .arg("-b:a")
-            .arg(bitrate)
-            .arg("-ar")
-            .arg("44100")
-            .arg("-ac")
-            .arg("2")
-            .arg(output)
-            .output()
-            .await?;
+        let output = run_process_with_timeout(
+            command
+                .arg("-i")
+                .arg(input)
+                .arg("-vn")
+                .arg("-map")
+                .arg("0:a:0")
+                .arg("-map_metadata")
+                .arg("-1")
+                .arg("-codec:a")
+                .arg("libmp3lame")
+                .arg("-b:a")
+                .arg(bitrate)
+                .arg("-ar")
+                .arg("44100")
+                .arg("-ac")
+                .arg("2")
+                .arg(output),
+            self.timeout,
+            "ffmpeg audio transcode",
+        )
+        .await?;
 
         if output.status.success() {
             return Ok(());
@@ -223,20 +239,23 @@ impl Transcoder {
             command.arg(arg);
         }
 
-        let output = command
-            .arg("-i")
-            .arg(input)
-            .arg("-map")
-            .arg("0:v:0?")
-            .arg("-map")
-            .arg("0:a:0?")
-            .arg("-c")
-            .arg("copy")
-            .arg("-movflags")
-            .arg("+faststart")
-            .arg(output)
-            .output()
-            .await?;
+        let output = run_process_with_timeout(
+            command
+                .arg("-i")
+                .arg(input)
+                .arg("-map")
+                .arg("0:v:0?")
+                .arg("-map")
+                .arg("0:a:0?")
+                .arg("-c")
+                .arg("copy")
+                .arg("-movflags")
+                .arg("+faststart")
+                .arg(output),
+            self.timeout,
+            "ffmpeg copy remux",
+        )
+        .await?;
 
         if output.status.success() {
             return Ok(());
@@ -267,28 +286,31 @@ impl Transcoder {
             command.arg(arg);
         }
 
-        let output = command
-            .arg("-i")
-            .arg(input)
-            .arg("-map")
-            .arg("0:v:0?")
-            .arg("-map")
-            .arg("0:a:0?")
-            .arg("-c:v")
-            .arg("libx264")
-            .arg("-preset")
-            .arg("veryfast")
-            .arg("-crf")
-            .arg("23")
-            .arg("-c:a")
-            .arg("aac")
-            .arg("-b:a")
-            .arg("160k")
-            .arg("-movflags")
-            .arg("+faststart")
-            .arg(output)
-            .output()
-            .await?;
+        let output = run_process_with_timeout(
+            command
+                .arg("-i")
+                .arg(input)
+                .arg("-map")
+                .arg("0:v:0?")
+                .arg("-map")
+                .arg("0:a:0?")
+                .arg("-c:v")
+                .arg("libx264")
+                .arg("-preset")
+                .arg("veryfast")
+                .arg("-crf")
+                .arg("23")
+                .arg("-c:a")
+                .arg("aac")
+                .arg("-b:a")
+                .arg("160k")
+                .arg("-movflags")
+                .arg("+faststart")
+                .arg(output),
+            self.timeout,
+            "ffmpeg video transcode",
+        )
+        .await?;
 
         if output.status.success() {
             return Ok(());
@@ -361,19 +383,22 @@ impl Transcoder {
         }
         command.arg("-i").arg(audio_input);
 
-        let output = command
-            .arg("-map")
-            .arg("0:v:0")
-            .arg("-map")
-            .arg("1:a:0")
-            .arg("-c")
-            .arg("copy")
-            .arg("-shortest")
-            .arg("-movflags")
-            .arg("+faststart")
-            .arg(output)
-            .output()
-            .await?;
+        let output = run_process_with_timeout(
+            command
+                .arg("-map")
+                .arg("0:v:0")
+                .arg("-map")
+                .arg("1:a:0")
+                .arg("-c")
+                .arg("copy")
+                .arg("-shortest")
+                .arg("-movflags")
+                .arg("+faststart")
+                .arg(output),
+            self.timeout,
+            "ffmpeg multi-input copy remux",
+        )
+        .await?;
 
         if output.status.success() {
             return Ok(());
@@ -412,27 +437,30 @@ impl Transcoder {
         }
         command.arg("-i").arg(audio_input);
 
-        let output = command
-            .arg("-map")
-            .arg("0:v:0")
-            .arg("-map")
-            .arg("1:a:0")
-            .arg("-c:v")
-            .arg("libx264")
-            .arg("-preset")
-            .arg("veryfast")
-            .arg("-crf")
-            .arg("23")
-            .arg("-c:a")
-            .arg("aac")
-            .arg("-b:a")
-            .arg("160k")
-            .arg("-shortest")
-            .arg("-movflags")
-            .arg("+faststart")
-            .arg(output)
-            .output()
-            .await?;
+        let output = run_process_with_timeout(
+            command
+                .arg("-map")
+                .arg("0:v:0")
+                .arg("-map")
+                .arg("1:a:0")
+                .arg("-c:v")
+                .arg("libx264")
+                .arg("-preset")
+                .arg("veryfast")
+                .arg("-crf")
+                .arg("23")
+                .arg("-c:a")
+                .arg("aac")
+                .arg("-b:a")
+                .arg("160k")
+                .arg("-shortest")
+                .arg("-movflags")
+                .arg("+faststart")
+                .arg(output),
+            self.timeout,
+            "ffmpeg multi-input transcode",
+        )
+        .await?;
 
         if output.status.success() {
             return Ok(());
@@ -464,7 +492,12 @@ impl Transcoder {
             command.arg(arg);
         }
 
-        let output = command.arg("-i").arg(input).output().await?;
+        let output = run_process_with_timeout(
+            command.arg("-i").arg(input),
+            self.timeout.min(Duration::from_secs(60)),
+            "ffprobe stream probe",
+        )
+        .await?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
             return Err(RkError::Transcode(if stderr.is_empty() {
@@ -480,6 +513,18 @@ impl Transcoder {
             has_video: stdout.lines().any(|line| line.trim() == "video"),
         })
     }
+}
+
+async fn run_process_with_timeout(
+    command: &mut Command,
+    timeout: Duration,
+    label: &str,
+) -> Result<std::process::Output> {
+    command.kill_on_drop(true);
+    tokio_time::timeout(timeout, command.output())
+        .await
+        .map_err(|_| RkError::Transcode(format!("{label} timed out")))?
+        .map_err(RkError::Io)
 }
 
 fn ffprobe_path(ffmpeg_path: &Path) -> PathBuf {

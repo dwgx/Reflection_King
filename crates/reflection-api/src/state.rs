@@ -159,6 +159,13 @@ impl AppState {
         });
     }
 
+    fn transcoder(&self) -> Transcoder {
+        Transcoder::with_timeout(
+            self.config.ffmpeg_path.clone(),
+            self.config.download_timeout,
+        )
+    }
+
     pub async fn insert_and_enqueue(&self, record: JobRecord) -> Result<JobView> {
         let id = record.id;
         let view = JobView::from(record.clone());
@@ -550,7 +557,7 @@ impl AppState {
             .await?;
 
         self.update_status(job_id, JobStatus::Transcoding).await?;
-        let transcoder = Transcoder::new(self.config.ffmpeg_path.clone());
+        let transcoder = self.transcoder();
         transcoder
             .audio_to_mp3(&job_paths.input_path, &job_paths.output_path, &job.bitrate)
             .await?;
@@ -838,7 +845,7 @@ impl AppState {
         let concat = concat_demuxer_file(&image_paths, 2.75)?;
         tokio::fs::write(&list_path, concat).await?;
         let output_path = job_dir.join("slideshow.mp4");
-        Transcoder::new(self.config.ffmpeg_path.clone())
+        self.transcoder()
             .images_to_mp4(&list_path, &output_path, 1920, 1080)
             .await?;
         self.insert_artifact(job.id, OutputKind::Video, output_path, "video/mp4")
@@ -883,7 +890,7 @@ impl AppState {
 
                 self.update_status(job.id, JobStatus::Transcoding).await?;
                 let output_path = job_dir.join(format!("audio-{}.mp3", candidate.id));
-                Transcoder::new(self.config.ffmpeg_path.clone())
+                self.transcoder()
                     .audio_to_mp3(&input_path, &output_path, &job.bitrate)
                     .await?;
                 self.insert_artifact(job.id, OutputKind::Audio, output_path, "audio/mpeg")
@@ -906,7 +913,7 @@ impl AppState {
                         .await?;
                     } else {
                         let raw_result = async {
-                            let transcoder = Transcoder::new(self.config.ffmpeg_path.clone());
+                            let transcoder = self.transcoder();
                             let stream_info = transcoder
                                 .probe_url_with_headers(&candidate.url, &headers)
                                 .await?;
@@ -961,7 +968,7 @@ impl AppState {
                         .await?;
                     } else {
                         let raw_result = async {
-                            let transcoder = Transcoder::new(self.config.ffmpeg_path.clone());
+                            let transcoder = self.transcoder();
                             let stream_info = transcoder
                                 .probe_url_with_headers(&candidate.url, &headers)
                                 .await?;
@@ -1153,9 +1160,20 @@ impl AppState {
         }
         command.arg(source_url);
 
-        let output = tokio_time::timeout(self.config.download_timeout, command.output())
+        command.kill_on_drop(true);
+        let output_result = tokio_time::timeout(self.config.download_timeout, command.output())
             .await
-            .map_err(|_| RkError::Source("yt-dlp delegated download timed out".to_string()))??;
+            .map_err(|_| RkError::Source("yt-dlp delegated download timed out".to_string()))
+            .and_then(|result| result.map_err(RkError::Io));
+        let output = match output_result {
+            Ok(output) => output,
+            Err(error) => {
+                if let Some(path) = cookies_file {
+                    tokio::fs::remove_file(path).await.ok();
+                }
+                return Err(error);
+            }
+        };
         if !output.status.success() {
             if let Some(path) = cookies_file {
                 tokio::fs::remove_file(path).await.ok();
@@ -1184,13 +1202,13 @@ impl AppState {
         match output_kind {
             OutputKind::Audio => {
                 self.update_status(job.id, JobStatus::Transcoding).await?;
-                Transcoder::new(self.config.ffmpeg_path.clone())
+                self.transcoder()
                     .audio_to_mp3(&downloaded, output_path, &job.bitrate)
                     .await
             }
             OutputKind::Video => {
                 self.update_status(job.id, JobStatus::Remuxing).await?;
-                Transcoder::new(self.config.ffmpeg_path.clone())
+                self.transcoder()
                     .media_to_mp4(&downloaded, output_path)
                     .await
             }

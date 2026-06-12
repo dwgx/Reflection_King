@@ -48,7 +48,7 @@ impl SourceExtractor for YtDlpExtractor {
         } else {
             (Default::default(), None)
         };
-        let candidates = probe
+        let result = probe
             .probe_with_headers_and_cookies_file(
                 ctx.job_id,
                 &ctx.source_url,
@@ -56,10 +56,11 @@ impl SourceExtractor for YtDlpExtractor {
                 &headers,
                 cookies_file.as_deref(),
             )
-            .await?;
+            .await;
         if let Some(path) = cookies_file {
             tokio::fs::remove_file(path).await.ok();
         }
+        let candidates = result?;
         Ok(ExtractResult::candidates(candidates))
     }
 }
