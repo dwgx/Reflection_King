@@ -37,6 +37,9 @@ Observed CLI behavior on the VPS:
 | Youku CN | OK | OK | Unsupported | Signed HLS URLs expire; keep in platform tier. |
 | Youku international | Unsupported | Cannot fetch vid | Unsupported | Do not use for automatic smoke. |
 | iQIYI/iQ.com | Failed without PhantomJS | Returned tiny unknown file | Unsupported | Keep as experimental/manual only. |
+| TikTok | OK for JSON and yt-dlp delegated download | Not used | Not used | Raw CDN URLs returned 403; server now falls back to constrained yt-dlp download. |
+| Douyin | OK for some public short videos | Not used | Unsupported for short videos | Some URLs require fresh cookies, not necessarily a logged-in account. |
+| Kuaishou | Unsupported or connection reset on samples | Failed on samples | Unsupported | Keep as experimental; current VPS has no reliable automatic path. |
 
 ## Smoke Tiers
 
@@ -79,6 +82,7 @@ check returned `206 Partial Content`.
 | `bilibili-bbb-browser-video` | `https://www.bilibili.com/video/BV1Fb4111732/` | 18 | MP4 video | `206`, `video/mp4` |
 | `acfun-public-external-video` | `https://m.acfun.cn/v/?ac=17529896` | 5 | MP4 video | `206`, `video/mp4` |
 | `youku-public-trailer-video` | `https://v.youku.com/v_show/id_XNDgwODM0NjYwNA%3D%3D.html` | 4 | MP4 video | `206`, `video/mp4` |
+| `tiktok-public-external-video` | `https://vm.tiktok.com/ZMBNyCU7n/` | 5 | MP4 video | `206`, `video/mp4` |
 
 ## VRChat Raw URL Checks
 
@@ -94,6 +98,8 @@ Results:
 | --- | --- |
 | AcFun | `HEAD 200`, `Range 206`, MP4 faststart, H.264, yuv420p, AAC 2ch |
 | Youku | `HEAD 200`, `Range 206`, MP4 faststart, H.264, yuv420p, AAC 2ch |
+| TikTok | `Range 206`, MP4 output generated through delegated yt-dlp download fallback |
+| Douyin | `Range 206`, MP4 output for the public sample |
 
 Both still warn that the current public endpoint is HTTP. PC VRChat can use it
 with untrusted URLs enabled, but Android/Quest production use needs HTTPS.
@@ -125,7 +131,74 @@ Current Reflection King experimental smoke result:
 
 ```text
 case: iqiyi-public-trailer-probe
-job: 2bf3da84-7197-4a22-b10b-fc42cfa06049
+job: a3a62cef-82f0-4ec9-9eaf-b283d5b26f2b
 status: error
-error: remote source error: no media candidates from chain [yt_dlp]
+error: remote source error: no media candidates from chain [yt_dlp]: yt_dlp: remote source error: yt-dlp probe exited with 1: ERROR: [iq.com] 19ruu27qdk: PhantomJS not found
+```
+
+### TikTok
+
+TikTok public short videos can be extracted by yt-dlp on the VPS, but the raw
+CDN URLs returned by `--dump-single-json` rejected direct ffmpeg access with
+`403 Forbidden` even when replaying safe `User-Agent`, `Accept-Language`, and
+`Referer` headers. Reflection King now keeps raw URL handling first, then falls
+back to a constrained delegated yt-dlp download for yt-dlp candidates:
+
+- uses the original source page URL, not arbitrary candidate hosts;
+- uses `--no-playlist`, `--no-cache-dir`, and `--max-filesize` from
+  `RK_MAX_DOWNLOAD_MB`;
+- remuxes the downloaded file back into the same server-hosted `/media/...mp4`
+  raw URL path.
+
+Current smoke result:
+
+```text
+case: tiktok-public-external-video
+job: bba78379-3219-495b-91f9-e5523e5477ba
+status: ready
+candidates: 5
+range: 206 video/mp4
+```
+
+### Douyin
+
+Douyin is kept in `experimental`, not `platform`, because public short-video
+access changes by URL, region, freshness, and challenge-cookie state. The tested
+public short-link sample currently works without login on the VPS:
+
+```text
+case: douyin-public-external-video
+job: 826f3fc5-ac19-46e4-9953-272057dc3b5e
+status: ready
+candidates: 13
+range: 206 video/mp4
+```
+
+Another public-looking Douyin URL currently fails before candidates with a
+clear yt-dlp message:
+
+```text
+case: douyin-fresh-cookies-required
+job: 4832662e-132f-458f-acf9-420bb5e9fc5c
+status: error
+error: Fresh cookies (not necessarily logged in) are needed
+```
+
+This means browser/Profile Cookie import is the next path to test for that URL;
+it does not prove that a full logged-in account is always required.
+
+### Kuaishou
+
+Kuaishou remains unsupported on the current VPS samples. yt-dlp either treats
+the URL as generic and gets connection reset or unsupported, you-get exits with
+its generic failure message, streamlink is unsupported, and the browser probe did
+not recover a usable media candidate.
+
+Current smoke result:
+
+```text
+case: kuaishou-public-auto-probe
+job: fdd12ecb-79f5-4109-b2f6-a618339a8a75
+status: error
+chain: yt_dlp, you_get, streamlink, browser_probe
 ```

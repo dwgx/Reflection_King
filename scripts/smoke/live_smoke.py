@@ -187,6 +187,7 @@ DEFAULT_CASES = [
         outputs=["video"],
         tier="experimental",
         notes="Currently blocked in yt-dlp without PhantomJS on VPS; retained for manual extractor research only.",
+        expect_success=False,
     ),
 ]
 
