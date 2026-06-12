@@ -30,6 +30,8 @@ class SmokeCase:
     discovery: str
     platform_hint: str
     outputs: list[str]
+    tier: str = "core"
+    notes: str = ""
     bitrate: str = "auto"
     auth_mode: str = "auto"
     profile_id: str = "admin_default"
@@ -68,11 +70,12 @@ DEFAULT_CASES = [
         bitrate="128k",
     ),
     SmokeCase(
-        name="apple-hls-auto-video",
-        url="https://devstreaming-cdn.apple.com/videos/streaming/examples/bipbop_16x9/bipbop_16x9_variant.m3u8",
+        name="mux-hls-low-video",
+        url="https://test-streams.mux.dev/x36xhzz/url_2/193039199_mp4_h264_aac_ld_7.m3u8",
         discovery="auto",
         platform_hint="live",
         outputs=["video"],
+        notes="Low-resolution public HLS video stream; keeps default smoke below large-artifact pressure size.",
     ),
     SmokeCase(
         name="mux-hls-auto-audio",
@@ -88,6 +91,8 @@ DEFAULT_CASES = [
         discovery="external",
         platform_hint="youtube",
         outputs=["video"],
+        tier="platform",
+        notes="yt-dlp supported public Blender Foundation video; may fail if YouTube changes tokens or bot checks.",
     ),
     SmokeCase(
         name="soundcloud-public-audio",
@@ -95,6 +100,8 @@ DEFAULT_CASES = [
         discovery="external",
         platform_hint="soundcloud",
         outputs=["audio"],
+        tier="platform",
+        notes="yt-dlp supported public NASA audio sample.",
         bitrate="128k",
     ),
     SmokeCase(
@@ -103,6 +110,44 @@ DEFAULT_CASES = [
         discovery="browser",
         platform_hint="bilibili",
         outputs=["video"],
+        tier="platform",
+        notes="Browser/API probe public Bilibili video; quality may require profile login.",
+    ),
+    SmokeCase(
+        name="acfun-public-external-video",
+        url="https://m.acfun.cn/v/?ac=17529896",
+        discovery="external",
+        platform_hint="acfun",
+        outputs=["video"],
+        tier="platform",
+        notes="yt-dlp AcFunVideo extractor; public short video, HLS MP4 variants.",
+    ),
+    SmokeCase(
+        name="youku-public-trailer-video",
+        url="https://v.youku.com/v_show/id_XNDgwODM0NjYwNA%3D%3D.html",
+        discovery="external",
+        platform_hint="youku",
+        outputs=["video"],
+        tier="platform",
+        notes="yt-dlp/you-get public Youku trailer; signed HLS URLs may expire quickly.",
+    ),
+    SmokeCase(
+        name="apple-bipbop-large-hls-video",
+        url="https://devstreaming-cdn.apple.com/videos/streaming/examples/bipbop_16x9/bipbop_16x9_variant.m3u8",
+        discovery="auto",
+        platform_hint="live",
+        outputs=["video"],
+        tier="experimental",
+        notes="Apple public HLS sample is about 30 minutes and can generate artifacts above 300 MB; use for manual stress checks only.",
+    ),
+    SmokeCase(
+        name="iqiyi-public-trailer-probe",
+        url="https://www.iq.com/play/invincible-call-to-power-trailer-19ruu27qdk?lang=en_us",
+        discovery="external",
+        platform_hint="iqiyi",
+        outputs=["video"],
+        tier="experimental",
+        notes="Currently blocked in yt-dlp without PhantomJS on VPS; retained for manual extractor research only.",
     ),
 ]
 
@@ -325,6 +370,8 @@ def run_case(client: Client, case: SmokeCase, timeout_seconds: int) -> dict[str,
         "profile_id": case.profile_id,
         "auth_mode": case.auth_mode,
     }
+    if case.notes:
+        eprint(f"notes {case.notes}")
     job = client.request("POST", "/api/jobs", payload)
     job_id = job["id"]
     eprint(f"job {job_id}")
@@ -390,6 +437,8 @@ def run_case(client: Client, case: SmokeCase, timeout_seconds: int) -> dict[str,
     trace = client.request("GET", f"/api/jobs/{job_id}/trace")
     return {
         "case": case.name,
+        "tier": case.tier,
+        "notes": case.notes,
         "job_id": job_id,
         "status": final_job["status"],
         "error": final_job.get("error"),
@@ -419,17 +468,30 @@ def main() -> int:
     parser.add_argument("--api-key-file")
     parser.add_argument("--timeout-seconds", type=int, default=240)
     parser.add_argument("--case", action="append", help="Run only matching case name. Can be repeated.")
+    parser.add_argument(
+        "--tier",
+        action="append",
+        choices=["core", "platform", "experimental"],
+        help="Run a smoke tier. Defaults to core. Can be repeated.",
+    )
+    parser.add_argument("--all-tiers", action="store_true", help="Run core, platform, and experimental cases.")
     parser.add_argument("--list", action="store_true", help="List case names and exit.")
     args = parser.parse_args()
 
     if args.list:
         for case in DEFAULT_CASES:
-            print(case.name)
+            print(f"{case.name}\t{case.tier}\t{case.discovery}/{case.platform_hint}")
         return 0
 
     api_key = load_api_key(args)
     selected_names = set(args.case or [])
-    cases = [case for case in DEFAULT_CASES if not selected_names or case.name in selected_names]
+    selected_tiers = {"core", "platform", "experimental"} if args.all_tiers else set(args.tier or ["core"])
+    cases = [
+        case
+        for case in DEFAULT_CASES
+        if (not selected_names or case.name in selected_names)
+        and (selected_names or case.tier in selected_tiers)
+    ]
     if selected_names and len(cases) != len(selected_names):
         known = {case.name for case in DEFAULT_CASES}
         missing = sorted(selected_names - known)
