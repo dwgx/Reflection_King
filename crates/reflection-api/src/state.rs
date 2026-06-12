@@ -629,6 +629,11 @@ impl AppState {
         if outcome.candidates.is_empty() {
             let detail = if outcome.chain.is_empty() {
                 "no extractor matched this source".to_string()
+            } else if let Some(errors) = resolver_error_summary(&outcome.attempts) {
+                format!(
+                    "no media candidates from chain [{}]: {errors}",
+                    outcome.chain.join(", ")
+                )
             } else {
                 format!(
                     "no media candidates from chain [{}]",
@@ -1063,6 +1068,27 @@ impl AppState {
     }
 }
 
+fn resolver_error_summary(attempts: &[reflection_core::extractors::AttemptLog]) -> Option<String> {
+    let errors = attempts
+        .iter()
+        .filter_map(|attempt| {
+            attempt
+                .error
+                .as_deref()
+                .filter(|error| !error.trim().is_empty())
+                .map(|error| format!("{}: {}", attempt.extractor, error.trim()))
+        })
+        .rev()
+        .take(3)
+        .collect::<Vec<_>>();
+
+    if errors.is_empty() {
+        None
+    } else {
+        Some(errors.into_iter().rev().collect::<Vec<_>>().join(" | "))
+    }
+}
+
 fn validate_candidate_url(url: &str) -> Result<()> {
     reflection_core::url_policy::parse_and_validate_url(url).map(|_| ())
 }
@@ -1131,6 +1157,9 @@ fn candidate_attempt_rank(job: &JobRecord, candidate: &MediaCandidate) -> i64 {
 
     rank += quality_preference_rank(&job.bitrate, candidate);
     if job.outputs.contains(&OutputKind::Video) {
+        if candidate_needs_audio_companion(candidate) {
+            rank += 120;
+        }
         rank += mp4_compatibility_rank(candidate);
     }
     rank += audio_rank(candidate) / 1000;
@@ -1303,7 +1332,7 @@ fn best_companion_audio<'a>(
     video_candidate: &MediaCandidate,
     candidates: &'a [MediaCandidate],
 ) -> Option<&'a MediaCandidate> {
-    if video_candidate.kind != CandidateKind::Video {
+    if !candidate_needs_audio_companion(video_candidate) {
         return None;
     }
 
@@ -1312,6 +1341,36 @@ fn best_companion_audio<'a>(
         .filter(|candidate| candidate.kind == CandidateKind::Audio)
         .filter(|candidate| same_candidate_family(video_candidate, candidate))
         .max_by_key(|candidate| audio_rank(candidate))
+}
+
+fn candidate_needs_audio_companion(candidate: &MediaCandidate) -> bool {
+    if candidate.kind != CandidateKind::Video {
+        return false;
+    }
+    let vcodec = candidate_metadata_text(candidate, "vcodec");
+    let acodec = candidate_metadata_text(candidate, "acodec");
+    if codec_present(vcodec.as_deref()) && !codec_present(acodec.as_deref()) {
+        return true;
+    }
+
+    let value = format!(
+        "{} {} {}",
+        candidate.url,
+        candidate.resource_type.as_deref().unwrap_or_default(),
+        candidate.quality_label.as_deref().unwrap_or_default()
+    )
+    .to_ascii_lowercase();
+    value.contains("bilibili")
+        || value.contains(".m4s")
+        || value.contains("dash")
+        || value.contains("video-only")
+}
+
+fn codec_present(value: Option<&str>) -> bool {
+    matches!(
+        value.map(str::trim).filter(|value| !value.is_empty()),
+        Some(value) if value != "none" && value != "null" && value != "unknown"
+    )
 }
 
 fn same_candidate_family(left: &MediaCandidate, right: &MediaCandidate) -> bool {
@@ -1373,4 +1432,132 @@ fn candidate_metadata_text(candidate: &MediaCandidate, key: &str) -> Option<Stri
         })
         .and_then(|value| value.as_str())
         .map(|value| value.to_ascii_lowercase())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reflection_core::models::{
+        CandidateProtection, CandidateValidationState, JobCreateOptions,
+    };
+    use serde_json::json;
+
+    fn candidate(
+        job_id: Uuid,
+        kind: CandidateKind,
+        url: &str,
+        quality: &str,
+        metadata_json: serde_json::Value,
+    ) -> MediaCandidate {
+        MediaCandidate {
+            id: Uuid::new_v4(),
+            job_id,
+            url: url.to_string(),
+            kind,
+            extractor: "yt_dlp".to_string(),
+            method: "dump_single_json".to_string(),
+            status: None,
+            content_type: Some(
+                match kind {
+                    CandidateKind::Audio => "audio/mp4",
+                    _ => "video/mp4",
+                }
+                .to_string(),
+            ),
+            content_length: None,
+            resource_type: Some("https".to_string()),
+            initiator_url: Some("https://example.com/watch".to_string()),
+            quality_label: Some(quality.to_string()),
+            score: 100,
+            requires_authorization: false,
+            platform: None,
+            route: Some("external:yt_dlp".to_string()),
+            extractor_confidence: Some(80),
+            protection: Some(CandidateProtection::None),
+            requires_profile: false,
+            ttl_hint_seconds: None,
+            ad_risk: false,
+            evidence_count: 1,
+            paired_candidate_ids: Vec::new(),
+            failure_reason: None,
+            validation_state: Some(CandidateValidationState::Untested),
+            metadata_json,
+            created_at: OffsetDateTime::now_utc(),
+            score_breakdown_json: json!({}),
+            selected: false,
+            selection_reason: None,
+            validation_status: None,
+            resolved_ip: None,
+            final_url_after_redirects: None,
+            expires_at: None,
+            discovered_by_event_id: None,
+        }
+    }
+
+    #[test]
+    fn video_only_metadata_requires_companion_audio() {
+        let job_id = Uuid::new_v4();
+        let video = candidate(
+            job_id,
+            CandidateKind::Video,
+            "https://cdn.example.com/v1080.mp4",
+            "1080p",
+            json!({ "vcodec": "avc1.640028", "acodec": "none", "height": 1080 }),
+        );
+        let audio = candidate(
+            job_id,
+            CandidateKind::Audio,
+            "https://cdn.example.com/a.m4a",
+            "audio-140",
+            json!({ "vcodec": "none", "acodec": "mp4a.40.2", "abr": 128 }),
+        );
+
+        assert!(candidate_needs_audio_companion(&video));
+        assert_eq!(
+            best_companion_audio(&video, std::slice::from_ref(&audio)).map(|c| c.id),
+            Some(audio.id)
+        );
+    }
+
+    #[test]
+    fn selected_video_only_candidate_keeps_companion_family_available() {
+        let mut job = JobRecord::new_with_options(
+            "https://example.com/watch".to_string(),
+            "auto".to_string(),
+            "http://127.0.0.1:8787",
+            JobCreateOptions {
+                discovery: DiscoveryMode::External,
+                outputs: vec![OutputKind::Video, OutputKind::Audio],
+                ..JobCreateOptions::default()
+            },
+        );
+        let video = candidate(
+            job.id,
+            CandidateKind::Video,
+            "https://cdn.example.com/v1080.mp4",
+            "1080p",
+            json!({ "vcodec": "avc1.640028", "acodec": "none", "height": 1080 }),
+        );
+        let audio = candidate(
+            job.id,
+            CandidateKind::Audio,
+            "https://cdn.example.com/a.m4a",
+            "audio-140",
+            json!({ "vcodec": "none", "acodec": "mp4a.40.2", "abr": 128 }),
+        );
+        job.selected_candidate_ids = vec![video.id];
+
+        let all = vec![video.clone(), audio.clone()];
+        let selected = vec![video.clone()];
+        let attempts = candidate_attempt_order(&job, &selected, &all);
+
+        assert_eq!(
+            attempts.first().map(|candidate| candidate.id),
+            Some(video.id)
+        );
+        assert_eq!(
+            best_companion_audio(attempts[0], &all).map(|c| c.id),
+            Some(audio.id)
+        );
+    }
 }

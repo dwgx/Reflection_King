@@ -143,7 +143,11 @@ interface Candidate {
 }
 
 interface CandidateMetadata {
+  acodec?: string;
+  vcodec?: string;
   candidate?: {
+    acodec?: string;
+    vcodec?: string;
     higherQualityRequiresProfile?: boolean;
     highestAdvertisedHeight?: number;
     acceptDescription?: string[];
@@ -2171,6 +2175,11 @@ function defaultCandidatesForJob(
 
 function candidateNeedsAudioCompanion(candidate: Candidate): boolean {
   if (candidate.kind !== "video") return false;
+  const acodec = metadataString(candidate, "acodec");
+  const vcodec = metadataString(candidate, "vcodec");
+  if (codecPresent(vcodec) && !codecPresent(acodec)) {
+    return true;
+  }
   const value = `${candidate.url} ${candidate.resource_type ?? ""} ${candidate.quality_label ?? ""}`.toLowerCase();
   return (
     value.includes("bilibili") ||
@@ -2178,6 +2187,17 @@ function candidateNeedsAudioCompanion(candidate: Candidate): boolean {
     value.includes("dash") ||
     value.includes("video-only")
   );
+}
+
+function metadataString(candidate: Candidate, key: string): string {
+  const metadata = candidate.metadata_json as Record<string, unknown> | undefined;
+  const nested = metadata?.candidate as Record<string, unknown> | undefined;
+  const value = metadata?.[key] ?? nested?.[key];
+  return typeof value === "string" ? value.toLowerCase() : "";
+}
+
+function codecPresent(value: string): boolean {
+  return Boolean(value && !["none", "null", "unknown"].includes(value));
 }
 
 function bestAudioCompanion(

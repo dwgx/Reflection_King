@@ -36,6 +36,7 @@ class SmokeCase:
     auth_mode: str = "auto"
     profile_id: str = "admin_default"
     max_selected: int = 8
+    expect_success: bool = True
 
 
 DEFAULT_CASES = [
@@ -130,6 +131,44 @@ DEFAULT_CASES = [
         outputs=["video"],
         tier="platform",
         notes="yt-dlp/you-get public Youku trailer; signed HLS URLs may expire quickly.",
+    ),
+    SmokeCase(
+        name="tiktok-public-external-video",
+        url="https://vm.tiktok.com/ZMBNyCU7n/",
+        discovery="external",
+        platform_hint="tiktok",
+        outputs=["video"],
+        tier="platform",
+        notes="yt-dlp TikTok public short-video sample; quality and availability can vary by region or bot checks.",
+    ),
+    SmokeCase(
+        name="douyin-public-external-video",
+        url="https://v.douyin.com/BgPNNVe/",
+        discovery="external",
+        platform_hint="douyin",
+        outputs=["video"],
+        tier="experimental",
+        notes="yt-dlp Douyin public short-video sample; currently works without login on the VPS but some Douyin URLs require fresh cookies.",
+    ),
+    SmokeCase(
+        name="douyin-fresh-cookies-required",
+        url="https://www.douyin.com/video/7519330213189127439",
+        discovery="external",
+        platform_hint="douyin",
+        outputs=["video"],
+        tier="experimental",
+        notes="Expected failure sample: yt-dlp reports fresh cookies are needed, not necessarily a logged-in account.",
+        expect_success=False,
+    ),
+    SmokeCase(
+        name="kuaishou-public-auto-probe",
+        url="https://www.kuaishou.com/short-video/3x2wdee2f2ud7ac",
+        discovery="auto",
+        platform_hint="kuaishou",
+        outputs=["video"],
+        tier="experimental",
+        notes="Expected failure sample on current VPS: yt-dlp does not support the URL and you-get fails; retained to track future adapter work.",
+        expect_success=False,
     ),
     SmokeCase(
         name="apple-bipbop-large-hls-video",
@@ -312,11 +351,19 @@ def select_candidate_ids(candidates: list[dict[str, Any]], case: SmokeCase) -> l
 def candidate_needs_audio_companion(candidate: dict[str, Any]) -> bool:
     if candidate.get("kind") != "video":
         return False
+    acodec = metadata_text(candidate, "acodec").strip().lower()
+    vcodec = metadata_text(candidate, "vcodec").strip().lower()
+    if codec_present(vcodec) and not codec_present(acodec):
+        return True
     value = " ".join(
         str(candidate.get(key) or "").lower()
         for key in ("url", "resource_type", "quality_label")
     )
     return "bilibili" in value or ".m4s" in value or "dash" in value or "video-only" in value
+
+
+def codec_present(value: str) -> bool:
+    return bool(value and value not in {"none", "null", "unknown"})
 
 
 def candidate_family(candidate: dict[str, Any]) -> str:
@@ -446,6 +493,7 @@ def run_case(client: Client, case: SmokeCase, timeout_seconds: int) -> dict[str,
         "artifact_count": len(artifacts),
         "media_checks": media_checks,
         "trace_events": len(trace),
+        "expect_success": case.expect_success,
     }
 
 
@@ -503,13 +551,22 @@ def main() -> int:
     for case in cases:
         try:
             result = run_case(client, case, args.timeout_seconds)
-            if result["status"] != "ready" or not result["artifact_count"]:
+            success = result["status"] == "ready" and result["artifact_count"]
+            if case.expect_success and not success:
                 failed = True
             results.append(result)
         except Exception as error:  # noqa: BLE001 - smoke script records failures.
-            failed = True
+            if case.expect_success:
+                failed = True
             eprint(f"case failed: {case.name}: {error}")
-            results.append({"case": case.name, "status": "smoke_error", "error": str(error)})
+            results.append(
+                {
+                    "case": case.name,
+                    "status": "smoke_error",
+                    "error": str(error),
+                    "expect_success": case.expect_success,
+                }
+            )
 
     print("\nSUMMARY")
     print(json.dumps(results, ensure_ascii=False, indent=2))
