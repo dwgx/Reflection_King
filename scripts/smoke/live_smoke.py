@@ -189,7 +189,47 @@ def candidate_rank(candidate: dict[str, Any], outputs: list[str]) -> int:
         penalty += 10000
     if candidate.get("requires_authorization"):
         penalty += 200
-    return kind_score + int(candidate.get("score") or 0) + parse_height(candidate) - penalty
+    compat = mp4_compatibility_rank(candidate) if "video" in outputs else 0
+    return kind_score + int(candidate.get("score") or 0) + parse_height(candidate) + compat - penalty
+
+
+def metadata_text(candidate: dict[str, Any], key: str) -> str:
+    metadata = candidate.get("metadata_json")
+    if isinstance(metadata, dict):
+        value = metadata.get(key)
+        if isinstance(value, str):
+            return value
+        nested = metadata.get("candidate")
+        if isinstance(nested, dict):
+            value = nested.get(key)
+            if isinstance(value, str):
+                return value
+    return ""
+
+
+def mp4_compatibility_rank(candidate: dict[str, Any]) -> int:
+    value = " ".join(
+        str(part or "").lower()
+        for part in (
+            candidate.get("content_type"),
+            candidate.get("url"),
+            metadata_text(candidate, "ext"),
+            metadata_text(candidate, "vcodec"),
+            metadata_text(candidate, "acodec"),
+        )
+    )
+    rank = 0
+    if "video/mp4" in value or ".mp4" in value or " mp4 " in value:
+        rank += 300
+    if "avc1" in value or "h264" in value:
+        rank += 300
+    if "mp4a" in value or "aac" in value:
+        rank += 120
+    if "video/webm" in value or ".webm" in value or "vp9" in value or "vp09" in value or "av01" in value:
+        rank -= 700
+    if "opus" in value or "vorbis" in value:
+        rank -= 180
+    return rank
 
 
 def select_candidate_ids(candidates: list[dict[str, Any]], case: SmokeCase) -> list[str]:

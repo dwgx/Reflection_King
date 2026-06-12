@@ -231,6 +231,8 @@ fn format_to_candidate(
             "tbr": format.tbr,
             "abr": format.abr,
             "vbr": format.vbr,
+            "acodec": format.acodec,
+            "vcodec": format.vcodec,
             "has_http_headers": format.http_headers.is_some(),
         }),
         created_at: OffsetDateTime::now_utc(),
@@ -307,6 +309,9 @@ fn score_format(kind: CandidateKind, format: &YtDlpFormat, outputs: &[OutputKind
     if protocol_is_manifest(format.protocol.as_deref()) {
         score += 8;
     }
+    if outputs.contains(&OutputKind::Video) {
+        score += mp4_compatibility_score(format);
+    }
     if outputs.contains(&OutputKind::Audio) && !outputs.contains(&OutputKind::Video) {
         match kind {
             CandidateKind::Audio => score += 40,
@@ -352,6 +357,11 @@ fn score_breakdown(
     } else {
         0
     };
+    let mp4_compatibility = if outputs.contains(&OutputKind::Video) {
+        mp4_compatibility_score(format)
+    } else {
+        0
+    };
     let audio_only = outputs.contains(&OutputKind::Audio) && !outputs.contains(&OutputKind::Video);
     let output_preference = if audio_only {
         match kind {
@@ -372,6 +382,7 @@ fn score_breakdown(
         "tbr_bonus": tbr_bonus,
         "filesize_bonus": filesize_bonus,
         "manifest_bonus": manifest_bonus,
+        "mp4_compatibility": mp4_compatibility,
         "output_preference": output_preference,
         "audio_only_job": audio_only,
         "total": score_format(kind, format, outputs),
@@ -408,6 +419,40 @@ fn content_type_hint(format: &YtDlpFormat) -> Option<String> {
         "webp" => Some("image/webp".to_string()),
         _ => None,
     }
+}
+
+fn mp4_compatibility_score(format: &YtDlpFormat) -> i64 {
+    let mut score = 0;
+    match format.ext.as_deref() {
+        Some("mp4" | "m4v" | "m4a" | "aac") => score += 45,
+        Some("webm" | "mkv") => score -= 70,
+        _ => {}
+    }
+
+    let vcodec = format
+        .vcodec
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if vcodec.starts_with("avc1") || vcodec.starts_with("h264") {
+        score += 45;
+    } else if vcodec.starts_with("vp9") || vcodec.starts_with("vp09") || vcodec.starts_with("av01")
+    {
+        score -= 80;
+    }
+
+    let acodec = format
+        .acodec
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if acodec.starts_with("mp4a") || acodec.starts_with("aac") {
+        score += 20;
+    } else if acodec.starts_with("opus") || acodec.starts_with("vorbis") {
+        score -= 35;
+    }
+
+    score
 }
 
 fn protocol_is_manifest(protocol: Option<&str>) -> bool {
@@ -641,6 +686,40 @@ mod tests {
 
         assert_eq!(candidates.len(), 2);
         assert_eq!(candidates[0].kind, CandidateKind::Audio);
+        assert!(candidates[0].score > candidates[1].score);
+    }
+
+    #[test]
+    fn prefers_mp4_compatible_video_for_video_jobs() {
+        let json = br#"
+        {
+          "formats": [
+            {
+              "url": "https://github.com/media/video.webm",
+              "ext": "webm",
+              "format_id": "244",
+              "height": 480,
+              "tbr": 900,
+              "acodec": "none",
+              "vcodec": "vp9"
+            },
+            {
+              "url": "https://github.com/media/video.mp4",
+              "ext": "mp4",
+              "format_id": "135",
+              "height": 480,
+              "tbr": 700,
+              "acodec": "none",
+              "vcodec": "avc1.4d401e"
+            }
+          ]
+        }
+        "#;
+
+        let candidates = parse_yt_dlp_json(Uuid::new_v4(), json, &[OutputKind::Video]).unwrap();
+
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[0].content_type.as_deref(), Some("video/mp4"));
         assert!(candidates[0].score > candidates[1].score);
     }
 }

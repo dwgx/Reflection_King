@@ -2224,6 +2224,7 @@ function candidateRank(candidate: Candidate, job: JobView | null): number {
     if (candidate.kind === "video" || candidate.kind === "manifest") rank += 1000;
     if (candidate.kind === "image") rank += 700;
     if (candidate.kind === "audio") rank += 50;
+    rank += mp4CompatibilityRank(candidate);
   }
 
   if (outputs.has("image") && candidate.kind === "image") rank += 900;
@@ -2237,6 +2238,28 @@ function candidateRank(candidate: Candidate, job: JobView | null): number {
   if (candidate.validation_state === "expired" || candidate.validation_state === "region_blocked") rank -= 6000;
   if ((candidate.evidence_count ?? 1) > 1) rank += Math.min((candidate.evidence_count ?? 1) * 25, 150);
   if (candidate.validation_status?.startsWith("failed")) rank -= 4000;
+  return rank;
+}
+
+function mp4CompatibilityRank(candidate: Candidate): number {
+  const metadata = candidate.metadata_json as Record<string, unknown> | undefined;
+  const nested = metadata?.candidate as Record<string, unknown> | undefined;
+  const value = [
+    candidate.content_type,
+    candidate.url,
+    metadata?.ext,
+    metadata?.vcodec,
+    metadata?.acodec,
+    nested?.ext,
+    nested?.vcodec,
+    nested?.acodec,
+  ].filter(Boolean).join(" ").toLowerCase();
+  let rank = 0;
+  if (value.includes("video/mp4") || value.includes(".mp4") || value.includes(" mp4 ")) rank += 300;
+  if (value.includes("avc1") || value.includes("h264")) rank += 300;
+  if (value.includes("mp4a") || value.includes("aac")) rank += 120;
+  if (value.includes("video/webm") || value.includes(".webm") || value.includes("vp9") || value.includes("vp09") || value.includes("av01")) rank -= 700;
+  if (value.includes("opus") || value.includes("vorbis")) rank -= 180;
   return rank;
 }
 

@@ -1130,6 +1130,9 @@ fn candidate_attempt_rank(job: &JobRecord, candidate: &MediaCandidate) -> i64 {
     }
 
     rank += quality_preference_rank(&job.bitrate, candidate);
+    if job.outputs.contains(&OutputKind::Video) {
+        rank += mp4_compatibility_rank(candidate);
+    }
     rank += audio_rank(candidate) / 1000;
 
     if candidate.requires_authorization {
@@ -1168,6 +1171,44 @@ fn candidate_quality_height(candidate: &MediaCandidate) -> Option<i64> {
         .as_deref()
         .and_then(|label| label.trim_end_matches('p').parse::<i64>().ok())
         .or_else(|| candidate_metadata_number(candidate, "height"))
+}
+
+fn mp4_compatibility_rank(candidate: &MediaCandidate) -> i64 {
+    let mut rank = 0;
+    let ext = candidate_metadata_text(candidate, "ext");
+    let vcodec = candidate_metadata_text(candidate, "vcodec");
+    let acodec = candidate_metadata_text(candidate, "acodec");
+    let value = format!(
+        "{} {} {} {} {}",
+        candidate.content_type.as_deref().unwrap_or_default(),
+        candidate.url,
+        ext.as_deref().unwrap_or_default(),
+        vcodec.as_deref().unwrap_or_default(),
+        acodec.as_deref().unwrap_or_default()
+    )
+    .to_ascii_lowercase();
+
+    if value.contains("video/mp4") || value.contains(".mp4") || ext.as_deref() == Some("mp4") {
+        rank += 300;
+    }
+    if value.contains("avc1") || value.contains("h264") {
+        rank += 300;
+    }
+    if value.contains("mp4a") || value.contains("aac") {
+        rank += 120;
+    }
+    if value.contains("video/webm")
+        || value.contains(".webm")
+        || value.contains("vp9")
+        || value.contains("vp09")
+        || value.contains("av01")
+    {
+        rank -= 700;
+    }
+    if value.contains("opus") || value.contains("vorbis") {
+        rank -= 180;
+    }
+    rank
 }
 
 fn is_likely_ad_or_tracking_candidate(candidate: &MediaCandidate) -> bool {
@@ -1306,11 +1347,30 @@ fn audio_quality_id(candidate: &MediaCandidate) -> Option<i64> {
 fn candidate_metadata_number(candidate: &MediaCandidate, key: &str) -> Option<i64> {
     candidate
         .metadata_json
-        .get("candidate")
-        .and_then(|metadata| metadata.get(key))
+        .get(key)
+        .or_else(|| {
+            candidate
+                .metadata_json
+                .get("candidate")
+                .and_then(|metadata| metadata.get(key))
+        })
         .and_then(|value| {
             value
                 .as_i64()
                 .or_else(|| value.as_f64().map(|number| number as i64))
         })
+}
+
+fn candidate_metadata_text(candidate: &MediaCandidate, key: &str) -> Option<String> {
+    candidate
+        .metadata_json
+        .get(key)
+        .or_else(|| {
+            candidate
+                .metadata_json
+                .get("candidate")
+                .and_then(|metadata| metadata.get(key))
+        })
+        .and_then(|value| value.as_str())
+        .map(|value| value.to_ascii_lowercase())
 }
