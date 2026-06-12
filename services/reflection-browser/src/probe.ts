@@ -140,8 +140,15 @@ export class BrowserProbeService {
       await page.waitForLoadState("networkidle", { timeout: Math.min(timeoutMs, 15_000) }).catch(() => {
         warnings.push("networkidle timeout");
       });
-      if (shouldTriggerPlayback(page.url(), request.platformHint, request.outputs)) {
+      await addDomCandidates(page, page.url(), warnings, addCandidate);
+      const hasStaticPlayableCandidate = hasPlayableMediaCandidate([...candidates.values()]);
+      if (
+        shouldTriggerPlayback(page.url(), request.platformHint, request.outputs, hasStaticPlayableCandidate) &&
+        !shouldAvoidGenericPlaybackClick(page.url(), request.url, hasStaticPlayableCandidate)
+      ) {
         playbackTriggered = await triggerPlayback(page, warnings);
+      } else if (hasStaticPlayableCandidate) {
+        warnings.push("playback trigger skipped: page already exposed media candidates");
       }
       await page.waitForTimeout(2_000);
     } catch (error) {
@@ -200,6 +207,9 @@ export class BrowserProbeService {
     }
     if (isYoukuUrl(request.url) || isYoukuUrl(finalUrl)) {
       filtered = filterCnVideoPlatformCandidates(filtered, "youku");
+    }
+    if (isHAnimeUrl(request.url) || isHAnimeUrl(finalUrl)) {
+      filtered = filterHAnimeCandidates(filtered);
     }
     if (isTikTokUrl(request.url) || isTikTokUrl(finalUrl)) {
       filtered = filterTikTokCandidates(filtered);
@@ -1139,6 +1149,10 @@ function isAdultVideoPage(value: string): boolean {
   }
 }
 
+function hasPlayableMediaCandidate(candidates: BrowserCandidate[]): boolean {
+  return candidates.some((candidate) => candidate.kind === "video" || candidate.kind === "manifest" || candidate.kind === "audio");
+}
+
 function requestedCandidateKinds(outputs: string[] | undefined): ReadonlySet<CandidateKind> {
   const normalizedOutputs = outputs?.length ? outputs : ["audio"];
   const kinds = new Set<CandidateKind>();
@@ -1235,6 +1249,8 @@ function isAllowedMainMediaHost(host: string): boolean {
     host.endsWith("kwaicdn.com") ||
     host.endsWith("gifshow.com") ||
     host.endsWith("phncdn.com") ||
+    host.endsWith("hembed.com") ||
+    host.endsWith("saawsedge.com") ||
     host.endsWith("acfun.cn") ||
     host.endsWith("aixifan.com") ||
     host.endsWith("iqiyi.com") ||
@@ -1444,6 +1460,68 @@ function filterAdultVideoCandidates(candidates: BrowserCandidate[]): BrowserCand
   return out;
 }
 
+function filterHAnimeCandidates(candidates: BrowserCandidate[]): BrowserCandidate[] {
+  const out: BrowserCandidate[] = [];
+  const seen = new Set<string>();
+  const hasCompleteMp4 = candidates.some((candidate) => {
+    try {
+      const parsed = new URL(candidate.url);
+      const host = parsed.hostname.toLowerCase();
+      const pathname = parsed.pathname.toLowerCase();
+      return (
+        candidate.kind === "video" &&
+        host.endsWith("hembed.com") &&
+        pathname.endsWith(".mp4") &&
+        !isLikelySegmentFragment(pathname)
+      );
+    } catch {
+      return false;
+    }
+  });
+
+  for (const candidate of candidates) {
+    let host = "";
+    let pathname = "";
+    try {
+      const parsed = new URL(candidate.url);
+      host = parsed.hostname.toLowerCase();
+      pathname = parsed.pathname.toLowerCase();
+    } catch {
+      continue;
+    }
+
+    const allowedHost =
+      host.endsWith("hembed.com") ||
+      host.endsWith("saawsedge.com") ||
+      host.endsWith("hanime1.me");
+    if (!allowedHost || isLikelyAdOrTrackingUrl(candidate.url) || candidate.kind === "image") {
+      continue;
+    }
+    if (hasCompleteMp4 && isLikelySegmentFragment(pathname)) {
+      continue;
+    }
+    const key = `${candidate.kind}:${host}:${pathname}:${candidate.qualityLabel ?? ""}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    const completeMp4Boost =
+      host.endsWith("hembed.com") && pathname.endsWith(".mp4") && !isLikelySegmentFragment(pathname)
+        ? 95
+        : 5;
+    out.push({
+      ...candidate,
+      score: candidate.score + completeMp4Boost,
+      metadata: { ...(candidate.metadata ?? {}), source: "hanime_filter", platform: "hanime1" },
+    });
+  }
+  return out;
+}
+
+function isLikelySegmentFragment(pathname: string): boolean {
+  return /(?:^|\/)[^/]+_(?:init|\d+)_/i.test(pathname) || /(?:segment|frag|chunk)[-_]?\d+/i.test(pathname);
+}
+
 type CnVideoPlatform = "acfun" | "iqiyi" | "youku";
 
 function filterCnVideoPlatformCandidates(
@@ -1627,6 +1705,30 @@ function isVimeoUrl(value: string): boolean {
   }
 }
 
+function isHAnimeUrl(value: string): boolean {
+  try {
+    const host = new URL(value).hostname.toLowerCase();
+    return host === "hanime1.me" || host.endsWith(".hanime1.me") || host.endsWith("hembed.com");
+  } catch {
+    return false;
+  }
+}
+
+function isEpisodeAggregatorUrl(value: string): boolean {
+  try {
+    const host = new URL(value).hostname.toLowerCase();
+    return (
+      host === "dmttang.com" ||
+      host.endsWith(".dmttang.com") ||
+      host === "83dm.com" ||
+      host.endsWith(".83dm.com") ||
+      host.includes("yinghua")
+    );
+  } catch {
+    return false;
+  }
+}
+
 function isBilibiliUrl(value: string): boolean {
   try {
     const host = new URL(value).hostname.toLowerCase();
@@ -1653,12 +1755,25 @@ function bilibiliIdsFromUrl(value: string): { bvid?: string; aid?: string } {
   }
 }
 
-function shouldTriggerPlayback(_url: string, _platformHint: string | undefined, outputs: string[] | undefined): boolean {
+function shouldTriggerPlayback(
+  _url: string,
+  _platformHint: string | undefined,
+  outputs: string[] | undefined,
+  _hasStaticPlayableCandidate = false,
+): boolean {
   // Attempt playback for any job that wants audio/video. triggerPlayback is a
   // safe no-op when the page has no player, so this is broadly applicable — and
   // it is exactly what lets JS-resolved sites (StreetVoice, Douyin, Bilibili,
   // ...) reveal their real media request instead of only the page URL.
   return !outputs?.length || outputs.some((output) => output === "audio" || output === "video");
+}
+
+function shouldAvoidGenericPlaybackClick(
+  finalUrl: string,
+  originalUrl: string,
+  hasStaticPlayableCandidate: boolean,
+): boolean {
+  return hasStaticPlayableCandidate && (isEpisodeAggregatorUrl(finalUrl) || isEpisodeAggregatorUrl(originalUrl));
 }
 
 const PLAY_SELECTORS = [
