@@ -194,6 +194,26 @@ def candidate_rank(candidate: dict[str, Any], outputs: list[str]) -> int:
 
 def select_candidate_ids(candidates: list[dict[str, Any]], case: SmokeCase) -> list[str]:
     ranked = sorted(candidates, key=lambda candidate: candidate_rank(candidate, case.outputs), reverse=True)
+    if "video" in case.outputs:
+        primary = next(
+            (
+                candidate
+                for candidate in ranked
+                if candidate.get("kind") in {"video", "manifest"}
+                and candidate.get("protection") != "drm"
+                and not candidate.get("ad_risk")
+            ),
+            None,
+        )
+        if not primary:
+            return []
+        selected = [primary["id"]]
+        if primary.get("kind") == "video" and candidate_needs_audio_companion(primary):
+            audio = best_audio_companion(primary, ranked)
+            if audio:
+                selected.append(audio["id"])
+        return selected
+
     selected: list[str] = []
     for candidate in ranked:
         if len(selected) >= case.max_selected:
@@ -202,6 +222,48 @@ def select_candidate_ids(candidates: list[dict[str, Any]], case: SmokeCase) -> l
             continue
         selected.append(candidate["id"])
     return selected
+
+
+def candidate_needs_audio_companion(candidate: dict[str, Any]) -> bool:
+    if candidate.get("kind") != "video":
+        return False
+    value = " ".join(
+        str(candidate.get(key) or "").lower()
+        for key in ("url", "resource_type", "quality_label")
+    )
+    return "bilibili" in value or ".m4s" in value or "dash" in value or "video-only" in value
+
+
+def candidate_family(candidate: dict[str, Any]) -> str:
+    resource_type = candidate.get("resource_type")
+    if resource_type in {"bilibili_playinfo", "bilibili_api"}:
+        return f"{candidate.get('extractor')}:bilibili"
+    return f"{candidate.get('extractor')}:{candidate.get('initiator_url') or candidate.get('platform') or 'unknown'}"
+
+
+def best_audio_companion(
+    video_candidate: dict[str, Any],
+    ranked_candidates: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    video_family = candidate_family(video_candidate)
+    for candidate in ranked_candidates:
+        if candidate.get("kind") != "audio":
+            continue
+        if candidate.get("protection") == "drm" or candidate.get("ad_risk"):
+            continue
+        if candidate_family(candidate) == video_family or is_bilibili_pair(video_candidate, candidate):
+            return candidate
+    return None
+
+
+def is_bilibili_pair(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    left_value = f"{left.get('url') or ''} {left.get('resource_type') or ''}".lower()
+    right_value = f"{right.get('url') or ''} {right.get('resource_type') or ''}".lower()
+    return (
+        "bilibili" in left_value
+        and "bilibili" in right_value
+        and left.get("extractor") == right.get("extractor")
+    )
 
 
 def external_to_api_path(media_url: str, base_url: str) -> str:
