@@ -234,6 +234,7 @@ fn format_to_candidate(
             "acodec": format.acodec,
             "vcodec": format.vcodec,
             "has_http_headers": format.http_headers.is_some(),
+            "download_headers": safe_download_headers(format.http_headers.as_ref()),
         }),
         created_at: OffsetDateTime::now_utc(),
         score_breakdown_json: score_breakdown(kind, format, outputs),
@@ -476,6 +477,28 @@ fn has_sensitive_headers(headers: Option<&serde_json::Value>) -> bool {
     })
 }
 
+fn safe_download_headers(headers: Option<&serde_json::Value>) -> serde_json::Value {
+    let Some(headers) = headers.and_then(|value| value.as_object()) else {
+        return serde_json::json!({});
+    };
+
+    let mut out = serde_json::Map::new();
+    for (name, value) in headers {
+        let lowered = name.to_ascii_lowercase();
+        if !matches!(
+            lowered.as_str(),
+            "user-agent" | "accept" | "accept-language" | "referer" | "origin" | "range"
+        ) {
+            continue;
+        }
+        let Some(value) = value.as_str().filter(|value| !value.is_empty()) else {
+            continue;
+        };
+        out.insert(name.clone(), serde_json::Value::String(value.to_string()));
+    }
+    serde_json::Value::Object(out)
+}
+
 fn candidate_protection(format: &YtDlpFormat) -> CandidateProtection {
     if has_sensitive_headers(format.http_headers.as_ref()) {
         return CandidateProtection::NeedsProfile;
@@ -654,6 +677,50 @@ mod tests {
 
         assert_eq!(candidates.len(), 1);
         assert!(candidates[0].requires_authorization);
+    }
+
+    #[test]
+    fn persists_only_safe_download_headers() {
+        let json = br#"
+        {
+          "formats": [
+            {
+              "url": "https://github.com/media/video.mp4",
+              "ext": "mp4",
+              "format_id": "22",
+              "acodec": "aac",
+              "vcodec": "h264",
+              "http_headers": {
+                "User-Agent": "Mozilla/5.0",
+                "Referer": "https://example.com/watch",
+                "Accept-Language": "en-us,en;q=0.5",
+                "Cookie": "session=redacted",
+                "Authorization": "Bearer redacted",
+                "X-Test": "nope"
+              }
+            }
+          ]
+        }
+        "#;
+
+        let candidates = parse_yt_dlp_json(Uuid::new_v4(), json, &[OutputKind::Video]).unwrap();
+        let headers = candidates[0]
+            .metadata_json
+            .get("download_headers")
+            .and_then(|value| value.as_object())
+            .unwrap();
+
+        assert_eq!(
+            headers.get("User-Agent").and_then(|value| value.as_str()),
+            Some("Mozilla/5.0")
+        );
+        assert_eq!(
+            headers.get("Referer").and_then(|value| value.as_str()),
+            Some("https://example.com/watch")
+        );
+        assert!(!headers.contains_key("Cookie"));
+        assert!(!headers.contains_key("Authorization"));
+        assert!(!headers.contains_key("X-Test"));
     }
 
     #[test]

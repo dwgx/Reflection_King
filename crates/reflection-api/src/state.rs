@@ -18,6 +18,7 @@ use reflection_core::{
     transcode::{concat_demuxer_file, Transcoder},
     AppConfig, Result, RkError,
 };
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use time::OffsetDateTime;
 use tokio::sync::{mpsc, Mutex, Semaphore};
 use tracing::{debug, error, info, warn};
@@ -967,20 +968,23 @@ impl AppState {
         &self,
         job: &JobRecord,
         candidate: &MediaCandidate,
-    ) -> Result<reqwest::header::HeaderMap> {
+    ) -> Result<HeaderMap> {
+        let mut headers = safe_candidate_download_headers(candidate);
         if !candidate.requires_authorization && candidate.extractor != "browser_probe" {
-            return Ok(reqwest::header::HeaderMap::new());
+            return Ok(headers);
         }
         let Some(browser_probe) = &self.browser_probe else {
-            return Ok(reqwest::header::HeaderMap::new());
+            return Ok(headers);
         };
-        browser_probe
+        let profile_headers = browser_probe
             .headers_for_url(
                 &job.profile_id,
                 &candidate.url,
                 candidate.initiator_url.as_deref(),
             )
-            .await
+            .await?;
+        headers.extend(profile_headers);
+        Ok(headers)
     }
 
     async fn insert_artifact(
@@ -1091,6 +1095,38 @@ fn resolver_error_summary(attempts: &[reflection_core::extractors::AttemptLog]) 
 
 fn validate_candidate_url(url: &str) -> Result<()> {
     reflection_core::url_policy::parse_and_validate_url(url).map(|_| ())
+}
+
+fn safe_candidate_download_headers(candidate: &MediaCandidate) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    let Some(values) = candidate
+        .metadata_json
+        .get("download_headers")
+        .and_then(|value| value.as_object())
+    else {
+        return headers;
+    };
+
+    for (name, value) in values {
+        let lowered = name.to_ascii_lowercase();
+        if !matches!(
+            lowered.as_str(),
+            "user-agent" | "accept" | "accept-language" | "referer" | "origin" | "range"
+        ) {
+            continue;
+        }
+        let Some(value) = value.as_str() else {
+            continue;
+        };
+        let Ok(header_name) = HeaderName::from_bytes(lowered.as_bytes()) else {
+            continue;
+        };
+        let Ok(header_value) = HeaderValue::from_str(value) else {
+            continue;
+        };
+        headers.insert(header_name, header_value);
+    }
+    headers
 }
 
 fn candidate_attempt_order<'a>(
@@ -1559,5 +1595,42 @@ mod tests {
             best_companion_audio(attempts[0], &all).map(|c| c.id),
             Some(audio.id)
         );
+    }
+
+    #[test]
+    fn safe_candidate_download_headers_drops_sensitive_values() {
+        let candidate = candidate(
+            Uuid::new_v4(),
+            CandidateKind::Video,
+            "https://cdn.example.com/video.mp4",
+            "720p",
+            json!({
+                "download_headers": {
+                    "User-Agent": "Mozilla/5.0",
+                    "Referer": "https://example.com/watch",
+                    "Cookie": "secret=redacted",
+                    "Authorization": "Bearer redacted",
+                    "X-Test": "nope"
+                }
+            }),
+        );
+
+        let headers = safe_candidate_download_headers(&candidate);
+
+        assert_eq!(
+            headers
+                .get(reqwest::header::USER_AGENT)
+                .and_then(|value| value.to_str().ok()),
+            Some("Mozilla/5.0")
+        );
+        assert_eq!(
+            headers
+                .get(reqwest::header::REFERER)
+                .and_then(|value| value.to_str().ok()),
+            Some("https://example.com/watch")
+        );
+        assert!(!headers.contains_key(reqwest::header::COOKIE));
+        assert!(!headers.contains_key(reqwest::header::AUTHORIZATION));
+        assert!(!headers.contains_key("x-test"));
     }
 }
