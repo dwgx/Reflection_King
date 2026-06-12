@@ -120,7 +120,7 @@ fn build_router(state: Arc<AppState>) -> Router {
             "/api/admin/browser-login-sessions/{session_id}/close",
             post(close_browser_login_session),
         )
-        .route("/media/{id}/{filename}", get(get_media))
+        .route("/media/{id}/{filename}", get(get_media).head(head_media))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state)
@@ -716,6 +716,31 @@ async fn get_media(
         .header(header::CONTENT_LENGTH, file_len.to_string())
         .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
         .body(body)
+        .map_err(|error| RkError::Source(format!("failed to build response: {error}")))?)
+}
+
+async fn head_media(
+    State(state): State<Arc<AppState>>,
+    Path((id, filename)): Path<(Uuid, String)>,
+) -> Result<Response, ApiError> {
+    if filename.contains('/') || filename.contains('\\') || filename == "." || filename == ".." {
+        return Err(RkError::BadRequest("invalid media filename".to_string()).into());
+    }
+    let path = state.paths.public_job_dir(id).join(&filename);
+    let file_len = File::open(path).await?.metadata().await?.len();
+    let content_type = content_type_for(&filename);
+
+    if file_len == 0 {
+        return Err(RkError::Source("media file is empty".to_string()).into());
+    }
+
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, content_type)
+        .header(header::ACCEPT_RANGES, "bytes")
+        .header(header::CONTENT_LENGTH, file_len.to_string())
+        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+        .body(Body::empty())
         .map_err(|error| RkError::Source(format!("failed to build response: {error}")))?)
 }
 
