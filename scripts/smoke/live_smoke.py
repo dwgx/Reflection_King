@@ -186,8 +186,7 @@ DEFAULT_CASES = [
         platform_hint="iqiyi",
         outputs=["video"],
         tier="experimental",
-        notes="Currently blocked in yt-dlp without PhantomJS on VPS; retained for manual extractor research only.",
-        expect_success=False,
+        notes="yt-dlp iQ.com extractor needs PhantomJS and returns inline HLS manifests; kept experimental because signatures and deprecated dependencies can drift.",
     ),
 ]
 

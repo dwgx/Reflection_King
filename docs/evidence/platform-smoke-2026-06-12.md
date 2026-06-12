@@ -36,7 +36,7 @@ Observed CLI behavior on the VPS:
 | AcFun | OK | Failed on sample | Unsupported | Good platform smoke target. |
 | Youku CN | OK | OK | Unsupported | Signed HLS URLs expire; keep in platform tier. |
 | Youku international | Unsupported | Cannot fetch vid | Unsupported | Do not use for automatic smoke. |
-| iQIYI/iQ.com | Failed without PhantomJS | Returned tiny unknown file | Unsupported | Keep as experimental/manual only. |
+| iQIYI/iQ.com | OK with PhantomJS | Returned tiny unknown file | Unsupported | Experimental: yt-dlp returns inline HLS manifests that are downloaded through delegated yt-dlp. |
 | TikTok | OK for JSON and yt-dlp delegated download | Not used | Not used | Raw CDN URLs returned 403; server now falls back to constrained yt-dlp download. |
 | Douyin | OK for some public short videos | Not used | Unsupported for short videos | Some URLs require fresh cookies, not necessarily a logged-in account. |
 | Kuaishou | Unsupported or connection reset on samples | Failed on samples | Unsupported | Keep as experimental; current VPS has no reliable automatic path. |
@@ -100,6 +100,7 @@ Results:
 | Youku | `HEAD 200`, `Range 206`, MP4 faststart, H.264, yuv420p, AAC 2ch |
 | TikTok | `Range 206`, MP4 output generated through delegated yt-dlp download fallback |
 | Douyin | `Range 206`, MP4 output for the public sample |
+| iQIYI/iQ.com | `HEAD 200`, `Range 206`, H.264 MP4 output generated through delegated yt-dlp download |
 
 Both still warn that the current public endpoint is HTTP. PC VRChat can use it
 with untrusted URLs enabled, but Android/Quest production use needs HTTPS.
@@ -122,18 +123,29 @@ or CDN segment denial.
 
 ### iQIYI
 
-iQIYI is not ready for automatic success smoke. Current VPS probe shows yt-dlp
-needs PhantomJS for the sampled iQ.com pages, and you-get returned a tiny
-unknown file rather than a usable media candidate. Keep it in `experimental`
-until extractor dependencies and failure classification are improved.
+iQIYI/iQ.com is usable for the sampled public trailer after installing the
+deprecated PhantomJS compatibility dependency on the VPS. yt-dlp returns
+`data:application/x-mpegurl` inline HLS manifests; Reflection King now keeps
+only safe inline HLS manifest candidates and delegates the final download back
+to yt-dlp using the original page URL and selected `format_id`.
 
-Current Reflection King experimental smoke result:
+Keep this case in `experimental`, not `platform`, because PhantomJS is obsolete
+and iQIYI signatures, regions, VIP pages, and anti-bot checks can drift quickly.
+you-get still returned a tiny unknown file rather than a usable media candidate
+on the tested page.
+
+Current Reflection King experimental smoke result after the inline HLS change:
 
 ```text
 case: iqiyi-public-trailer-probe
-job: a3a62cef-82f0-4ec9-9eaf-b283d5b26f2b
-status: error
-error: remote source error: no media candidates from chain [yt_dlp]: yt_dlp: remote source error: yt-dlp probe exited with 1: ERROR: [iq.com] 19ruu27qdk: PhantomJS not found
+job: f65f962a-f0c4-43df-a9ef-69d96c823723
+status: ready
+candidates: 3
+selected: 720P manifest, format_id 500
+artifact: video/mp4, 11,704,420 bytes
+range: 206 video/mp4, content-range bytes 0-1023/11704420
+ffprobe: h264, 1280x712, duration about 94s
+vrchat_raw_url_check: HEAD 200, Range 206, faststart OK, h264 yuv420p, aac 2ch
 ```
 
 ### TikTok
