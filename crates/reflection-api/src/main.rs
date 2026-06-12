@@ -109,6 +109,14 @@ fn build_router(state: Arc<AppState>) -> Router {
             post(browser_login_session_navigate),
         )
         .route(
+            "/api/admin/browser-login-sessions/{session_id}/wheel",
+            post(browser_login_session_wheel),
+        )
+        .route(
+            "/api/admin/browser-login-sessions/{session_id}/resize",
+            post(browser_login_session_resize),
+        )
+        .route(
             "/api/admin/browser-login-sessions/{session_id}/close",
             post(close_browser_login_session),
         )
@@ -484,6 +492,9 @@ struct BrowserLoginStartRequest {
 struct BrowserLoginClickRequest {
     x: f64,
     y: f64,
+    button: Option<String>,
+    #[serde(alias = "clickCount")]
+    click_count: Option<u8>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -499,6 +510,22 @@ struct BrowserLoginPressRequest {
 #[derive(Debug, Deserialize)]
 struct BrowserLoginNavigateRequest {
     url: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct BrowserLoginWheelRequest {
+    #[serde(alias = "deltaX")]
+    delta_x: Option<f64>,
+    #[serde(alias = "deltaY")]
+    delta_y: Option<f64>,
+    x: Option<f64>,
+    y: Option<f64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BrowserLoginResizeRequest {
+    width: u32,
+    height: u32,
 }
 
 async fn start_browser_login_session(
@@ -539,7 +566,13 @@ async fn browser_login_session_click(
     ensure_login_profile(&principal)?;
     Ok(Json(
         state
-            .browser_login_session_click(&session_id, request.x, request.y)
+            .browser_login_session_click(
+                &session_id,
+                request.x,
+                request.y,
+                request.button.as_deref(),
+                request.click_count,
+            )
             .await?,
     ))
 }
@@ -585,6 +618,42 @@ async fn browser_login_session_navigate(
     Ok(Json(
         state
             .browser_login_session_navigate(&session_id, request.url.trim())
+            .await?,
+    ))
+}
+
+async fn browser_login_session_wheel(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Json(request): Json<BrowserLoginWheelRequest>,
+) -> Result<Json<reflection_core::browser_probe::LoginSessionSnapshot>, ApiError> {
+    let principal = authorize(&state, &headers).await?;
+    ensure_login_profile(&principal)?;
+    Ok(Json(
+        state
+            .browser_login_session_wheel(
+                &session_id,
+                request.delta_x.unwrap_or_default(),
+                request.delta_y.unwrap_or_default(),
+                request.x,
+                request.y,
+            )
+            .await?,
+    ))
+}
+
+async fn browser_login_session_resize(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Json(request): Json<BrowserLoginResizeRequest>,
+) -> Result<Json<reflection_core::browser_probe::LoginSessionSnapshot>, ApiError> {
+    let principal = authorize(&state, &headers).await?;
+    ensure_login_profile(&principal)?;
+    Ok(Json(
+        state
+            .browser_login_session_resize(&session_id, request.width, request.height)
             .await?,
     ))
 }

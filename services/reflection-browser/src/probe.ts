@@ -297,10 +297,19 @@ export class BrowserProbeService {
     };
   }
 
-  async loginClick(sessionId: string, x: number, y: number): Promise<LoginSessionSnapshot> {
+  async loginClick(
+    sessionId: string,
+    x: number,
+    y: number,
+    button: "left" | "right" | "middle" = "left",
+    clickCount = 1,
+  ): Promise<LoginSessionSnapshot> {
     const entry = this.requireLoginSession(sessionId);
     entry.lastActiveAt = Date.now();
-    await entry.page.mouse.click(x, y);
+    await entry.page.mouse.click(x, y, {
+      button,
+      clickCount: clamp(Math.trunc(clickCount), 1, 3),
+    });
     await entry.page.waitForTimeout(700).catch(() => undefined);
     return this.snapshotLoginSession(sessionId);
   }
@@ -328,6 +337,34 @@ export class BrowserProbeService {
       .goto(normalizeLoginUrl(url), { waitUntil: "domcontentloaded", timeout: 45_000 })
       .catch(() => undefined);
     await entry.page.waitForTimeout(800).catch(() => undefined);
+    return this.snapshotLoginSession(sessionId);
+  }
+
+  async loginWheel(
+    sessionId: string,
+    deltaX: number,
+    deltaY: number,
+    x?: number,
+    y?: number,
+  ): Promise<LoginSessionSnapshot> {
+    const entry = this.requireLoginSession(sessionId);
+    entry.lastActiveAt = Date.now();
+    if (Number.isFinite(x) && Number.isFinite(y)) {
+      await entry.page.mouse.move(x as number, y as number);
+    }
+    await entry.page.mouse.wheel(clamp(deltaX, -3000, 3000), clamp(deltaY, -3000, 3000));
+    await entry.page.waitForTimeout(350).catch(() => undefined);
+    return this.snapshotLoginSession(sessionId);
+  }
+
+  async loginResize(sessionId: string, width: number, height: number): Promise<LoginSessionSnapshot> {
+    const entry = this.requireLoginSession(sessionId);
+    entry.lastActiveAt = Date.now();
+    await entry.page.setViewportSize({
+      width: clamp(Math.trunc(width), 640, 2560),
+      height: clamp(Math.trunc(height), 360, 1600),
+    });
+    await entry.page.waitForTimeout(250).catch(() => undefined);
     return this.snapshotLoginSession(sessionId);
   }
 

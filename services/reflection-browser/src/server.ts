@@ -26,6 +26,8 @@ const loginSessionStartSchema = z.object({
 const loginClickSchema = z.object({
   x: z.number().finite(),
   y: z.number().finite(),
+  button: z.enum(["left", "right", "middle"]).optional(),
+  clickCount: z.number().int().min(1).max(3).optional(),
 });
 
 const loginTypeSchema = z.object({
@@ -38,6 +40,18 @@ const loginPressSchema = z.object({
 
 const loginNavigateSchema = z.object({
   url: z.string().min(1),
+});
+
+const loginWheelSchema = z.object({
+  deltaX: z.number().finite().optional(),
+  deltaY: z.number().finite().optional(),
+  x: z.number().finite().optional(),
+  y: z.number().finite().optional(),
+});
+
+const loginResizeSchema = z.object({
+  width: z.number().int().min(640).max(2560),
+  height: z.number().int().min(360).max(1600),
 });
 
 const headersSchema = z.object({
@@ -100,7 +114,13 @@ app.post("/login-sessions/:sessionId/click", async (request, reply) => {
   if (!parsed.success) {
     return reply.status(400).send({ error: parsed.error.flatten() });
   }
-  return probeService.loginClick(params.sessionId, parsed.data.x, parsed.data.y);
+  return probeService.loginClick(
+    params.sessionId,
+    parsed.data.x,
+    parsed.data.y,
+    parsed.data.button ?? "left",
+    parsed.data.clickCount ?? 1,
+  );
 });
 
 app.post("/login-sessions/:sessionId/type", async (request, reply) => {
@@ -128,6 +148,30 @@ app.post("/login-sessions/:sessionId/navigate", async (request, reply) => {
     return reply.status(400).send({ error: parsed.error.flatten() });
   }
   return probeService.loginNavigate(params.sessionId, parsed.data.url);
+});
+
+app.post("/login-sessions/:sessionId/wheel", async (request, reply) => {
+  const params = z.object({ sessionId: z.string() }).parse(request.params);
+  const parsed = loginWheelSchema.safeParse(request.body);
+  if (!parsed.success) {
+    return reply.status(400).send({ error: parsed.error.flatten() });
+  }
+  return probeService.loginWheel(
+    params.sessionId,
+    parsed.data.deltaX ?? 0,
+    parsed.data.deltaY ?? 0,
+    parsed.data.x,
+    parsed.data.y,
+  );
+});
+
+app.post("/login-sessions/:sessionId/resize", async (request, reply) => {
+  const params = z.object({ sessionId: z.string() }).parse(request.params);
+  const parsed = loginResizeSchema.safeParse(request.body);
+  if (!parsed.success) {
+    return reply.status(400).send({ error: parsed.error.flatten() });
+  }
+  return probeService.loginResize(params.sessionId, parsed.data.width, parsed.data.height);
 });
 
 app.post("/login-sessions/:sessionId/close", async (request) => {

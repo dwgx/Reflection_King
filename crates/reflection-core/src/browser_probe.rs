@@ -105,6 +105,10 @@ struct LoginSessionStartRequest<'a> {
 struct LoginClickRequest {
     x: f64,
     y: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    button: Option<String>,
+    #[serde(rename = "clickCount", skip_serializing_if = "Option::is_none")]
+    click_count: Option<u8>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -120,6 +124,24 @@ struct LoginPressRequest<'a> {
 #[derive(Debug, Clone, Serialize)]
 struct LoginNavigateRequest<'a> {
     url: &'a str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct LoginWheelRequest {
+    #[serde(rename = "deltaX")]
+    delta_x: f64,
+    #[serde(rename = "deltaY")]
+    delta_y: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    x: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    y: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct LoginResizeRequest {
+    width: u32,
+    height: u32,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -324,6 +346,8 @@ impl BrowserProbeClient {
         session_id: &str,
         x: f64,
         y: f64,
+        button: Option<&str>,
+        click_count: Option<u8>,
     ) -> Result<LoginSessionSnapshot> {
         let response = self
             .client
@@ -331,7 +355,12 @@ impl BrowserProbeClient {
                 "{}/login-sessions/{}/click",
                 self.base_url, session_id
             ))
-            .json(&LoginClickRequest { x, y })
+            .json(&LoginClickRequest {
+                x,
+                y,
+                button: button.map(ToString::to_string),
+                click_count,
+            })
             .send()
             .await?;
         self.login_response(response, "login-session click").await
@@ -387,6 +416,49 @@ impl BrowserProbeClient {
             .await?;
         self.login_response(response, "login-session navigate")
             .await
+    }
+
+    pub async fn login_session_wheel(
+        &self,
+        session_id: &str,
+        delta_x: f64,
+        delta_y: f64,
+        x: Option<f64>,
+        y: Option<f64>,
+    ) -> Result<LoginSessionSnapshot> {
+        let response = self
+            .client
+            .post(format!(
+                "{}/login-sessions/{}/wheel",
+                self.base_url, session_id
+            ))
+            .json(&LoginWheelRequest {
+                delta_x,
+                delta_y,
+                x,
+                y,
+            })
+            .send()
+            .await?;
+        self.login_response(response, "login-session wheel").await
+    }
+
+    pub async fn login_session_resize(
+        &self,
+        session_id: &str,
+        width: u32,
+        height: u32,
+    ) -> Result<LoginSessionSnapshot> {
+        let response = self
+            .client
+            .post(format!(
+                "{}/login-sessions/{}/resize",
+                self.base_url, session_id
+            ))
+            .json(&LoginResizeRequest { width, height })
+            .send()
+            .await?;
+        self.login_response(response, "login-session resize").await
     }
 
     pub async fn close_login_session(&self, session_id: &str) -> Result<serde_json::Value> {

@@ -325,13 +325,17 @@ impl AppState {
         session_id: &str,
         x: f64,
         y: f64,
+        button: Option<&str>,
+        click_count: Option<u8>,
     ) -> Result<LoginSessionSnapshot> {
         let Some(browser_probe) = &self.browser_probe else {
             return Err(RkError::Browser(
                 "RK_BROWSER_PROBE_URL is required for browser profile management".to_string(),
             ));
         };
-        browser_probe.login_session_click(session_id, x, y).await
+        browser_probe
+            .login_session_click(session_id, x, y, button, click_count)
+            .await
     }
 
     pub async fn browser_login_session_type(
@@ -371,6 +375,40 @@ impl AppState {
             ));
         };
         browser_probe.login_session_navigate(session_id, url).await
+    }
+
+    pub async fn browser_login_session_wheel(
+        &self,
+        session_id: &str,
+        delta_x: f64,
+        delta_y: f64,
+        x: Option<f64>,
+        y: Option<f64>,
+    ) -> Result<LoginSessionSnapshot> {
+        let Some(browser_probe) = &self.browser_probe else {
+            return Err(RkError::Browser(
+                "RK_BROWSER_PROBE_URL is required for browser profile management".to_string(),
+            ));
+        };
+        browser_probe
+            .login_session_wheel(session_id, delta_x, delta_y, x, y)
+            .await
+    }
+
+    pub async fn browser_login_session_resize(
+        &self,
+        session_id: &str,
+        width: u32,
+        height: u32,
+    ) -> Result<LoginSessionSnapshot> {
+        let Some(browser_probe) = &self.browser_probe else {
+            return Err(RkError::Browser(
+                "RK_BROWSER_PROBE_URL is required for browser profile management".to_string(),
+            ));
+        };
+        browser_probe
+            .login_session_resize(session_id, width, height)
+            .await
     }
 
     pub async fn close_browser_login_session(&self, session_id: &str) -> Result<serde_json::Value> {
@@ -865,9 +903,17 @@ impl AppState {
                     }
                     self.update_status(job.id, JobStatus::Remuxing).await?;
                     let output_path = job_dir.join(format!("video-{}.mp4", candidate.id));
-                    if let Some(audio_candidate) =
-                        best_companion_audio(candidate, available_candidates)
+                    let audio_candidate = best_companion_audio(candidate, available_candidates);
+                    if job.outputs.contains(&OutputKind::Audio)
+                        && !stream_info.has_audio
+                        && audio_candidate.is_none()
                     {
+                        return Err(RkError::Source(
+                            "candidate has no audio stream and no companion audio candidate"
+                                .to_string(),
+                        ));
+                    }
+                    if let Some(audio_candidate) = audio_candidate {
                         let audio_headers = self.download_headers(job, audio_candidate).await?;
                         Transcoder::new(self.config.ffmpeg_path.clone())
                             .media_urls_to_mp4_with_headers(

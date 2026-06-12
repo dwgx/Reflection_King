@@ -46,6 +46,7 @@ type PlatformHint =
 type OutputKind = "audio" | "video" | "image" | "page_html";
 type OutputMode = "auto" | "video" | "audio" | "image" | "page_html";
 type ViewMode = "console" | "history" | "admin" | "help";
+type LoginClickMode = "left" | "right" | "double";
 
 interface Health {
   ok: boolean;
@@ -287,6 +288,8 @@ function App() {
   const [loginUrl, setLoginUrl] = useState("https://www.bilibili.com/");
   const [loginText, setLoginText] = useState("");
   const [loginSnapshot, setLoginSnapshot] = useState<BrowserLoginSnapshot | null>(null);
+  const [loginClickMode, setLoginClickMode] = useState<LoginClickMode>("left");
+  const [loginZoom, setLoginZoom] = useState("1");
   const [hiddenBatches, setHiddenBatches] = useState<HiddenJobBatchView[]>([]);
   const [form, setForm] = useState<CreateJobPayload>({
     url: "",
@@ -750,22 +753,74 @@ function App() {
     }
   }
 
-  async function clickBrowserLoginSession(event: React.MouseEvent<HTMLButtonElement>) {
+  function browserPointFromEvent(event: React.MouseEvent<HTMLElement> | React.WheelEvent<HTMLElement>) {
     if (!loginSnapshot) return;
     const rect = event.currentTarget.getBoundingClientRect();
-    const x = ((event.clientX - rect.left) / rect.width) * loginSnapshot.width;
-    const y = ((event.clientY - rect.top) / rect.height) * loginSnapshot.height;
+    return {
+      x: ((event.clientX - rect.left) / rect.width) * loginSnapshot.width,
+      y: ((event.clientY - rect.top) / rect.height) * loginSnapshot.height,
+    };
+  }
+
+  async function clickBrowserLoginSession(event: React.MouseEvent<HTMLButtonElement>, mode = loginClickMode) {
+    if (!loginSnapshot) return;
+    const point = browserPointFromEvent(event);
+    if (!point) return;
+    const button = mode === "right" ? "right" : "left";
+    const clickCount = mode === "double" ? 2 : 1;
     try {
       setLoginSnapshot(await request<BrowserLoginSnapshot>(
         `/api/admin/browser-login-sessions/${encodeURIComponent(loginSnapshot.session.id)}/click`,
         {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ x, y }),
+          body: JSON.stringify({ ...point, button, click_count: clickCount }),
         },
       ));
     } catch (error) {
       notify(errorMessage(error), "error");
+    }
+  }
+
+  async function wheelBrowserLoginSession(event: React.WheelEvent<HTMLButtonElement>) {
+    if (!loginSnapshot) return;
+    event.preventDefault();
+    const point = browserPointFromEvent(event);
+    try {
+      setLoginSnapshot(await request<BrowserLoginSnapshot>(
+        `/api/admin/browser-login-sessions/${encodeURIComponent(loginSnapshot.session.id)}/wheel`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            delta_x: event.deltaX,
+            delta_y: event.deltaY,
+            x: point?.x,
+            y: point?.y,
+          }),
+        },
+      ));
+    } catch (error) {
+      notify(errorMessage(error), "error");
+    }
+  }
+
+  async function resizeBrowserLoginSession(width: number, height: number) {
+    if (!loginSnapshot) return;
+    setBusy(true);
+    try {
+      setLoginSnapshot(await request<BrowserLoginSnapshot>(
+        `/api/admin/browser-login-sessions/${encodeURIComponent(loginSnapshot.session.id)}/resize`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ width, height }),
+        },
+      ));
+    } catch (error) {
+      notify(errorMessage(error), "error");
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -1244,9 +1299,55 @@ function App() {
                     <span>{loginSnapshot.title || "未命名页面"}</span>
                     <em>{loginSnapshot.url}</em>
                   </div>
-                  <button className="remote-browser-screen" type="button" onClick={clickBrowserLoginSession}>
-                    <img src={loginSnapshot.image} alt="服务端浏览器截图" />
-                  </button>
+                  <div className="remote-browser-toolbar">
+                    <SegmentedControl
+                      value={loginClickMode}
+                      options={["left", "right", "double"]}
+                      labelFor={loginClickModeLabel}
+                      onChange={(value) => setLoginClickMode(value as LoginClickMode)}
+                    />
+                    <Dropdown
+                      value={loginZoom}
+                      options={["0.75", "1", "1.25", "1.5", "2"]}
+                      labelFor={(value) => `缩放 ${Math.round(Number(value) * 100)}%`}
+                      onChange={setLoginZoom}
+                    />
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      disabled={busy}
+                      onClick={() => resizeBrowserLoginSession(1280, 720)}
+                    >
+                      720p
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      disabled={busy}
+                      onClick={() => resizeBrowserLoginSession(1920, 1080)}
+                    >
+                      1080p
+                    </Button>
+                  </div>
+                  <div className="remote-browser-viewport">
+                    <button
+                      className="remote-browser-screen"
+                      type="button"
+                      style={{ width: `${Number(loginZoom) * 100}%` }}
+                      onClick={clickBrowserLoginSession}
+                      onWheel={wheelBrowserLoginSession}
+                      onContextMenu={(event) => {
+                        event.preventDefault();
+                        setLoginClickMode("right");
+                        void clickBrowserLoginSession(event, "right");
+                      }}
+                    >
+                      <img src={loginSnapshot.image} alt="服务端浏览器截图" draggable={false} />
+                    </button>
+                  </div>
+                  <div className="screen-help">
+                    <span>点击截图按当前模式操作；滚轮会发送到服务端页面；右键截图会直接发送右键点击。</span>
+                  </div>
                   <div className="remote-login-controls">
                     <Input
                       value={loginText}
@@ -1967,6 +2068,14 @@ function authModeLabel(value: string): string {
   } as Record<string, string>)[value] ?? value;
 }
 
+function loginClickModeLabel(value: string): string {
+  return ({
+    left: "左键",
+    right: "右键",
+    double: "双击",
+  } as Record<string, string>)[value] ?? value;
+}
+
 function outputLabel(value: string): string {
   return ({
     audio: "音频",
@@ -2040,7 +2149,15 @@ function defaultCandidatesForJob(
       const imageCandidates = candidates.filter((candidate) => candidate.kind === "image");
       if (imageCandidates.length) return imageCandidates;
     }
-    return mediaCandidates.slice(0, 1);
+    const videoCandidate = mediaCandidates[0];
+    if (!videoCandidate) return [];
+    if (candidateNeedsAudioCompanion(videoCandidate)) {
+      const audioCandidate = bestAudioCompanion(videoCandidate, candidates, job);
+      if (audioCandidate) {
+        return [videoCandidate, audioCandidate];
+      }
+    }
+    return [videoCandidate];
   }
   if (outputs.has("audio") && !outputs.has("video")) {
     const audioCandidate = candidateDisplayList(candidates, job, false)
@@ -2050,6 +2167,46 @@ function defaultCandidatesForJob(
     }
   }
   return fallback ? [fallback] : [];
+}
+
+function candidateNeedsAudioCompanion(candidate: Candidate): boolean {
+  if (candidate.kind !== "video") return false;
+  const value = `${candidate.url} ${candidate.resource_type ?? ""} ${candidate.quality_label ?? ""}`.toLowerCase();
+  return (
+    value.includes("bilibili") ||
+    value.includes(".m4s") ||
+    value.includes("dash") ||
+    value.includes("video-only")
+  );
+}
+
+function bestAudioCompanion(
+  videoCandidate: Candidate,
+  candidates: Candidate[],
+  job: JobView | null,
+): Candidate | null {
+  const videoFamily = candidateFamily(videoCandidate);
+  const audioCandidates = candidates
+    .filter((candidate) => candidate.kind === "audio")
+    .filter(isUsableCandidate)
+    .filter((candidate) => candidateFamily(candidate) === videoFamily || isBilibiliFamily(videoCandidate, candidate));
+
+  if (!audioCandidates.length) return null;
+  return audioCandidates.sort((left, right) => candidateRank(right, job) - candidateRank(left, job))[0] ?? null;
+}
+
+function candidateFamily(candidate: Candidate): string {
+  const url = safeUrl(candidate.url);
+  if (candidate.resource_type === "bilibili_playinfo" || candidate.resource_type === "bilibili_api") {
+    return `${candidate.extractor}:bilibili`;
+  }
+  return `${candidate.extractor}:${candidate.initiator_url ?? url?.hostname ?? candidate.platform ?? "unknown"}`;
+}
+
+function isBilibiliFamily(left: Candidate, right: Candidate): boolean {
+  const leftValue = `${left.url} ${left.resource_type ?? ""} ${left.quality_label ?? ""}`.toLowerCase();
+  const rightValue = `${right.url} ${right.resource_type ?? ""} ${right.quality_label ?? ""}`.toLowerCase();
+  return leftValue.includes("bilibili") && rightValue.includes("bilibili") && left.extractor === right.extractor;
 }
 
 function candidateRank(candidate: Candidate, job: JobView | null): number {

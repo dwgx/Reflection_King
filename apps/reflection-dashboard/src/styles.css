@@ -1375,6 +1375,13 @@
     gap: 8px;
   }
 
+  .remote-browser-toolbar {
+    display: grid;
+    grid-template-columns: minmax(240px, 1fr) minmax(130px, auto) auto auto;
+    gap: 8px;
+    align-items: center;
+  }
+
   .remote-browser-meta {
     display: grid;
     grid-template-columns: minmax(0, 0.45fr) minmax(0, 1fr);
@@ -1395,12 +1402,22 @@
     white-space: nowrap;
   }
 
+  .remote-browser-viewport {
+    width: 100%;
+    max-height: min(62vh, 760px);
+    overflow: auto;
+    border: 1px solid #1c2634;
+    border-radius: 8px;
+    background: #030509;
+  }
+
   .remote-browser-screen {
     display: block;
     width: 100%;
     overflow: hidden;
-    border: 1px solid #243044;
-    border-radius: 8px;
+    min-width: 100%;
+    border: 0;
+    border-radius: 0;
     background: #020305;
     padding: 0;
     cursor: crosshair;
@@ -1411,6 +1428,14 @@
     width: 100%;
     aspect-ratio: 16 / 9;
     object-fit: contain;
+    pointer-events: none;
+    user-select: none;
+  }
+
+  .screen-help {
+    color: #7f8da0;
+    font-size: 12px;
+    line-height: 18px;
   }
 
   .help-copy {
