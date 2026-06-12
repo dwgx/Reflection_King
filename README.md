@@ -149,10 +149,11 @@ Invoke-RestMethod `
   -Body $selection
 ```
 
-Browser Profile cookies can be imported from the admin page by pasting Cookie
-JSON exported from a browser profile. The removed local protocol/PowerShell
-helper path is intentionally unsupported; future interactive login should run as
-a server-side remote browser session behind HTTPS.
+Browser Profile login is handled by the admin page's server-side remote browser
+session. Open `管理 -> 浏览器账号配置`, choose a Profile ID, start a session,
+and operate the server browser screenshot. Cookies stay in the server Profile
+and are not returned to the dashboard. Direct Cookie JSON import remains
+available for operators who already have a trusted export.
 
 For a logged-in Windows browser profile, use the explicit Python importer:
 

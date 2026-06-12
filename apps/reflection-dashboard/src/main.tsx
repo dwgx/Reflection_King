@@ -22,6 +22,7 @@ import {
   Settings,
   Shield,
   UserCog,
+  MonitorPlay,
   X,
 } from "lucide-react";
 import "./styles.css";
@@ -213,6 +214,25 @@ interface RestoreJobsResponse {
   history_deleted: boolean;
 }
 
+interface BrowserLoginSessionView {
+  id: string;
+  profileId: string;
+  url: string;
+  title?: string;
+  createdAt: string;
+  lastActiveAt: string;
+  expiresAt: string;
+}
+
+interface BrowserLoginSnapshot {
+  session: BrowserLoginSessionView;
+  image: string;
+  url: string;
+  title?: string;
+  width: number;
+  height: number;
+}
+
 interface NotificationItem {
   id: number;
   tone: "info" | "success" | "error" | "warn";
@@ -264,6 +284,9 @@ function App() {
   });
   const [profileId, setProfileId] = useState("admin_default");
   const [cookieJson, setCookieJson] = useState("");
+  const [loginUrl, setLoginUrl] = useState("https://www.bilibili.com/");
+  const [loginText, setLoginText] = useState("");
+  const [loginSnapshot, setLoginSnapshot] = useState<BrowserLoginSnapshot | null>(null);
   const [hiddenBatches, setHiddenBatches] = useState<HiddenJobBatchView[]>([]);
   const [form, setForm] = useState<CreateJobPayload>({
     url: "",
@@ -693,6 +716,133 @@ function App() {
     }
   }
 
+  async function startBrowserLoginSession() {
+    setBusy(true);
+    try {
+      const snapshot = await request<BrowserLoginSnapshot>(
+        `/api/admin/browser-profiles/${encodeURIComponent(profileId)}/login-sessions`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ url: loginUrl }),
+        },
+      );
+      setLoginSnapshot(snapshot);
+      notify("已打开服务端浏览器会话。登录完成后直接关闭会话即可，Cookie 会留在 Profile。", "success");
+    } catch (error) {
+      notify(errorMessage(error), "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function refreshBrowserLoginSession() {
+    if (!loginSnapshot) return;
+    setBusy(true);
+    try {
+      setLoginSnapshot(await request<BrowserLoginSnapshot>(
+        `/api/admin/browser-login-sessions/${encodeURIComponent(loginSnapshot.session.id)}/snapshot`,
+      ));
+    } catch (error) {
+      notify(errorMessage(error), "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function clickBrowserLoginSession(event: React.MouseEvent<HTMLButtonElement>) {
+    if (!loginSnapshot) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const x = ((event.clientX - rect.left) / rect.width) * loginSnapshot.width;
+    const y = ((event.clientY - rect.top) / rect.height) * loginSnapshot.height;
+    try {
+      setLoginSnapshot(await request<BrowserLoginSnapshot>(
+        `/api/admin/browser-login-sessions/${encodeURIComponent(loginSnapshot.session.id)}/click`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ x, y }),
+        },
+      ));
+    } catch (error) {
+      notify(errorMessage(error), "error");
+    }
+  }
+
+  async function typeIntoBrowserLoginSession() {
+    if (!loginSnapshot || !loginText) return;
+    setBusy(true);
+    try {
+      setLoginSnapshot(await request<BrowserLoginSnapshot>(
+        `/api/admin/browser-login-sessions/${encodeURIComponent(loginSnapshot.session.id)}/type`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ text: loginText }),
+        },
+      ));
+      setLoginText("");
+    } catch (error) {
+      notify(errorMessage(error), "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function pressBrowserLoginKey(key: string) {
+    if (!loginSnapshot) return;
+    setBusy(true);
+    try {
+      setLoginSnapshot(await request<BrowserLoginSnapshot>(
+        `/api/admin/browser-login-sessions/${encodeURIComponent(loginSnapshot.session.id)}/press`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ key }),
+        },
+      ));
+    } catch (error) {
+      notify(errorMessage(error), "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function navigateBrowserLoginSession() {
+    if (!loginSnapshot) return;
+    setBusy(true);
+    try {
+      setLoginSnapshot(await request<BrowserLoginSnapshot>(
+        `/api/admin/browser-login-sessions/${encodeURIComponent(loginSnapshot.session.id)}/navigate`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ url: loginUrl }),
+        },
+      ));
+    } catch (error) {
+      notify(errorMessage(error), "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function closeBrowserLoginSession() {
+    if (!loginSnapshot) return;
+    setBusy(true);
+    try {
+      await request(`/api/admin/browser-login-sessions/${encodeURIComponent(loginSnapshot.session.id)}/close`, {
+        method: "POST",
+      });
+      setLoginSnapshot(null);
+      notify("已关闭服务端浏览器会话，Profile 已保留登录态。", "success");
+    } catch (error) {
+      notify(errorMessage(error), "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const consoleView = (
     <div className="view-stack">
       {!apiKey && (
@@ -1066,8 +1216,65 @@ function App() {
             <Field label="Profile ID">
               <Input value={profileId} onChange={(event) => setProfileId(event.target.value)} />
             </Field>
-            <div className="admin-note">
-              当前支持手动粘贴 Cookie JSON，或在本机运行 scripts/cookies/import_browser_cookies.py 从已登录浏览器导入指定站点 Cookie。交互式登录后续改为服务端远程浏览器代理。
+            <div className="remote-login-card">
+              <div className="remote-login-head">
+                <div>
+                  <strong>服务端远程浏览器</strong>
+                  <span>点击截图操作服务器上的持久 Profile。登录态只保存在服务器 Profile，不返回 Cookie 明文。</span>
+                </div>
+                <Button type="button" disabled={busy} onClick={startBrowserLoginSession}>
+                  <MonitorPlay size={16} /> 打开会话
+                </Button>
+              </div>
+              <div className="remote-login-controls">
+                <Input value={loginUrl} onChange={(event) => setLoginUrl(event.target.value)} />
+                <Button type="button" variant="secondary" disabled={busy || !loginSnapshot} onClick={navigateBrowserLoginSession}>
+                  跳转
+                </Button>
+                <Button type="button" variant="secondary" disabled={busy || !loginSnapshot} onClick={refreshBrowserLoginSession}>
+                  <RefreshCw size={16} /> 刷新截图
+                </Button>
+                <Button type="button" variant="secondary" disabled={busy || !loginSnapshot} onClick={closeBrowserLoginSession}>
+                  关闭
+                </Button>
+              </div>
+              {loginSnapshot ? (
+                <div className="remote-browser">
+                  <div className="remote-browser-meta">
+                    <span>{loginSnapshot.title || "未命名页面"}</span>
+                    <em>{loginSnapshot.url}</em>
+                  </div>
+                  <button className="remote-browser-screen" type="button" onClick={clickBrowserLoginSession}>
+                    <img src={loginSnapshot.image} alt="服务端浏览器截图" />
+                  </button>
+                  <div className="remote-login-controls">
+                    <Input
+                      value={loginText}
+                      placeholder="输入要发送到当前焦点的文本"
+                      onChange={(event) => setLoginText(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          event.preventDefault();
+                          void typeIntoBrowserLoginSession();
+                        }
+                      }}
+                    />
+                    <Button type="button" variant="secondary" disabled={busy || !loginText} onClick={typeIntoBrowserLoginSession}>
+                      输入
+                    </Button>
+                    <Button type="button" variant="secondary" disabled={busy} onClick={() => pressBrowserLoginKey("Enter")}>
+                      Enter
+                    </Button>
+                    <Button type="button" variant="secondary" disabled={busy} onClick={() => pressBrowserLoginKey("Escape")}>
+                      Esc
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <div className="admin-note">
+                  选择站点地址后打开会话；在截图上点击输入框，再用下方输入栏发送文本。二维码登录可直接用手机扫码。
+                </div>
+              )}
             </div>
             <form className="admin-form" onSubmit={importProfileCookies}>
               <label className="field">
@@ -1081,6 +1288,9 @@ function App() {
               </label>
               <Button type="submit" disabled={busy || !cookieJson.trim()}>导入 Cookie 到 Profile</Button>
             </form>
+            <div className="admin-note">
+              备用方式：`scripts/cookies/import_browser_cookies.py` 可以从本机已登录浏览器导入指定站点 Cookie。Edge/Chrome 正在运行或 Windows 加密限制时，需要关闭浏览器或使用管理员终端。
+            </div>
           </div>
         </Card>
       </section>

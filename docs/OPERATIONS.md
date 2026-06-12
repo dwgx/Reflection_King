@@ -43,10 +43,10 @@ npx playwright install chromium
 npm run dev
 ```
 
-Set `RK_BROWSER_PROBE_URL=http://127.0.0.1:8791` for the API. On a desktop host,
-set `RK_BROWSER_HEADED=1` to manually log into the persistent
-`admin_default` profile. On headless Linux, put the sidecar behind an Xvfb/noVNC
-wrapper before using headed login.
+Set `RK_BROWSER_PROBE_URL=http://127.0.0.1:8791` for the API. The admin
+dashboard can start a server-side remote browser session for a persistent
+Profile. The browser process stays inside the sidecar; the dashboard receives a
+short-lived screenshot controller and never receives Cookie values.
 
 ## External Adapters
 
@@ -67,12 +67,21 @@ and `lux` can be configured manually when its Go binary is installed. The
 resolver deduplicates URLs across routes and records protection, route,
 confidence, ad-risk, and validation hints for the dashboard.
 
-## Browser Profile Cookies
+## Browser Profile Login And Cookies
 
-The supported Profile path is direct Cookie JSON import from the admin page.
-Export cookies from a browser profile and paste the JSON array into
-`管理 -> 浏览器账号配置 -> Cookie JSON`, then import it into the target Profile
-ID.
+The primary Profile path is the admin page remote browser:
+
+1. Open `管理 -> 浏览器账号配置`.
+2. Set the target `Profile ID`, for example `admin_default`.
+3. Enter the site URL and start the server browser session.
+4. Click the screenshot, type through the input bar, or scan a QR code with a
+   phone.
+5. Close the session after login. The Profile directory keeps the site cookies
+   for later browser probing and header replay.
+
+Direct Cookie JSON import is still supported from the same admin card. Export
+cookies from a browser profile and paste the JSON array into `Cookie JSON`, then
+import it into the target Profile ID.
 
 For Windows machines where the operator is already logged into Edge, Chrome, or
 Firefox, the local Python importer can extract only the requested site domains
@@ -96,9 +105,9 @@ terminal. This is an explicit local import command, not a protocol handler.
 
 Local protocol handlers and PowerShell desktop helpers are intentionally not
 supported. They are hard to trust, fail in common browser security contexts, and
-do not work reliably for a remote VPS dashboard. Future interactive login should
-be implemented as a server-side remote browser session behind HTTPS, such as a
-noVNC/CDP gateway bound to admin-only access.
+do not work reliably for a remote VPS dashboard. Do not expose browser CDP/VNC
+ports directly to the public internet; keep interaction behind the API
+permission checks.
 
 ## Linux Deployment
 

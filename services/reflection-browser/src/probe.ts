@@ -1,7 +1,16 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import crypto from "node:crypto";
 import { chromium, type BrowserContext, type Page, type Request, type Response } from "playwright";
-import type { BrowserCandidate, CandidateKind, HeadersForUrlResponse, ProbeRequest, ProbeResponse } from "./types.js";
+import type {
+  BrowserCandidate,
+  CandidateKind,
+  HeadersForUrlResponse,
+  LoginSessionSnapshot,
+  LoginSessionView,
+  ProbeRequest,
+  ProbeResponse,
+} from "./types.js";
 import type { RuntimeConfig } from "./config.js";
 
 const MANIFEST_EXTENSIONS = [".m3u8", ".mpd"];
@@ -36,6 +45,15 @@ interface ContextEntry {
   lastUsedAt: number;
 }
 
+interface LoginSessionEntry {
+  id: string;
+  profileId: string;
+  page: Page;
+  createdAt: number;
+  lastActiveAt: number;
+  expiresAt: number;
+}
+
 interface DiscoveredUrl {
   url: string;
   source: string;
@@ -47,6 +65,7 @@ interface DiscoveredUrl {
 
 export class BrowserProbeService {
   private readonly contexts = new Map<string, ContextEntry>();
+  private readonly loginSessions = new Map<string, LoginSessionEntry>();
 
   constructor(private readonly config: RuntimeConfig) {}
 
@@ -238,9 +257,120 @@ export class BrowserProbeService {
     return { headers };
   }
 
+  async startLoginSession(profileId: string, url: string): Promise<LoginSessionSnapshot> {
+    const normalizedProfileId = sanitizeProfileId(profileId || this.config.defaultProfileId);
+    const context = await this.context(normalizedProfileId, false);
+    const page = await context.newPage();
+    await page.setViewportSize({ width: 1280, height: 720 });
+    const now = Date.now();
+    const entry: LoginSessionEntry = {
+      id: crypto.randomUUID(),
+      profileId: normalizedProfileId,
+      page,
+      createdAt: now,
+      lastActiveAt: now,
+      expiresAt: now + 30 * 60_000,
+    };
+    this.loginSessions.set(entry.id, entry);
+    await page
+      .goto(normalizeLoginUrl(url), { waitUntil: "domcontentloaded", timeout: 45_000 })
+      .catch(() => undefined);
+    await page.waitForTimeout(800).catch(() => undefined);
+    return this.snapshotLoginSession(entry.id);
+  }
+
+  async snapshotLoginSession(sessionId: string): Promise<LoginSessionSnapshot> {
+    const entry = this.requireLoginSession(sessionId);
+    entry.lastActiveAt = Date.now();
+    const viewport = entry.page.viewportSize() ?? { width: 1280, height: 720 };
+    const [title, image] = await Promise.all([
+      entry.page.title().catch(() => undefined),
+      entry.page.screenshot({ type: "jpeg", quality: 78, fullPage: false }),
+    ]);
+    return {
+      session: this.loginSessionView(entry, title),
+      image: `data:image/jpeg;base64,${image.toString("base64")}`,
+      url: entry.page.url(),
+      title,
+      width: viewport.width,
+      height: viewport.height,
+    };
+  }
+
+  async loginClick(sessionId: string, x: number, y: number): Promise<LoginSessionSnapshot> {
+    const entry = this.requireLoginSession(sessionId);
+    entry.lastActiveAt = Date.now();
+    await entry.page.mouse.click(x, y);
+    await entry.page.waitForTimeout(700).catch(() => undefined);
+    return this.snapshotLoginSession(sessionId);
+  }
+
+  async loginType(sessionId: string, text: string): Promise<LoginSessionSnapshot> {
+    const entry = this.requireLoginSession(sessionId);
+    entry.lastActiveAt = Date.now();
+    await entry.page.keyboard.type(text, { delay: 18 });
+    await entry.page.waitForTimeout(350).catch(() => undefined);
+    return this.snapshotLoginSession(sessionId);
+  }
+
+  async loginPress(sessionId: string, key: string): Promise<LoginSessionSnapshot> {
+    const entry = this.requireLoginSession(sessionId);
+    entry.lastActiveAt = Date.now();
+    await entry.page.keyboard.press(key);
+    await entry.page.waitForTimeout(500).catch(() => undefined);
+    return this.snapshotLoginSession(sessionId);
+  }
+
+  async loginNavigate(sessionId: string, url: string): Promise<LoginSessionSnapshot> {
+    const entry = this.requireLoginSession(sessionId);
+    entry.lastActiveAt = Date.now();
+    await entry.page
+      .goto(normalizeLoginUrl(url), { waitUntil: "domcontentloaded", timeout: 45_000 })
+      .catch(() => undefined);
+    await entry.page.waitForTimeout(800).catch(() => undefined);
+    return this.snapshotLoginSession(sessionId);
+  }
+
+  async loginClose(sessionId: string): Promise<{ closed: boolean }> {
+    const entry = this.loginSessions.get(sessionId);
+    if (!entry) {
+      return { closed: false };
+    }
+    this.loginSessions.delete(sessionId);
+    await entry.page.close().catch(() => undefined);
+    return { closed: true };
+  }
+
   async close(): Promise<void> {
+    await Promise.all([...this.loginSessions.values()].map((entry) => entry.page.close().catch(() => undefined)));
+    this.loginSessions.clear();
     await Promise.all([...this.contexts.values()].map((entry) => entry.context.close()));
     this.contexts.clear();
+  }
+
+  private requireLoginSession(sessionId: string): LoginSessionEntry {
+    const entry = this.loginSessions.get(sessionId);
+    if (!entry) {
+      throw new Error("login session not found");
+    }
+    if (entry.expiresAt < Date.now()) {
+      this.loginSessions.delete(sessionId);
+      void entry.page.close().catch(() => undefined);
+      throw new Error("login session expired");
+    }
+    return entry;
+  }
+
+  private loginSessionView(entry: LoginSessionEntry, title?: string): LoginSessionView {
+    return {
+      id: entry.id,
+      profileId: entry.profileId,
+      url: entry.page.url(),
+      title,
+      createdAt: new Date(entry.createdAt).toISOString(),
+      lastActiveAt: new Date(entry.lastActiveAt).toISOString(),
+      expiresAt: new Date(entry.expiresAt).toISOString(),
+    };
   }
 
   private async context(profileId: string, headed: boolean): Promise<BrowserContext> {
@@ -1719,6 +1849,16 @@ function isHttpUrl(value: string): boolean {
   } catch {
     return false;
   }
+}
+
+function normalizeLoginUrl(value: string): string {
+  const trimmed = value.trim();
+  const withProtocol = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+  const url = new URL(withProtocol);
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error("login URL must be http or https");
+  }
+  return url.href;
 }
 
 /// Normalize a URL for "is this the page itself" comparison: drop the fragment

@@ -84,6 +84,34 @@ fn build_router(state: Arc<AppState>) -> Router {
             "/api/admin/browser-profiles/{profile_id}/cookies/import",
             post(import_profile_cookies),
         )
+        .route(
+            "/api/admin/browser-profiles/{profile_id}/login-sessions",
+            post(start_browser_login_session),
+        )
+        .route(
+            "/api/admin/browser-login-sessions/{session_id}/snapshot",
+            get(browser_login_session_snapshot),
+        )
+        .route(
+            "/api/admin/browser-login-sessions/{session_id}/click",
+            post(browser_login_session_click),
+        )
+        .route(
+            "/api/admin/browser-login-sessions/{session_id}/type",
+            post(browser_login_session_type),
+        )
+        .route(
+            "/api/admin/browser-login-sessions/{session_id}/press",
+            post(browser_login_session_press),
+        )
+        .route(
+            "/api/admin/browser-login-sessions/{session_id}/navigate",
+            post(browser_login_session_navigate),
+        )
+        .route(
+            "/api/admin/browser-login-sessions/{session_id}/close",
+            post(close_browser_login_session),
+        )
         .route("/media/{id}/{filename}", get(get_media))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
@@ -447,6 +475,130 @@ async fn import_profile_cookies(
     ))
 }
 
+#[derive(Debug, Deserialize)]
+struct BrowserLoginStartRequest {
+    url: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct BrowserLoginClickRequest {
+    x: f64,
+    y: f64,
+}
+
+#[derive(Debug, Deserialize)]
+struct BrowserLoginTypeRequest {
+    text: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct BrowserLoginPressRequest {
+    key: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct BrowserLoginNavigateRequest {
+    url: String,
+}
+
+async fn start_browser_login_session(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(profile_id): Path<String>,
+    Json(request): Json<BrowserLoginStartRequest>,
+) -> Result<Json<reflection_core::browser_probe::LoginSessionSnapshot>, ApiError> {
+    let principal = authorize(&state, &headers).await?;
+    ensure_login_profile(&principal)?;
+    let profile_id = normalize_profile_id(Some(profile_id));
+    Ok(Json(
+        state
+            .start_browser_login_session(&profile_id, request.url.trim())
+            .await?,
+    ))
+}
+
+async fn browser_login_session_snapshot(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+) -> Result<Json<reflection_core::browser_probe::LoginSessionSnapshot>, ApiError> {
+    let principal = authorize(&state, &headers).await?;
+    ensure_login_profile(&principal)?;
+    Ok(Json(
+        state.browser_login_session_snapshot(&session_id).await?,
+    ))
+}
+
+async fn browser_login_session_click(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Json(request): Json<BrowserLoginClickRequest>,
+) -> Result<Json<reflection_core::browser_probe::LoginSessionSnapshot>, ApiError> {
+    let principal = authorize(&state, &headers).await?;
+    ensure_login_profile(&principal)?;
+    Ok(Json(
+        state
+            .browser_login_session_click(&session_id, request.x, request.y)
+            .await?,
+    ))
+}
+
+async fn browser_login_session_type(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Json(request): Json<BrowserLoginTypeRequest>,
+) -> Result<Json<reflection_core::browser_probe::LoginSessionSnapshot>, ApiError> {
+    let principal = authorize(&state, &headers).await?;
+    ensure_login_profile(&principal)?;
+    Ok(Json(
+        state
+            .browser_login_session_type(&session_id, &request.text)
+            .await?,
+    ))
+}
+
+async fn browser_login_session_press(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Json(request): Json<BrowserLoginPressRequest>,
+) -> Result<Json<reflection_core::browser_probe::LoginSessionSnapshot>, ApiError> {
+    let principal = authorize(&state, &headers).await?;
+    ensure_login_profile(&principal)?;
+    Ok(Json(
+        state
+            .browser_login_session_press(&session_id, &request.key)
+            .await?,
+    ))
+}
+
+async fn browser_login_session_navigate(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Json(request): Json<BrowserLoginNavigateRequest>,
+) -> Result<Json<reflection_core::browser_probe::LoginSessionSnapshot>, ApiError> {
+    let principal = authorize(&state, &headers).await?;
+    ensure_login_profile(&principal)?;
+    Ok(Json(
+        state
+            .browser_login_session_navigate(&session_id, request.url.trim())
+            .await?,
+    ))
+}
+
+async fn close_browser_login_session(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let principal = authorize(&state, &headers).await?;
+    ensure_login_profile(&principal)?;
+    Ok(Json(state.close_browser_login_session(&session_id).await?))
+}
+
 async fn get_media(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -543,6 +695,14 @@ fn principal_from_record(record: ApiKeyRecord) -> AuthPrincipal {
 
 fn ensure_admin(principal: &AuthPrincipal) -> Result<(), RkError> {
     if principal.role == ApiKeyRole::Admin {
+        Ok(())
+    } else {
+        Err(RkError::Unauthorized)
+    }
+}
+
+fn ensure_login_profile(principal: &AuthPrincipal) -> Result<(), RkError> {
+    if principal.allow_login_profile {
         Ok(())
     } else {
         Err(RkError::Unauthorized)

@@ -96,6 +96,57 @@ struct ImportCookiesRequest {
     cookies: Vec<serde_json::Value>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct LoginSessionStartRequest<'a> {
+    url: &'a str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct LoginClickRequest {
+    x: f64,
+    y: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct LoginTypeRequest<'a> {
+    text: &'a str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct LoginPressRequest<'a> {
+    key: &'a str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct LoginNavigateRequest<'a> {
+    url: &'a str,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct LoginSessionView {
+    pub id: String,
+    #[serde(rename = "profileId")]
+    pub profile_id: String,
+    pub url: String,
+    pub title: Option<String>,
+    #[serde(rename = "createdAt")]
+    pub created_at: String,
+    #[serde(rename = "lastActiveAt")]
+    pub last_active_at: String,
+    #[serde(rename = "expiresAt")]
+    pub expires_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct LoginSessionSnapshot {
+    pub session: LoginSessionView,
+    pub image: String,
+    pub url: String,
+    pub title: Option<String>,
+    pub width: u32,
+    pub height: u32,
+}
+
 impl BrowserProbeClient {
     pub fn new(base_url: impl Into<String>, timeout: Duration) -> Result<Self> {
         let client = reqwest::Client::builder().timeout(timeout).build()?;
@@ -235,6 +286,139 @@ impl BrowserProbeClient {
             )));
         }
 
+        Ok(response.json().await?)
+    }
+
+    pub async fn start_login_session(
+        &self,
+        profile_id: &str,
+        url: &str,
+    ) -> Result<LoginSessionSnapshot> {
+        let response = self
+            .client
+            .post(format!(
+                "{}/profiles/{}/login-sessions",
+                self.base_url, profile_id
+            ))
+            .json(&LoginSessionStartRequest { url })
+            .send()
+            .await?;
+        self.login_response(response, "login-sessions").await
+    }
+
+    pub async fn login_session_snapshot(&self, session_id: &str) -> Result<LoginSessionSnapshot> {
+        let response = self
+            .client
+            .get(format!(
+                "{}/login-sessions/{}/snapshot",
+                self.base_url, session_id
+            ))
+            .send()
+            .await?;
+        self.login_response(response, "login-session snapshot")
+            .await
+    }
+
+    pub async fn login_session_click(
+        &self,
+        session_id: &str,
+        x: f64,
+        y: f64,
+    ) -> Result<LoginSessionSnapshot> {
+        let response = self
+            .client
+            .post(format!(
+                "{}/login-sessions/{}/click",
+                self.base_url, session_id
+            ))
+            .json(&LoginClickRequest { x, y })
+            .send()
+            .await?;
+        self.login_response(response, "login-session click").await
+    }
+
+    pub async fn login_session_type(
+        &self,
+        session_id: &str,
+        text: &str,
+    ) -> Result<LoginSessionSnapshot> {
+        let response = self
+            .client
+            .post(format!(
+                "{}/login-sessions/{}/type",
+                self.base_url, session_id
+            ))
+            .json(&LoginTypeRequest { text })
+            .send()
+            .await?;
+        self.login_response(response, "login-session type").await
+    }
+
+    pub async fn login_session_press(
+        &self,
+        session_id: &str,
+        key: &str,
+    ) -> Result<LoginSessionSnapshot> {
+        let response = self
+            .client
+            .post(format!(
+                "{}/login-sessions/{}/press",
+                self.base_url, session_id
+            ))
+            .json(&LoginPressRequest { key })
+            .send()
+            .await?;
+        self.login_response(response, "login-session press").await
+    }
+
+    pub async fn login_session_navigate(
+        &self,
+        session_id: &str,
+        url: &str,
+    ) -> Result<LoginSessionSnapshot> {
+        let response = self
+            .client
+            .post(format!(
+                "{}/login-sessions/{}/navigate",
+                self.base_url, session_id
+            ))
+            .json(&LoginNavigateRequest { url })
+            .send()
+            .await?;
+        self.login_response(response, "login-session navigate")
+            .await
+    }
+
+    pub async fn close_login_session(&self, session_id: &str) -> Result<serde_json::Value> {
+        let response = self
+            .client
+            .post(format!(
+                "{}/login-sessions/{}/close",
+                self.base_url, session_id
+            ))
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            return Err(RkError::Browser(format!(
+                "login-session close returned HTTP {}",
+                response.status()
+            )));
+        }
+        Ok(response.json().await?)
+    }
+
+    async fn login_response(
+        &self,
+        response: reqwest::Response,
+        label: &str,
+    ) -> Result<LoginSessionSnapshot> {
+        if !response.status().is_success() {
+            return Err(RkError::Browser(format!(
+                "{label} returned HTTP {}",
+                response.status()
+            )));
+        }
         Ok(response.json().await?)
     }
 }

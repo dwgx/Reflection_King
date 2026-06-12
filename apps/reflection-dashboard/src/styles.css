@@ -1326,6 +1326,93 @@
     line-height: 18px;
   }
 
+  .remote-login-card {
+    display: grid;
+    gap: 10px;
+    border: 1px solid #242f3b;
+    border-radius: 8px;
+    background: #0a0d12;
+    padding: 10px;
+  }
+
+  .remote-login-head {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px;
+    align-items: center;
+  }
+
+  .remote-login-head div {
+    display: grid;
+    min-width: 0;
+    gap: 3px;
+  }
+
+  .remote-login-head strong {
+    color: #f4f7fb;
+    font-size: 13px;
+  }
+
+  .remote-login-head span,
+  .remote-browser-meta em {
+    overflow: hidden;
+    color: #8190a3;
+    font-size: 12px;
+    line-height: 18px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .remote-login-controls {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto auto;
+    gap: 8px;
+    align-items: center;
+  }
+
+  .remote-browser {
+    display: grid;
+    gap: 8px;
+  }
+
+  .remote-browser-meta {
+    display: grid;
+    grid-template-columns: minmax(0, 0.45fr) minmax(0, 1fr);
+    gap: 10px;
+    align-items: center;
+    border: 1px solid #202834;
+    border-radius: 7px;
+    background: #07090d;
+    padding: 8px 10px;
+  }
+
+  .remote-browser-meta span {
+    overflow: hidden;
+    color: #d9e2ee;
+    font-size: 12px;
+    font-weight: 700;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .remote-browser-screen {
+    display: block;
+    width: 100%;
+    overflow: hidden;
+    border: 1px solid #243044;
+    border-radius: 8px;
+    background: #020305;
+    padding: 0;
+    cursor: crosshair;
+  }
+
+  .remote-browser-screen img {
+    display: block;
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    object-fit: contain;
+  }
+
   .help-copy {
     display: grid;
     gap: 10px;
@@ -1400,6 +1487,9 @@
     .topbar-actions,
     .url-command-row,
     .parameter-grid,
+    .remote-login-head,
+    .remote-login-controls,
+    .remote-browser-meta,
     .permission-grid,
     .meta-list,
     .key-row {

@@ -48,3 +48,27 @@ export interface HeadersForUrlRequest {
 export interface HeadersForUrlResponse {
   headers: Record<string, string>;
 }
+
+export interface LoginSessionStartRequest {
+  url: string;
+  profileId?: string;
+}
+
+export interface LoginSessionView {
+  id: string;
+  profileId: string;
+  url: string;
+  title?: string;
+  createdAt: string;
+  lastActiveAt: string;
+  expiresAt: string;
+}
+
+export interface LoginSessionSnapshot {
+  session: LoginSessionView;
+  image: string;
+  url: string;
+  title?: string;
+  width: number;
+  height: number;
+}

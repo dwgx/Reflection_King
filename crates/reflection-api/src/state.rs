@@ -1,7 +1,7 @@
 use std::{path::Path, sync::Arc};
 
 use reflection_core::{
-    browser_probe::BrowserProbeClient,
+    browser_probe::{BrowserProbeClient, LoginSessionSnapshot},
     download::Downloader,
     external_probe::YtDlpProbe,
     external_tools::{ExternalToolKind, ExternalToolProbe},
@@ -293,6 +293,93 @@ impl AppState {
             ));
         };
         browser_probe.import_cookies(profile_id, cookies).await
+    }
+
+    pub async fn start_browser_login_session(
+        &self,
+        profile_id: &str,
+        url: &str,
+    ) -> Result<LoginSessionSnapshot> {
+        let Some(browser_probe) = &self.browser_probe else {
+            return Err(RkError::Browser(
+                "RK_BROWSER_PROBE_URL is required for browser profile management".to_string(),
+            ));
+        };
+        browser_probe.start_login_session(profile_id, url).await
+    }
+
+    pub async fn browser_login_session_snapshot(
+        &self,
+        session_id: &str,
+    ) -> Result<LoginSessionSnapshot> {
+        let Some(browser_probe) = &self.browser_probe else {
+            return Err(RkError::Browser(
+                "RK_BROWSER_PROBE_URL is required for browser profile management".to_string(),
+            ));
+        };
+        browser_probe.login_session_snapshot(session_id).await
+    }
+
+    pub async fn browser_login_session_click(
+        &self,
+        session_id: &str,
+        x: f64,
+        y: f64,
+    ) -> Result<LoginSessionSnapshot> {
+        let Some(browser_probe) = &self.browser_probe else {
+            return Err(RkError::Browser(
+                "RK_BROWSER_PROBE_URL is required for browser profile management".to_string(),
+            ));
+        };
+        browser_probe.login_session_click(session_id, x, y).await
+    }
+
+    pub async fn browser_login_session_type(
+        &self,
+        session_id: &str,
+        text: &str,
+    ) -> Result<LoginSessionSnapshot> {
+        let Some(browser_probe) = &self.browser_probe else {
+            return Err(RkError::Browser(
+                "RK_BROWSER_PROBE_URL is required for browser profile management".to_string(),
+            ));
+        };
+        browser_probe.login_session_type(session_id, text).await
+    }
+
+    pub async fn browser_login_session_press(
+        &self,
+        session_id: &str,
+        key: &str,
+    ) -> Result<LoginSessionSnapshot> {
+        let Some(browser_probe) = &self.browser_probe else {
+            return Err(RkError::Browser(
+                "RK_BROWSER_PROBE_URL is required for browser profile management".to_string(),
+            ));
+        };
+        browser_probe.login_session_press(session_id, key).await
+    }
+
+    pub async fn browser_login_session_navigate(
+        &self,
+        session_id: &str,
+        url: &str,
+    ) -> Result<LoginSessionSnapshot> {
+        let Some(browser_probe) = &self.browser_probe else {
+            return Err(RkError::Browser(
+                "RK_BROWSER_PROBE_URL is required for browser profile management".to_string(),
+            ));
+        };
+        browser_probe.login_session_navigate(session_id, url).await
+    }
+
+    pub async fn close_browser_login_session(&self, session_id: &str) -> Result<serde_json::Value> {
+        let Some(browser_probe) = &self.browser_probe else {
+            return Err(RkError::Browser(
+                "RK_BROWSER_PROBE_URL is required for browser profile management".to_string(),
+            ));
+        };
+        browser_probe.close_login_session(session_id).await
     }
 
     pub async fn list_artifacts(&self, id: Uuid) -> Result<Vec<ArtifactView>> {
