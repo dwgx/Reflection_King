@@ -6,7 +6,7 @@
 
 use async_trait::async_trait;
 
-use crate::Result;
+use crate::{models::AuthMode, Result};
 
 use super::{ExtractContext, ExtractResult, SourceExtractor};
 
@@ -28,9 +28,28 @@ impl SourceExtractor for YtDlpExtractor {
         let Some(probe) = &ctx.yt_dlp else {
             return Ok(ExtractResult::default());
         };
+        let headers = if should_use_profile_headers(ctx.auth_mode) {
+            if let Some(browser) = &ctx.browser {
+                browser
+                    .headers_for_url(&ctx.profile_id, &ctx.source_url, Some(&ctx.source_url))
+                    .await
+                    .unwrap_or_default()
+            } else {
+                Default::default()
+            }
+        } else {
+            Default::default()
+        };
         let candidates = probe
-            .probe(ctx.job_id, &ctx.source_url, &ctx.outputs)
+            .probe_with_headers(ctx.job_id, &ctx.source_url, &ctx.outputs, &headers)
             .await?;
         Ok(ExtractResult::candidates(candidates))
     }
+}
+
+fn should_use_profile_headers(auth_mode: AuthMode) -> bool {
+    matches!(
+        auth_mode,
+        AuthMode::Auto | AuthMode::Profile | AuthMode::Cookies
+    )
 }

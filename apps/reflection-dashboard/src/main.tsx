@@ -255,6 +255,16 @@ interface ConfirmDialogState {
 const OUTPUTS: OutputKind[] = ["audio", "video", "image", "page_html"];
 const TERMINAL = new Set(["ready", "error", "candidates_ready"]);
 const PAGE_SIZE_OPTIONS = [3, 5, 10, 20, 50];
+const LOGIN_TARGETS = [
+  { id: "douyin", label: "抖音", url: "https://www.douyin.com/" },
+  { id: "kuaishou", label: "快手", url: "https://www.kuaishou.com/" },
+  { id: "bilibili", label: "哔哩哔哩", url: "https://www.bilibili.com/" },
+  { id: "youtube", label: "YouTube", url: "https://www.youtube.com/" },
+  { id: "tiktok", label: "TikTok", url: "https://www.tiktok.com/" },
+  { id: "youku", label: "优酷", url: "https://www.youku.com/" },
+  { id: "iqiyi", label: "爱奇艺", url: "https://www.iqiyi.com/" },
+  { id: "acfun", label: "AcFun", url: "https://www.acfun.cn/" },
+];
 
 function App() {
   const [apiKey, setApiKey] = useState(() => localStorage.getItem("reflection_api_key") ?? "");
@@ -737,6 +747,39 @@ function App() {
       );
       setLoginSnapshot(snapshot);
       notify("已打开服务端浏览器会话。登录完成后直接关闭会话即可，Cookie 会留在 Profile。", "success");
+    } catch (error) {
+      notify(errorMessage(error), "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function openBrowserLoginTarget(url: string) {
+    setLoginUrl(url);
+    setBusy(true);
+    try {
+      if (loginSnapshot) {
+        setLoginSnapshot(await request<BrowserLoginSnapshot>(
+          `/api/admin/browser-login-sessions/${encodeURIComponent(loginSnapshot.session.id)}/navigate`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ url }),
+          },
+        ));
+        notify("已切换服务端远程浏览器站点。", "success");
+      } else {
+        const snapshot = await request<BrowserLoginSnapshot>(
+          `/api/admin/browser-profiles/${encodeURIComponent(profileId)}/login-sessions`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ url }),
+          },
+        );
+        setLoginSnapshot(snapshot);
+        notify("已打开服务端远程浏览器。登录完成后关闭会话，Profile 会保留 Cookie。", "success");
+      }
     } catch (error) {
       notify(errorMessage(error), "error");
     } finally {
@@ -1293,11 +1336,27 @@ function App() {
               <div className="remote-login-head">
                 <div>
                   <strong>服务端远程浏览器</strong>
-                  <span>点击截图操作服务器上的持久 Profile。登录态只保存在服务器 Profile，不返回 Cookie 明文。</span>
+                  <span>在服务器浏览器里登录站点。解析时自动使用当前 Profile 的 Cookie/Header，不返回 Cookie 明文。</span>
                 </div>
                 <Button type="button" disabled={busy} onClick={startBrowserLoginSession}>
                   <MonitorPlay size={16} /> 打开会话
                 </Button>
+              </div>
+              <div className="login-target-grid">
+                {LOGIN_TARGETS.map((target) => (
+                  <Button
+                    key={target.id}
+                    type="button"
+                    variant={target.id === "douyin" ? "primary" : "secondary"}
+                    disabled={busy}
+                    onClick={() => openBrowserLoginTarget(target.url)}
+                  >
+                    <MonitorPlay size={14} /> 登录 {target.label}
+                  </Button>
+                ))}
+              </div>
+              <div className="admin-note">
+                抖音完整视频页常见 `fresh cookies`。先点“登录 抖音”，用手机扫码或账号登录；之后创建任务保持 Profile 为 <strong>{profileId}</strong>、授权为“自动”或“浏览器配置”。
               </div>
               <div className="remote-login-controls">
                 <Input value={loginUrl} onChange={(event) => setLoginUrl(event.target.value)} />

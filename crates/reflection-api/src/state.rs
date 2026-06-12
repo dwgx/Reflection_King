@@ -1095,6 +1095,8 @@ impl AppState {
             .arg(yt_dlp_max_filesize(self.config.max_download_bytes))
             .arg("-o")
             .arg(&output_template);
+        let headers = self.download_headers(job, candidate).await?;
+        add_yt_dlp_header_args(&mut command, &headers);
         if let Some(format_id) = candidate_metadata_text(candidate, "format_id") {
             command.arg("-f").arg(format_id);
         }
@@ -1281,6 +1283,15 @@ fn safe_candidate_download_headers(candidate: &MediaCandidate) -> HeaderMap {
         headers.insert(header_name, header_value);
     }
     headers
+}
+
+fn add_yt_dlp_header_args(command: &mut Command, headers: &HeaderMap) {
+    for (name, value) in headers {
+        if let Ok(value) = value.to_str() {
+            command.arg("--add-header");
+            command.arg(format!("{}: {}", name.as_str(), value));
+        }
+    }
 }
 
 fn find_delegated_download(temp_dir: &Path, candidate_id: Uuid) -> Result<PathBuf> {

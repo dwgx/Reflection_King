@@ -1,5 +1,6 @@
 use std::{cmp::Reverse, collections::HashSet, path::PathBuf, time::Duration};
 
+use reqwest::header::HeaderMap;
 use serde::Deserialize;
 use time::OffsetDateTime;
 use tokio::{process::Command, time as tokio_time};
@@ -35,6 +36,17 @@ impl YtDlpProbe {
         source_url: &str,
         outputs: &[OutputKind],
     ) -> Result<Vec<MediaCandidate>> {
+        self.probe_with_headers(job_id, source_url, outputs, &HeaderMap::new())
+            .await
+    }
+
+    pub async fn probe_with_headers(
+        &self,
+        job_id: Uuid,
+        source_url: &str,
+        outputs: &[OutputKind],
+        headers: &HeaderMap,
+    ) -> Result<Vec<MediaCandidate>> {
         parse_and_validate_url(source_url)?;
 
         let mut command = Command::new(&self.path);
@@ -44,6 +56,7 @@ impl YtDlpProbe {
             .arg("--skip-download")
             .arg("--no-warnings")
             .arg("--no-cache-dir")
+            .args(yt_dlp_header_args(headers))
             .arg(source_url);
 
         let output = tokio_time::timeout(self.timeout, command.output())
@@ -70,6 +83,17 @@ impl YtDlpProbe {
 
         parse_yt_dlp_json(job_id, &output.stdout, outputs)
     }
+}
+
+fn yt_dlp_header_args(headers: &HeaderMap) -> Vec<String> {
+    let mut args = Vec::new();
+    for (name, value) in headers {
+        if let Ok(value) = value.to_str() {
+            args.push("--add-header".to_string());
+            args.push(format!("{}: {}", name.as_str(), value));
+        }
+    }
+    args
 }
 
 #[derive(Debug, Deserialize)]

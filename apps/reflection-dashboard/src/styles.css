@@ -1461,6 +1461,26 @@
     align-items: center;
   }
 
+  .login-target-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .login-target-grid .button {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .remote-login-card .admin-note {
+    margin: 0;
+  }
+
+  .remote-login-card .admin-note strong {
+    color: #dff8ff;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+
   .remote-browser {
     display: grid;
     gap: 8px;
