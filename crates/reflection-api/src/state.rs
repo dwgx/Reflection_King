@@ -4,7 +4,7 @@ use std::{
 };
 
 use reflection_core::{
-    browser_probe::{BrowserProbeClient, LoginSessionSnapshot},
+    browser_probe::{BrowserCookie, BrowserProbeClient, LoginSessionSnapshot},
     download::Downloader,
     external_probe::YtDlpProbe,
     external_tools::{ExternalToolKind, ExternalToolProbe},
@@ -1142,6 +1142,12 @@ impl AppState {
             .arg(&output_template);
         let headers = self.download_headers(job, candidate).await?;
         add_yt_dlp_header_args(&mut command, &headers);
+        let cookies_file = self
+            .yt_dlp_cookies_file(job, candidate, source_url, temp_dir)
+            .await?;
+        if let Some(path) = cookies_file.as_deref() {
+            command.arg("--cookies").arg(path);
+        }
         if let Some(format_id) = candidate_metadata_text(candidate, "format_id") {
             command.arg("-f").arg(format_id);
         }
@@ -1151,6 +1157,9 @@ impl AppState {
             .await
             .map_err(|_| RkError::Source("yt-dlp delegated download timed out".to_string()))??;
         if !output.status.success() {
+            if let Some(path) = cookies_file {
+                tokio::fs::remove_file(path).await.ok();
+            }
             return Err(RkError::Source(format!(
                 "yt-dlp delegated download exited with {}: {}",
                 output
@@ -1159,6 +1168,9 @@ impl AppState {
                     .map_or_else(|| "signal".to_string(), |code| code.to_string()),
                 limited_process_stderr(&output.stderr)
             )));
+        }
+        if let Some(path) = cookies_file {
+            tokio::fs::remove_file(path).await.ok();
         }
 
         let downloaded = find_delegated_download(temp_dir, candidate.id)?;
@@ -1186,6 +1198,36 @@ impl AppState {
                 "yt-dlp delegated download only supports audio or video outputs".to_string(),
             )),
         }
+    }
+
+    async fn yt_dlp_cookies_file(
+        &self,
+        job: &JobRecord,
+        candidate: &MediaCandidate,
+        source_url: &str,
+        temp_dir: &Path,
+    ) -> Result<Option<PathBuf>> {
+        if !matches!(
+            job.auth_mode,
+            reflection_core::models::AuthMode::Auto
+                | reflection_core::models::AuthMode::Profile
+                | reflection_core::models::AuthMode::Cookies
+        ) {
+            return Ok(None);
+        }
+        let Some(browser_probe) = &self.browser_probe else {
+            return Ok(None);
+        };
+        let cookie_url = if is_yt_dlp_inline_manifest_candidate(candidate) {
+            source_url
+        } else {
+            candidate.initiator_url.as_deref().unwrap_or(source_url)
+        };
+        let cookies = browser_probe
+            .cookies_for_url(&job.profile_id, cookie_url)
+            .await
+            .unwrap_or_default();
+        write_temp_cookies_file(temp_dir, job.id, &cookies).await
     }
 
     async fn insert_artifact(
@@ -1338,11 +1380,61 @@ fn safe_candidate_download_headers(candidate: &MediaCandidate) -> HeaderMap {
 
 fn add_yt_dlp_header_args(command: &mut Command, headers: &HeaderMap) {
     for (name, value) in headers {
+        if name.as_str().eq_ignore_ascii_case("cookie") {
+            continue;
+        }
         if let Ok(value) = value.to_str() {
             command.arg("--add-header");
             command.arg(format!("{}: {}", name.as_str(), value));
         }
     }
+}
+
+async fn write_temp_cookies_file(
+    temp_dir: &Path,
+    job_id: Uuid,
+    cookies: &[BrowserCookie],
+) -> Result<Option<PathBuf>> {
+    if cookies.is_empty() {
+        return Ok(None);
+    }
+    tokio::fs::create_dir_all(temp_dir).await?;
+    let path = temp_dir.join(format!("yt-dlp-{job_id}.cookies.txt"));
+    tokio::fs::write(&path, netscape_cookie_file(cookies)).await?;
+    Ok(Some(path))
+}
+
+fn netscape_cookie_file(cookies: &[BrowserCookie]) -> String {
+    let mut out = String::from("# Netscape HTTP Cookie File\n");
+    for cookie in cookies {
+        out.push_str(&format!(
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+            cookie.domain,
+            if cookie.domain.starts_with('.') {
+                "TRUE"
+            } else {
+                "FALSE"
+            },
+            cookie.path,
+            if cookie.secure { "TRUE" } else { "FALSE" },
+            cookie_expires(cookie.expires),
+            sanitize_cookie_field(&cookie.name),
+            sanitize_cookie_field(&cookie.value),
+        ));
+    }
+    out
+}
+
+fn cookie_expires(value: f64) -> i64 {
+    if !value.is_finite() || value <= 0.0 {
+        0
+    } else {
+        value.floor() as i64
+    }
+}
+
+fn sanitize_cookie_field(value: &str) -> String {
+    value.replace(['\t', '\r', '\n'], "")
 }
 
 fn find_delegated_download(temp_dir: &Path, candidate_id: Uuid) -> Result<PathBuf> {

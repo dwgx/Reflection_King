@@ -188,6 +188,15 @@ app.post("/profiles/:profileId/headers-for-url", async (request, reply) => {
   return probeService.headersForUrl(params.profileId, parsed.data.url, parsed.data.referer);
 });
 
+app.post("/profiles/:profileId/cookies-for-url", async (request, reply) => {
+  const params = z.object({ profileId: z.string() }).parse(request.params);
+  const parsed = headersSchema.pick({ url: true }).safeParse(request.body);
+  if (!parsed.success) {
+    return reply.status(400).send({ error: parsed.error.flatten() });
+  }
+  return probeService.cookiesForUrl(params.profileId, parsed.data.url);
+});
+
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.on(signal, async () => {
     await probeService.close();

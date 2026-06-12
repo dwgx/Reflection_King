@@ -49,6 +49,21 @@ export interface HeadersForUrlResponse {
   headers: Record<string, string>;
 }
 
+export interface CookiesForUrlResponse {
+  cookies: BrowserContextCookie[];
+}
+
+export interface BrowserContextCookie {
+  name: string;
+  value: string;
+  domain: string;
+  path: string;
+  expires: number;
+  httpOnly: boolean;
+  secure: boolean;
+  sameSite: "Strict" | "Lax" | "None";
+}
+
 export interface LoginSessionStartRequest {
   url: string;
   profileId?: string;

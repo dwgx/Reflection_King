@@ -5,6 +5,7 @@ import { chromium, type BrowserContext, type Page, type Request, type Response }
 import type {
   BrowserCandidate,
   CandidateKind,
+  CookiesForUrlResponse,
   HeadersForUrlResponse,
   LoginSessionSnapshot,
   LoginSessionView,
@@ -255,6 +256,13 @@ export class BrowserProbeService {
       headers.origin = `${refererUrl.protocol}//${refererUrl.host}`;
     }
     return { headers };
+  }
+
+  async cookiesForUrl(profileId: string, url: string): Promise<CookiesForUrlResponse> {
+    const normalizedProfileId = sanitizeProfileId(profileId || this.config.defaultProfileId);
+    const context = await this.context(normalizedProfileId, this.config.headed);
+    new URL(url);
+    return { cookies: await context.cookies(url) };
   }
 
   async startLoginSession(profileId: string, url: string): Promise<LoginSessionSnapshot> {

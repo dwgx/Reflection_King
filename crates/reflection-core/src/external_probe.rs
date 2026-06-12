@@ -47,6 +47,18 @@ impl YtDlpProbe {
         outputs: &[OutputKind],
         headers: &HeaderMap,
     ) -> Result<Vec<MediaCandidate>> {
+        self.probe_with_headers_and_cookies_file(job_id, source_url, outputs, headers, None)
+            .await
+    }
+
+    pub async fn probe_with_headers_and_cookies_file(
+        &self,
+        job_id: Uuid,
+        source_url: &str,
+        outputs: &[OutputKind],
+        headers: &HeaderMap,
+        cookies_file: Option<&std::path::Path>,
+    ) -> Result<Vec<MediaCandidate>> {
         parse_and_validate_url(source_url)?;
 
         let mut command = Command::new(&self.path);
@@ -56,8 +68,11 @@ impl YtDlpProbe {
             .arg("--skip-download")
             .arg("--no-warnings")
             .arg("--no-cache-dir")
-            .args(yt_dlp_header_args(headers))
-            .arg(source_url);
+            .args(yt_dlp_header_args(headers));
+        if let Some(cookies_file) = cookies_file {
+            command.arg("--cookies").arg(cookies_file);
+        }
+        command.arg(source_url);
 
         let output = tokio_time::timeout(self.timeout, command.output())
             .await
@@ -88,6 +103,9 @@ impl YtDlpProbe {
 fn yt_dlp_header_args(headers: &HeaderMap) -> Vec<String> {
     let mut args = Vec::new();
     for (name, value) in headers {
+        if name.as_str().eq_ignore_ascii_case("cookie") {
+            continue;
+        }
         if let Ok(value) = value.to_str() {
             args.push("--add-header".to_string());
             args.push(format!("{}: {}", name.as_str(), value));
@@ -801,6 +819,23 @@ mod tests {
         assert!(!headers.contains_key("Cookie"));
         assert!(!headers.contains_key("Authorization"));
         assert!(!headers.contains_key("X-Test"));
+    }
+
+    #[test]
+    fn yt_dlp_header_args_drop_cookie_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert("cookie", "session=secret".parse().unwrap());
+        headers.insert("user-agent", "ReflectionSmoke/1.0".parse().unwrap());
+
+        let args = yt_dlp_header_args(&headers);
+
+        assert_eq!(
+            args,
+            vec![
+                "--add-header".to_string(),
+                "user-agent: ReflectionSmoke/1.0".to_string()
+            ]
+        );
     }
 
     #[test]

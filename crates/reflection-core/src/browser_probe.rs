@@ -91,6 +91,23 @@ struct HeadersForUrlResponse {
     headers: HashMap<String, String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct BrowserCookie {
+    pub name: String,
+    pub value: String,
+    pub domain: String,
+    pub path: String,
+    pub expires: f64,
+    #[serde(rename = "httpOnly")]
+    pub http_only: bool,
+    pub secure: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct CookiesForUrlResponse {
+    cookies: Vec<BrowserCookie>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct ImportCookiesRequest {
     cookies: Vec<serde_json::Value>,
@@ -284,6 +301,28 @@ impl BrowserProbeClient {
             headers.insert(name, value);
         }
         Ok(headers)
+    }
+
+    pub async fn cookies_for_url(&self, profile_id: &str, url: &str) -> Result<Vec<BrowserCookie>> {
+        let response = self
+            .client
+            .post(format!(
+                "{}/profiles/{}/cookies-for-url",
+                self.base_url, profile_id
+            ))
+            .json(&serde_json::json!({ "url": url }))
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            return Err(RkError::Browser(format!(
+                "cookies-for-url returned HTTP {}",
+                response.status()
+            )));
+        }
+
+        let response: CookiesForUrlResponse = response.json().await?;
+        Ok(response.cookies)
     }
 
     pub async fn import_cookies(
