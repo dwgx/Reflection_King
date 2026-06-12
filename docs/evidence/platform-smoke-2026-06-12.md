@@ -175,42 +175,63 @@ range: 206 video/mp4
 ### Douyin
 
 Douyin is kept in `experimental`, not `platform`, because public short-video
-access changes by URL, region, freshness, and challenge-cookie state. The tested
-public short-link sample currently works without login on the VPS:
+access changes by URL, region, freshness, and challenge-cookie state. The same
+short-link can fail through yt-dlp while succeeding through browser probing.
+Use browser probing for this sample when a server Profile is available.
+
+```text
+case: douyin-public-browser-video
+job: c24634df-2850-47b3-8c8a-19545facebb7
+status: ready
+candidates: 4
+artifact: video/mp4, 3,484,984 bytes
+vrchat_raw_url_check: HEAD 200, Range 206, faststart OK, h264 576x1024, yuv420p, aac 2ch
+```
+
+The yt-dlp external route for the same short-link currently fails before
+candidates with a clear message:
 
 ```text
 case: douyin-public-external-video
-job: 826f3fc5-ac19-46e4-9953-272057dc3b5e
-status: ready
-candidates: 13
-range: 206 video/mp4
-```
-
-Another public-looking Douyin URL currently fails before candidates with a
-clear yt-dlp message:
-
-```text
-case: douyin-fresh-cookies-required
-job: 4832662e-132f-458f-acf9-420bb5e9fc5c
+job: 89443fb6-470a-4f61-87d7-f20fe2123417
 status: error
 error: Fresh cookies (not necessarily logged in) are needed
 ```
 
-This means browser/Profile Cookie import is the next path to test for that URL;
-it does not prove that a full logged-in account is always required.
+Another public-looking full Douyin URL also currently fails through yt-dlp:
+
+```text
+case: douyin-fresh-cookies-required
+job: ea9d45ae-cf7c-4cb1-bc39-654712c24568
+status: error
+error: Fresh cookies (not necessarily logged in) are needed
+```
+
+The server Profile had Douyin cookies during this run, but yt-dlp still
+rejected those URLs as not fresh enough. That points to challenge/freshness
+state rather than complete absence of cookies.
 
 ### Kuaishou
 
-Kuaishou remains unsupported on the current VPS samples. yt-dlp either treats
-the URL as generic and gets connection reset or unsupported, you-get exits with
-its generic failure message, streamlink is unsupported, and the browser probe did
-not recover a usable media candidate.
+Kuaishou is usable through browser probing on the tested sample, but the CDN
+URL is short-lived. A candidate selected several hours after discovery failed
+in ffmpeg. Fresh discovery followed by immediate selection/remuxing succeeded.
+yt-dlp is unsupported for this URL, you-get exits with its generic failure
+message, and streamlink is unsupported for this short-video page.
 
-Current smoke result:
+Current fresh smoke results:
 
 ```text
 case: kuaishou-public-auto-probe
-job: fdd12ecb-79f5-4109-b2f6-a618339a8a75
-status: error
-chain: yt_dlp, you_get, streamlink, browser_probe
+job: e62b1a4f-eb4e-4a98-94a2-fafa60c51cde
+status: ready
+candidates: 1
+artifact: video/mp4, 40,406,603 bytes
+vrchat_raw_url_check: HEAD 200, Range 206, faststart OK, h264 1280x720, yuv420p, aac 2ch
+
+case: kuaishou-public-browser-video
+job: 32bbb941-3891-4de6-bb72-ed4137501580
+status: ready
+candidates: 1
+vrchat_raw_url_check: HEAD 200, Range 206, faststart OK, h264 1280x720, yuv420p, aac 2ch
 ```

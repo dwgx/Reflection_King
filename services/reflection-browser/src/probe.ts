@@ -160,13 +160,7 @@ export class BrowserProbeService {
       }
     }
 
-    const genericCandidates = await genericCandidatesFromPage(page, finalUrl).catch((error) => {
-      warnings.push(`generic discovery failed: ${error instanceof Error ? error.message : String(error)}`);
-      return [];
-    });
-    for (const candidate of genericCandidates) {
-      addCandidate(candidate);
-    }
+    await addDomCandidates(page, finalUrl, warnings, addCandidate);
 
     const adultVideoCandidates = await adultVideoCandidatesFromPage(page, finalUrl).catch((error) => {
       warnings.push(`adult video discovery failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -212,6 +206,35 @@ export class BrowserProbeService {
     }
     if (isVimeoUrl(request.url) || isVimeoUrl(finalUrl)) {
       filtered = filterVimeoCandidates(filtered);
+    }
+
+    if (filtered.length === 0 && isKuaishouUrl(request.url)) {
+      const fallbackUrl = kuaishouMobileFallbackUrl(request.url, finalUrl);
+      if (fallbackUrl && !pageUrls.has(normalizeUrlForCompare(fallbackUrl))) {
+        warnings.push("kuaishou mobile fallback attempted");
+        const fallbackPage = await context.newPage();
+        try {
+          await fallbackPage.goto(fallbackUrl, {
+            waitUntil: "domcontentloaded",
+            timeout: Math.min(timeoutMs, 45_000),
+          });
+          await fallbackPage.waitForLoadState("networkidle", { timeout: 12_000 }).catch(() => {
+            warnings.push("kuaishou mobile networkidle timeout");
+          });
+          await triggerPlayback(fallbackPage, warnings);
+          await fallbackPage.mouse.wheel(0, 650).catch(() => undefined);
+          await fallbackPage.waitForTimeout(2_000);
+          await addDomCandidates(fallbackPage, fallbackPage.url(), warnings, addCandidate);
+        } catch (error) {
+          warnings.push(`kuaishou mobile fallback failed: ${error instanceof Error ? error.message : String(error)}`);
+        } finally {
+          await fallbackPage.close().catch(() => undefined);
+        }
+        filtered = [...candidates.values()].filter(
+          (candidate) => !pageUrls.has(normalizeUrlForCompare(candidate.url)),
+        );
+        filtered = filterKuaishouCandidates(filtered);
+      }
     }
 
     return {
@@ -785,6 +808,21 @@ function candidateFromBilibiliDurlEntry(entry: unknown, pageUrl: string): Browse
   };
 }
 
+async function addDomCandidates(
+  page: Page,
+  pageUrl: string,
+  warnings: string[],
+  addCandidate: (candidate: BrowserCandidate) => void,
+): Promise<void> {
+  const genericCandidates = await genericCandidatesFromPage(page, pageUrl).catch((error) => {
+    warnings.push(`generic discovery failed: ${error instanceof Error ? error.message : String(error)}`);
+    return [];
+  });
+  for (const candidate of genericCandidates) {
+    addCandidate(candidate);
+  }
+}
+
 async function bilibiliCandidatesFromApi(page: Page, pageUrl: string): Promise<BrowserCandidate[]> {
   const ids = bilibiliIdsFromUrl(pageUrl);
   if (!ids.bvid && !ids.aid) {
@@ -1310,6 +1348,23 @@ function isKuaishouUrl(value: string): boolean {
   } catch {
     return false;
   }
+}
+
+function kuaishouMobileFallbackUrl(...values: string[]): string | undefined {
+  for (const value of values) {
+    try {
+      const url = new URL(value);
+      const id = url.pathname.match(/\/short-video\/([^/?#]+)/)?.[1]
+        ?? url.pathname.match(/\/fw\/photo\/([^/?#]+)/)?.[1];
+      if (!id) {
+        continue;
+      }
+      return `https://m.kuaishou.com/fw/photo/${encodeURIComponent(id)}`;
+    } catch {
+      continue;
+    }
+  }
+  return undefined;
 }
 
 function filterKuaishouCandidates(candidates: BrowserCandidate[]): BrowserCandidate[] {
