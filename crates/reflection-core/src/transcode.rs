@@ -1,5 +1,5 @@
 use std::{
-    ffi::OsString,
+    ffi::{OsStr, OsString},
     path::{Path, PathBuf},
 };
 
@@ -193,6 +193,69 @@ impl Transcoder {
         output: &Path,
         input_args: &[OsString],
     ) -> Result<()> {
+        let input = input.as_ref();
+        if self
+            .media_input_to_mp4_copy(input, output, input_args)
+            .await
+            .is_ok()
+        {
+            return Ok(());
+        }
+        tokio::fs::remove_file(output).await.ok();
+        self.media_input_to_mp4_transcode(input, output, input_args)
+            .await
+    }
+
+    async fn media_input_to_mp4_copy(
+        &self,
+        input: &OsStr,
+        output: &Path,
+        input_args: &[OsString],
+    ) -> Result<()> {
+        let mut command = Command::new(&self.ffmpeg_path);
+        command
+            .arg("-y")
+            .arg("-hide_banner")
+            .arg("-loglevel")
+            .arg("error");
+
+        for arg in input_args {
+            command.arg(arg);
+        }
+
+        let output = command
+            .arg("-i")
+            .arg(input)
+            .arg("-map")
+            .arg("0:v:0?")
+            .arg("-map")
+            .arg("0:a:0?")
+            .arg("-c")
+            .arg("copy")
+            .arg("-movflags")
+            .arg("+faststart")
+            .arg(output)
+            .output()
+            .await?;
+
+        if output.status.success() {
+            return Ok(());
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(RkError::Transcode(if stderr.is_empty() {
+            "ffmpeg copy remux exited with failure".to_string()
+        } else {
+            stderr
+        }))
+    }
+
+    async fn media_input_to_mp4_transcode(
+        &self,
+        input: &OsStr,
+        output: &Path,
+        input_args: &[OsString],
+    ) -> Result<()> {
         let mut command = Command::new(&self.ffmpeg_path);
         command
             .arg("-y")
@@ -244,6 +307,91 @@ impl Transcoder {
         video_input: impl AsRef<std::ffi::OsStr>,
         video_input_args: &[OsString],
         audio_input: impl AsRef<std::ffi::OsStr>,
+        audio_input_args: &[OsString],
+        output: &Path,
+    ) -> Result<()> {
+        let video_input = video_input.as_ref();
+        let audio_input = audio_input.as_ref();
+        if self
+            .media_inputs_to_mp4_copy(
+                video_input,
+                video_input_args,
+                audio_input,
+                audio_input_args,
+                output,
+            )
+            .await
+            .is_ok()
+        {
+            return Ok(());
+        }
+        tokio::fs::remove_file(output).await.ok();
+        self.media_inputs_to_mp4_transcode(
+            video_input,
+            video_input_args,
+            audio_input,
+            audio_input_args,
+            output,
+        )
+        .await
+    }
+
+    async fn media_inputs_to_mp4_copy(
+        &self,
+        video_input: &OsStr,
+        video_input_args: &[OsString],
+        audio_input: &OsStr,
+        audio_input_args: &[OsString],
+        output: &Path,
+    ) -> Result<()> {
+        let mut command = Command::new(&self.ffmpeg_path);
+        command
+            .arg("-y")
+            .arg("-hide_banner")
+            .arg("-loglevel")
+            .arg("error");
+
+        for arg in video_input_args {
+            command.arg(arg);
+        }
+        command.arg("-i").arg(video_input);
+
+        for arg in audio_input_args {
+            command.arg(arg);
+        }
+        command.arg("-i").arg(audio_input);
+
+        let output = command
+            .arg("-map")
+            .arg("0:v:0")
+            .arg("-map")
+            .arg("1:a:0")
+            .arg("-c")
+            .arg("copy")
+            .arg("-shortest")
+            .arg("-movflags")
+            .arg("+faststart")
+            .arg(output)
+            .output()
+            .await?;
+
+        if output.status.success() {
+            return Ok(());
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(RkError::Transcode(if stderr.is_empty() {
+            "ffmpeg copy remux exited with failure".to_string()
+        } else {
+            stderr
+        }))
+    }
+
+    async fn media_inputs_to_mp4_transcode(
+        &self,
+        video_input: &OsStr,
+        video_input_args: &[OsString],
+        audio_input: &OsStr,
         audio_input_args: &[OsString],
         output: &Path,
     ) -> Result<()> {
