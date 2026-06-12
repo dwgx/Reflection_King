@@ -1092,7 +1092,7 @@ impl AppState {
             .arg("--no-playlist")
             .arg("--no-cache-dir")
             .arg("--max-filesize")
-            .arg(format!("{}B", self.config.max_download_bytes))
+            .arg(yt_dlp_max_filesize(self.config.max_download_bytes))
             .arg("-o")
             .arg(&output_template);
         if let Some(format_id) = candidate_metadata_text(candidate, "format_id") {
@@ -1309,6 +1309,11 @@ fn limited_process_stderr(bytes: &[u8]) -> String {
     } else {
         text.to_string()
     }
+}
+
+fn yt_dlp_max_filesize(max_bytes: u64) -> String {
+    let mib = (max_bytes / 1024 / 1024).max(1);
+    format!("{mib}M")
 }
 
 fn candidate_attempt_order<'a>(
@@ -1814,5 +1819,11 @@ mod tests {
         assert!(!headers.contains_key(reqwest::header::COOKIE));
         assert!(!headers.contains_key(reqwest::header::AUTHORIZATION));
         assert!(!headers.contains_key("x-test"));
+    }
+
+    #[test]
+    fn yt_dlp_max_filesize_uses_cli_size_suffix() {
+        assert_eq!(yt_dlp_max_filesize(314_572_800), "300M");
+        assert_eq!(yt_dlp_max_filesize(1), "1M");
     }
 }
