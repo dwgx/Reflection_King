@@ -1559,7 +1559,13 @@ function filterCnVideoPlatformCandidates(
     out.push({
       ...candidate,
       score: candidate.score + (candidate.kind === "manifest" ? 45 : candidate.kind === "video" ? 35 : 5),
-      metadata: { ...(candidate.metadata ?? {}), source: `${platform}_filter`, platform },
+      requiresAuthorization: platform === "iqiyi" ? true : candidate.requiresAuthorization,
+      metadata: {
+        ...(candidate.metadata ?? {}),
+        source: `${platform}_filter`,
+        platform,
+        replayHeadersRequired: platform === "iqiyi" ? true : undefined,
+      },
     });
   }
   return out;
