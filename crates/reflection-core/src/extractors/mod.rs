@@ -12,11 +12,15 @@
 mod browser;
 mod direct;
 mod external_tool;
+mod hanime;
+mod mac_cms;
 mod yt_dlp;
 
 pub use browser::BrowserExtractor;
 pub use direct::DirectExtractor;
 pub use external_tool::ExternalToolExtractor;
+pub use hanime::HanimeExtractor;
+pub use mac_cms::MacCmsEpisodeExtractor;
 pub use yt_dlp::YtDlpExtractor;
 
 use async_trait::async_trait;
@@ -155,6 +159,8 @@ impl SourceResolver {
             DiscoveryMode::Browser => vec![Box::new(BrowserExtractor)],
             DiscoveryMode::Direct | DiscoveryMode::Auto => vec![
                 Box::new(DirectExtractor),
+                Box::new(HanimeExtractor),
+                Box::new(MacCmsEpisodeExtractor),
                 Box::new(YtDlpExtractor),
                 Box::new(ExternalToolExtractor::new(ExternalToolKind::YouGet)),
                 Box::new(ExternalToolExtractor::new(ExternalToolKind::Lux)),
@@ -389,6 +395,8 @@ mod tests {
             names(&SourceResolver::for_discovery(DiscoveryMode::Auto)),
             vec![
                 "direct",
+                "hanime1",
+                "mac_cms",
                 "yt_dlp",
                 "you_get",
                 "lux",
