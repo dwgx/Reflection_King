@@ -235,3 +235,104 @@ status: ready
 candidates: 1
 vrchat_raw_url_check: HEAD 200, Range 206, faststart OK, h264 1280x720, yuv420p, aac 2ch
 ```
+
+## User-Supplied URL Regression, 2026-06-13
+
+These are real URLs supplied during live testing. The goal is to separate
+working extraction from "candidate was visible but not actually reusable".
+
+### Youku
+
+```text
+url: https://v.youku.com/v_show/id_XNTk0Njk3NDI2MA==.html
+case: user-youku-series-vshow
+job: a955116c-53de-473d-be43-f30eaa0a0b98
+status: ready
+candidates: 3 HLS manifests, top advertised 720p
+artifact: video/mp4, 214,304,216 bytes
+raw url: http://154.40.36.22:8780/media/a955116c-53de-473d-be43-f30eaa0a0b98/video-ee4b4698-cc55-4a49-beaf-0167bfa84402.mp4
+vrchat_raw_url_check: HEAD 200, Range 206, faststart OK, h264 960x540, yuv420p, aac 2ch
+```
+
+The output passed the raw URL checks, but the final file probed as 540p even
+though a 720p manifest was listed first. This should be tracked as a yt-dlp
+delegated format selection issue for long Youku HLS jobs.
+
+### AcFun
+
+```text
+url: https://www.acfun.cn/v/ac48589257
+case: user-acfun-ac48589257
+job: bdd3c72b-5e79-4c95-a656-2a39c9258dfa
+status: ready
+candidates: 7 HLS manifests, top candidate 3840p
+artifact: video/mp4, 99,652,086 bytes
+raw url: http://154.40.36.22:8780/media/bdd3c72b-5e79-4c95-a656-2a39c9258dfa/video-aed718c2-72b1-49a9-abe0-99c563077dc7.mp4
+vrchat_raw_url_check: HEAD 200, Range 206, faststart OK, h264 2160x3840, yuv420p, aac 2ch
+```
+
+### iQIYI
+
+```text
+url: https://www.iqiyi.com/v_2dkhwocyjk4.html
+case: user-iqiyi-v-2dkhwocyjk4
+job: 7f57acb6-6e28-446a-b94d-4469c34bf22b
+status: error
+error: yt-dlp [iqiyi] Can't find any video
+```
+
+This is different from the earlier iQ.com trailer success. Treat this
+`www.iqiyi.com/v_...` page as a separate adapter target rather than assuming
+the iQ.com inline-HLS path covers it.
+
+### Generic Episode Sites
+
+The browser sidecar now scans inline script candidates before clicking generic
+play controls. For episode-list sites this prevents a false navigation from
+episode 1 to episode 2 when the page already exposes `player_aaaa.url`.
+
+```text
+url: https://www.dmttang.com/vodplay/872-14-1.html
+sidecar finalUrl: https://www.dmttang.com/vodplay/872-14-1.html
+title: episode 01
+candidates: 2 inline m3u8 values from player_aaaa
+job: 47488be3-8d85-4b64-ad49-a32b6c54daec
+status: error
+error: both m3u8 candidates returned 404 from the CDN, even with browser UA and Referer
+
+url: https://www.83dm.com/yinghua_9334-2-1.html
+sidecar finalUrl: https://www.83dm.com/yinghua_9334-2-1.html
+title: episode 01
+candidates: 2 inline m3u8 values from player_aaaa
+job: 42ad9145-d294-4cb1-8307-d2a0145783b8
+status: error
+error: both m3u8 candidates returned 403 from the CDN, even with browser UA and Referer
+```
+
+Conclusion: these pages are now classified correctly as episode pages and no
+longer drift to the wrong episode during probing. They are not yet successful
+downloads because the surfaced CDN manifests are not reusable from the server.
+The next implementation target is a dedicated generic episode adapter that
+validates each route's manifest before selection and records the route/episode
+metadata in the candidate explanation.
+
+### Hanime1
+
+```text
+url: https://hanime1.me/watch?v=406643
+sidecar observation before Cloudflare state changed: 1080p/720p/480p complete MP4 candidates from vdownload.hembed.com were visible
+job: 2edf22ee-53f4-4814-b9d9-eedef67a674b
+status: error
+error: no media candidates from chain [browser_probe]
+
+url: https://hanime1.me/watch?v=406627
+job: 166f297d-dd06-445a-a138-964c0fd0f84f
+status: error
+error: no media candidates from chain [browser_probe]
+```
+
+The final sidecar runs landed on `Attention Required! | Cloudflare`, so Hanime1
+must stay experimental. The sidecar has a Hanime1 filter that prefers complete
+`hembed.com` MP4 files over HLS fragments when the page is reachable, but the
+remaining blocker is Cloudflare challenge handling rather than candidate
+scoring.
