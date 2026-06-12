@@ -365,6 +365,7 @@ function App() {
     () => paginate(jobs, jobPage, jobPageSize),
     [jobs, jobPage, jobPageSize],
   );
+  const taskStats = useMemo(() => summarizeJobs(jobs), [jobs]);
 
   const pagedCandidates = useMemo(
     () => paginate(visibleCandidates, candidatePage, candidatePageSize),
@@ -1009,7 +1010,17 @@ function App() {
           className="dashboard-panel"
           bodyClassName="dashboard-panel-body"
         >
-          <div className="panel-scroll-layout">
+          <div className="panel-scroll-layout task-panel-layout">
+            <div className="task-summary">
+              <span><strong>{taskStats.total}</strong> 全部</span>
+              <span className="ok"><strong>{taskStats.ready}</strong> 已完成</span>
+              <span><strong>{taskStats.candidates}</strong> 待选择</span>
+              <span><strong>{taskStats.running}</strong> 处理中</span>
+              <span className={taskStats.error ? "bad" : ""}><strong>{taskStats.error}</strong> 失败</span>
+              {taskStats.cookie > 0 && <span className="warn"><strong>{taskStats.cookie}</strong> 需 Cookie</span>}
+              {taskStats.dependency > 0 && <span className="warn"><strong>{taskStats.dependency}</strong> 缺依赖</span>}
+              {taskStats.unsupported > 0 && <span className="info"><strong>{taskStats.unsupported}</strong> 待适配</span>}
+            </div>
             <div className="task-list-head">
               <span>状态</span>
               <span>来源</span>
@@ -1024,10 +1035,10 @@ function App() {
                   type="button"
                   onClick={() => setSelectedJobId(job.id)}
                 >
-                  <span className="task-status"><Badge status={job.status} /></span>
+                  <span className="task-status"><JobStatusBadge job={job} /></span>
                   <span className="task-source">
                     <strong>{sourceTitle(job.source_url)}</strong>
-                    <small>{job.error ? friendlyError(job.error) : job.source_url}</small>
+                    <small>{job.error ? friendlyError(job.error, job) : job.source_url}</small>
                   </span>
                   <span className="task-tags">
                     <em>{discoveryLabel(job.discovery)}</em>
@@ -1056,7 +1067,7 @@ function App() {
           {selectedJob ? (
             <div className="detail-layout">
               <div className="detail-title-row">
-                <Badge status={selectedJob.status} />
+                <JobStatusBadge job={selectedJob} />
                 <div>
                   <strong>{sourceTitle(selectedJob.source_url)}</strong>
                   <span>{selectedJob.id}</span>
@@ -1071,9 +1082,12 @@ function App() {
                 <MetaLine label="播放地址" value={selectedJob.media_url ?? "-"} copyable />
               </div>
               {selectedJob.error && (
-                <div className="error-line">
+                <div className={`error-line ${jobIssue(selectedJob)?.tone ?? "error"}`}>
                   <AlertTriangle size={16} />
-                  <span>{friendlyError(selectedJob.error)}</span>
+                  <div>
+                    <strong>{jobIssue(selectedJob)?.label ?? "失败原因"}</strong>
+                    <span>{friendlyError(selectedJob.error, selectedJob)}</span>
+                  </div>
                 </div>
               )}
               {selectedJob.media_url && <Player url={selectedJob.media_url} />}
@@ -1941,6 +1955,14 @@ function Badge(props: { status: string }) {
   return <span className={`badge ${tone}`}>{statusLabel(props.status)}</span>;
 }
 
+function JobStatusBadge(props: { job: JobView }) {
+  const issue = jobIssue(props.job);
+  if (!issue) {
+    return <Badge status={props.job.status} />;
+  }
+  return <span className={`badge ${issue.tone}`}>{issue.label}</span>;
+}
+
 function Empty(props: { label: string }) {
   return <div className="empty-state">{props.label}</div>;
 }
@@ -2491,10 +2513,105 @@ function compactUrl(value: string): string {
   }
 }
 
-function friendlyError(value: string): string {
-  if (!value) return "-";
-  const lower = value.toLowerCase();
+type JobIssueKind = "cookie" | "dependency" | "unsupported" | "profile" | "resolver" | "timeout" | "error";
 
+interface JobIssue {
+  kind: JobIssueKind;
+  label: string;
+  tone: "error" | "warn" | "info";
+}
+
+interface JobStats {
+  total: number;
+  ready: number;
+  candidates: number;
+  running: number;
+  error: number;
+  cookie: number;
+  dependency: number;
+  unsupported: number;
+}
+
+function summarizeJobs(items: JobView[]): JobStats {
+  const stats: JobStats = {
+    total: items.length,
+    ready: 0,
+    candidates: 0,
+    running: 0,
+    error: 0,
+    cookie: 0,
+    dependency: 0,
+    unsupported: 0,
+  };
+  for (const item of items) {
+    if (item.status === "ready") {
+      stats.ready += 1;
+    } else if (item.status === "candidates_ready") {
+      stats.candidates += 1;
+    } else if (item.status === "error") {
+      stats.error += 1;
+      const issue = jobIssue(item);
+      if (issue?.kind === "cookie" || issue?.kind === "profile") stats.cookie += 1;
+      if (issue?.kind === "dependency") stats.dependency += 1;
+      if (issue?.kind === "unsupported") stats.unsupported += 1;
+    } else {
+      stats.running += 1;
+    }
+  }
+  return stats;
+}
+
+function jobIssue(job: JobView | null): JobIssue | null {
+  if (!job?.error) return null;
+  const lower = `${job.source_url} ${job.error}`.toLowerCase();
+  if (lower.includes("fresh cookies") || lower.includes("sign in") || lower.includes("login required")) {
+    return { kind: "cookie", label: "需 Cookie", tone: "warn" };
+  }
+  if (lower.includes("phantomjs")) {
+    return { kind: "dependency", label: "缺依赖", tone: "warn" };
+  }
+  if (
+    lower.includes("unsupported url") ||
+    lower.includes("kuaishou") ||
+    lower.includes("no media candidates from chain")
+  ) {
+    return { kind: "unsupported", label: "待适配", tone: "info" };
+  }
+  if (
+    lower.includes("requires headers") ||
+    lower.includes("requires authorization") ||
+    lower.includes("profile")
+  ) {
+    return { kind: "profile", label: "需授权", tone: "warn" };
+  }
+  if (lower.includes("timed out")) {
+    return { kind: "timeout", label: "超时", tone: "warn" };
+  }
+  if (lower.includes("yt-dlp probe exited") || lower.includes("external resolver")) {
+    return { kind: "resolver", label: "解析器失败", tone: "error" };
+  }
+  return { kind: "error", label: "失败", tone: "error" };
+}
+
+function friendlyError(value: string, job?: JobView | null): string {
+  if (!value) return "-";
+  const lower = `${job?.source_url ?? ""} ${value}`.toLowerCase();
+
+  if (lower.includes("fresh cookies")) {
+    return "该链接需要 fresh cookies。请导入对应站点 Cookie/Profile 后重试；这不是媒体管线损坏。";
+  }
+  if (lower.includes("phantomjs")) {
+    return "爱奇艺/iQ.com 当前解析器需要 PhantomJS 兼容依赖；这是待补依赖/适配项。";
+  }
+  if (lower.includes("kuaishou") && lower.includes("unsupported url")) {
+    return "快手当前样本还没有可用自动适配器；yt-dlp 不支持，浏览器探测也未抓到媒体。";
+  }
+  if (lower.includes("kuaishou") && lower.includes("no media candidates")) {
+    return "快手当前样本所有解析链路都未发现可用媒体候选，属于待适配站点。";
+  }
+  if (lower.includes("no media candidates from chain")) {
+    return "所有解析链路都没有找到可用媒体候选。可尝试登录 Profile、切换浏览器探测，或把该站点列入新适配。";
+  }
   if (lower.includes("browser probe did not find media candidates")) {
     return "浏览器探测没有发现可用媒体资源";
   }
@@ -2503,6 +2620,9 @@ function friendlyError(value: string): string {
   }
   if (lower.includes("[bilibili]") && (lower.includes("412") || lower.includes("error"))) {
     return "哔哩哔哩拒绝外部解析请求，建议改用浏览器探测";
+  }
+  if (lower.includes("raw candidate failed") && lower.includes("delegated")) {
+    return "原始媒体地址被站点拒绝，系统已尝试 yt-dlp 代理下载 fallback 但仍失败。";
   }
   if (lower.includes("yt-dlp probe exited")) {
     return "外部解析失败，建议更新 yt-dlp 或改用浏览器探测";
