@@ -4,6 +4,7 @@ set -euo pipefail
 APP_DIR="${APP_DIR:-/opt/reflection-king}"
 ENV_DIR="/etc/reflection-king"
 YTDLP_VENV="${APP_DIR}/storage/yt-dlp-venv"
+PHANTOMJS_DIR="${APP_DIR}/storage/phantomjs"
 PUBLIC_PORT="${RK_PUBLIC_PORT:-8780}"
 
 if [[ "${EUID}" -ne 0 ]]; then
@@ -74,6 +75,16 @@ if [[ -x "${YTDLP_VENV}/bin/you-get" ]] && ! grep -q '^RK_YOU_GET_PATH=' "${ENV_
 fi
 if [[ -x "${YTDLP_VENV}/bin/streamlink" ]] && ! grep -q '^RK_STREAMLINK_PATH=' "${ENV_DIR}/reflection.env"; then
   printf 'RK_STREAMLINK_PATH=%s\n' "${YTDLP_VENV}/bin/streamlink" >> "${ENV_DIR}/reflection.env"
+fi
+if ! command -v phantomjs >/dev/null 2>&1; then
+  mkdir -p "${PHANTOMJS_DIR}"
+  cd "${PHANTOMJS_DIR}"
+  npm init -y >/dev/null 2>&1 || true
+  if npm install phantomjs-prebuilt@2.1.16 --omit=dev; then
+    ln -sfn "${PHANTOMJS_DIR}/node_modules/.bin/phantomjs" /usr/local/bin/phantomjs
+  else
+    echo "Warning: PhantomJS install failed; iQIYI extraction may remain unavailable." >&2
+  fi
 fi
 
 cd "${APP_DIR}"

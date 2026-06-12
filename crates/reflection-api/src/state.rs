@@ -854,8 +854,13 @@ impl AppState {
         candidate: &MediaCandidate,
         available_candidates: &[MediaCandidate],
     ) -> Result<()> {
-        validate_candidate_url(&candidate.url)?;
-        if candidate.extractor == "yt_dlp" && candidate.requires_authorization {
+        if !is_yt_dlp_inline_manifest_candidate(candidate) {
+            validate_candidate_url(&candidate.url)?;
+        }
+        if candidate.extractor == "yt_dlp"
+            && candidate.requires_authorization
+            && !is_yt_dlp_inline_manifest_candidate(candidate)
+        {
             return Err(RkError::Source(
                 "yt-dlp candidate requires headers that are not persisted".to_string(),
             ));
@@ -890,110 +895,134 @@ impl AppState {
                     && !job.outputs.contains(&OutputKind::Video)
                 {
                     let output_path = job_dir.join(format!("audio-{}.mp3", candidate.id));
-                    let raw_result = async {
-                        let transcoder = Transcoder::new(self.config.ffmpeg_path.clone());
-                        let stream_info = transcoder
-                            .probe_url_with_headers(&candidate.url, &headers)
-                            .await?;
-                        if !stream_info.has_audio {
-                            return Err(RkError::Source(
-                                "candidate has no audio stream".to_string(),
-                            ));
+                    if is_yt_dlp_inline_manifest_candidate(candidate) {
+                        self.process_yt_dlp_delegated_download(
+                            job,
+                            candidate,
+                            &temp_dir,
+                            &output_path,
+                            OutputKind::Audio,
+                        )
+                        .await?;
+                    } else {
+                        let raw_result = async {
+                            let transcoder = Transcoder::new(self.config.ffmpeg_path.clone());
+                            let stream_info = transcoder
+                                .probe_url_with_headers(&candidate.url, &headers)
+                                .await?;
+                            if !stream_info.has_audio {
+                                return Err(RkError::Source(
+                                    "candidate has no audio stream".to_string(),
+                                ));
+                            }
+                            self.update_status(job.id, JobStatus::Transcoding).await?;
+                            transcoder
+                                .media_url_to_mp3_with_headers(
+                                    &candidate.url,
+                                    &output_path,
+                                    &job.bitrate,
+                                    &headers,
+                                )
+                                .await
                         }
-                        self.update_status(job.id, JobStatus::Transcoding).await?;
-                        transcoder
-                            .media_url_to_mp3_with_headers(
-                                &candidate.url,
-                                &output_path,
-                                &job.bitrate,
-                                &headers,
-                            )
-                            .await
-                    }
-                    .await;
-                    if let Err(raw_error) = raw_result {
-                        if self.should_try_yt_dlp_delegated_download(candidate) {
-                            self.process_yt_dlp_delegated_download(
-                                job,
-                                candidate,
-                                &temp_dir,
-                                &output_path,
-                                OutputKind::Audio,
-                            )
-                            .await
-                            .map_err(|fallback_error| {
-                                RkError::Source(format!(
-                                    "raw candidate failed: {raw_error}; yt-dlp delegated download failed: {fallback_error}"
-                                ))
-                            })?;
-                        } else {
-                            return Err(raw_error);
+                        .await;
+                        if let Err(raw_error) = raw_result {
+                            if self.should_try_yt_dlp_delegated_download(candidate) {
+                                self.process_yt_dlp_delegated_download(
+                                    job,
+                                    candidate,
+                                    &temp_dir,
+                                    &output_path,
+                                    OutputKind::Audio,
+                                )
+                                .await
+                                .map_err(|fallback_error| {
+                                    RkError::Source(format!(
+                                        "raw candidate failed: {raw_error}; yt-dlp delegated download failed: {fallback_error}"
+                                    ))
+                                })?;
+                            } else {
+                                return Err(raw_error);
+                            }
                         }
                     }
                     self.insert_artifact(job.id, OutputKind::Audio, output_path, "audio/mpeg")
                         .await?;
                 } else {
                     let output_path = job_dir.join(format!("video-{}.mp4", candidate.id));
-                    let raw_result = async {
-                        let transcoder = Transcoder::new(self.config.ffmpeg_path.clone());
-                        let stream_info = transcoder
-                            .probe_url_with_headers(&candidate.url, &headers)
-                            .await?;
-                        if !stream_info.has_video {
-                            return Err(RkError::Source(
-                                "candidate has no video stream".to_string(),
-                            ));
+                    if is_yt_dlp_inline_manifest_candidate(candidate) {
+                        self.process_yt_dlp_delegated_download(
+                            job,
+                            candidate,
+                            &temp_dir,
+                            &output_path,
+                            OutputKind::Video,
+                        )
+                        .await?;
+                    } else {
+                        let raw_result = async {
+                            let transcoder = Transcoder::new(self.config.ffmpeg_path.clone());
+                            let stream_info = transcoder
+                                .probe_url_with_headers(&candidate.url, &headers)
+                                .await?;
+                            if !stream_info.has_video {
+                                return Err(RkError::Source(
+                                    "candidate has no video stream".to_string(),
+                                ));
+                            }
+                            self.update_status(job.id, JobStatus::Remuxing).await?;
+                            let audio_candidate =
+                                best_companion_audio(candidate, available_candidates);
+                            if job.outputs.contains(&OutputKind::Audio)
+                                && !stream_info.has_audio
+                                && audio_candidate.is_none()
+                            {
+                                return Err(RkError::Source(
+                                    "candidate has no audio stream and no companion audio candidate"
+                                        .to_string(),
+                                ));
+                            }
+                            if let Some(audio_candidate) = audio_candidate {
+                                let audio_headers =
+                                    self.download_headers(job, audio_candidate).await?;
+                                transcoder
+                                    .media_urls_to_mp4_with_headers(
+                                        &candidate.url,
+                                        &headers,
+                                        &audio_candidate.url,
+                                        &audio_headers,
+                                        &output_path,
+                                    )
+                                    .await
+                            } else {
+                                transcoder
+                                    .media_url_to_mp4_with_headers(
+                                        &candidate.url,
+                                        &output_path,
+                                        &headers,
+                                    )
+                                    .await
+                            }
                         }
-                        self.update_status(job.id, JobStatus::Remuxing).await?;
-                        let audio_candidate = best_companion_audio(candidate, available_candidates);
-                        if job.outputs.contains(&OutputKind::Audio)
-                            && !stream_info.has_audio
-                            && audio_candidate.is_none()
-                        {
-                            return Err(RkError::Source(
-                                "candidate has no audio stream and no companion audio candidate"
-                                    .to_string(),
-                            ));
-                        }
-                        if let Some(audio_candidate) = audio_candidate {
-                            let audio_headers = self.download_headers(job, audio_candidate).await?;
-                            transcoder
-                                .media_urls_to_mp4_with_headers(
-                                    &candidate.url,
-                                    &headers,
-                                    &audio_candidate.url,
-                                    &audio_headers,
+                        .await;
+                        if let Err(raw_error) = raw_result {
+                            if self.should_try_yt_dlp_delegated_download(candidate) {
+                                self.process_yt_dlp_delegated_download(
+                                    job,
+                                    candidate,
+                                    &temp_dir,
                                     &output_path,
+                                    OutputKind::Video,
                                 )
                                 .await
-                        } else {
-                            transcoder
-                                .media_url_to_mp4_with_headers(
-                                    &candidate.url,
-                                    &output_path,
-                                    &headers,
-                                )
-                                .await
-                        }
-                    }
-                    .await;
-                    if let Err(raw_error) = raw_result {
-                        if self.should_try_yt_dlp_delegated_download(candidate) {
-                            self.process_yt_dlp_delegated_download(
-                                job,
-                                candidate,
-                                &temp_dir,
-                                &output_path,
-                                OutputKind::Video,
-                            )
-                            .await
-                            .map_err(|fallback_error| {
-                                RkError::Source(format!(
-                                    "raw candidate failed: {raw_error}; yt-dlp delegated download failed: {fallback_error}"
-                                ))
-                            })?;
-                        } else {
-                            return Err(raw_error);
+                                .map_err(|fallback_error| {
+                                    RkError::Source(format!(
+                                        "raw candidate failed: {raw_error}; yt-dlp delegated download failed: {fallback_error}"
+                                    ))
+                                })?;
+                            } else {
+                                return Err(raw_error);
+                            }
                         }
                     }
                     self.insert_artifact(job.id, OutputKind::Video, output_path, "video/mp4")
@@ -1037,18 +1066,30 @@ impl AppState {
         let Some(browser_probe) = &self.browser_probe else {
             return Ok(headers);
         };
+        let header_url = if is_yt_dlp_inline_manifest_candidate(candidate) {
+            job.source_url.as_str()
+        } else {
+            candidate.url.as_str()
+        };
+        let initiator_url = if is_yt_dlp_inline_manifest_candidate(candidate) {
+            candidate
+                .initiator_url
+                .as_deref()
+                .or(Some(job.source_url.as_str()))
+        } else {
+            candidate.initiator_url.as_deref()
+        };
         let profile_headers = browser_probe
-            .headers_for_url(
-                &job.profile_id,
-                &candidate.url,
-                candidate.initiator_url.as_deref(),
-            )
+            .headers_for_url(&job.profile_id, header_url, initiator_url)
             .await?;
         headers.extend(profile_headers);
         Ok(headers)
     }
 
     fn should_try_yt_dlp_delegated_download(&self, candidate: &MediaCandidate) -> bool {
+        if is_yt_dlp_inline_manifest_candidate(candidate) {
+            return self.config.yt_dlp_path.is_some();
+        }
         candidate.extractor == "yt_dlp"
             && !candidate.requires_authorization
             && candidate
@@ -1067,10 +1108,14 @@ impl AppState {
         output_path: &Path,
         output_kind: OutputKind,
     ) -> Result<()> {
-        let source_url = candidate
-            .initiator_url
-            .as_deref()
-            .unwrap_or(job.source_url.as_str());
+        let source_url = if is_yt_dlp_inline_manifest_candidate(candidate) {
+            job.source_url.as_str()
+        } else {
+            candidate
+                .initiator_url
+                .as_deref()
+                .unwrap_or(job.source_url.as_str())
+        };
         reflection_core::url_policy::parse_and_validate_url(source_url)?;
         let Some(yt_dlp_path) = self.config.yt_dlp_path.as_ref() else {
             return Err(RkError::Source("yt-dlp is not configured".to_string()));
@@ -1251,6 +1296,12 @@ fn resolver_error_summary(attempts: &[reflection_core::extractors::AttemptLog]) 
 
 fn validate_candidate_url(url: &str) -> Result<()> {
     reflection_core::url_policy::parse_and_validate_url(url).map(|_| ())
+}
+
+fn is_yt_dlp_inline_manifest_candidate(candidate: &MediaCandidate) -> bool {
+    candidate.extractor == "yt_dlp"
+        && candidate.kind == CandidateKind::Manifest
+        && candidate.url.starts_with("data:application/x-mpegurl")
 }
 
 fn safe_candidate_download_headers(candidate: &MediaCandidate) -> HeaderMap {

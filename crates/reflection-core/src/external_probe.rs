@@ -199,7 +199,7 @@ fn format_to_candidate(
     let Some(url) = format.url.as_deref() else {
         return Ok(None);
     };
-    if parse_and_validate_url(url).is_err() {
+    if parse_and_validate_url(url).is_err() && !is_safe_inline_manifest_url(url, format) {
         return Ok(None);
     }
 
@@ -487,6 +487,12 @@ fn protocol_is_manifest(protocol: Option<&str>) -> bool {
     )
 }
 
+fn is_safe_inline_manifest_url(url: &str, format: &YtDlpFormat) -> bool {
+    url.starts_with("data:application/x-mpegurl")
+        && (protocol_is_manifest(format.protocol.as_deref())
+            || extension_is_manifest(format.ext.as_deref()))
+}
+
 fn extension_is_manifest(extension: Option<&str>) -> bool {
     matches!(extension, Some("m3u8" | "mpd"))
 }
@@ -657,6 +663,56 @@ mod tests {
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].kind, CandidateKind::Manifest);
+    }
+
+    #[test]
+    fn keeps_yt_dlp_inline_hls_manifest_candidates() {
+        let json = br#"
+        {
+          "id": "19ruu27qdk",
+          "title": "sample",
+          "extractor": "iq.com",
+          "webpage_url": "https://www.iq.com/play/sample",
+          "formats": [
+            {
+              "url": "data:application/x-mpegurl;base64,I0VYVE0zVQ==",
+              "ext": "m3u8",
+              "protocol": "m3u8_native",
+              "format_id": "hls-1080",
+              "format_note": "1080p",
+              "height": 1080,
+              "acodec": "aac",
+              "vcodec": "h264"
+            },
+            {
+              "url": "data:text/plain;base64,SGVsbG8=",
+              "ext": "txt",
+              "protocol": "http",
+              "format_id": "bad"
+            }
+          ]
+        }
+        "#;
+
+        let candidates = parse_yt_dlp_json(Uuid::new_v4(), json, &[OutputKind::Video]).unwrap();
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].kind, CandidateKind::Manifest);
+        assert_eq!(
+            candidates[0].url,
+            "data:application/x-mpegurl;base64,I0VYVE0zVQ=="
+        );
+        assert_eq!(
+            candidates[0].initiator_url.as_deref(),
+            Some("https://www.iq.com/play/sample")
+        );
+        assert_eq!(
+            candidates[0]
+                .metadata_json
+                .get("format_id")
+                .and_then(|value| value.as_str()),
+            Some("hls-1080")
+        );
     }
 
     #[test]
