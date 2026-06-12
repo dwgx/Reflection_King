@@ -1582,7 +1582,17 @@ function isCnPlatformMediaHost(platform: CnVideoPlatform, host: string, pathname
     return host.endsWith("acfun.cn") || host.endsWith("aixifan.com") || host.includes("acfun");
   }
   if (platform === "iqiyi") {
-    return host.endsWith("iqiyi.com") || host.endsWith("qiyi.com") || host.endsWith("qiyipic.com") || host.includes("iqiyi");
+    if (host.startsWith("static-") || pathname.includes("/lequ/") || pathname.includes("/ad/")) {
+      return false;
+    }
+    return (
+      host.includes("cache.video") ||
+      host.includes("cache.m") ||
+      host.includes("data.video") ||
+      host.includes("meta.video") ||
+      host.includes("qiyi") ||
+      host.includes("iqiyi")
+    );
   }
   return host.endsWith("youku.com") || host.endsWith("ykimg.com") || host.includes("youku");
 }

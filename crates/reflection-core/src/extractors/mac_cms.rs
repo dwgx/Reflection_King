@@ -423,7 +423,11 @@ fn failed_media(
     reason: String,
     body: &str,
 ) -> ValidatedMedia {
-    let state = if reason.contains("region") || body.contains("国内网络") {
+    let state = if reason.contains("region")
+        || body.contains("国内网络")
+        || body.contains("当前区域禁止访问")
+        || body.to_ascii_lowercase().contains("the region")
+    {
         CandidateValidationState::RegionBlocked
     } else {
         CandidateValidationState::Failed
@@ -451,6 +455,9 @@ fn failed_media(
 
 fn classify_http_failure(status: StatusCode, body: &str) -> String {
     if body.contains("国内网络") {
+        return format!("cdn region blocked: HTTP {status}");
+    }
+    if body.contains("当前区域禁止访问") || body.to_ascii_lowercase().contains("the region") {
         return format!("cdn region blocked: HTTP {status}");
     }
     if status == StatusCode::FORBIDDEN {
