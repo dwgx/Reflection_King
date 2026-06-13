@@ -10,6 +10,7 @@
 - [VRChat 播放](VRCHAT_PLAYBACK.md)
 - [路线图](ROADMAP.md)
 - [工作流](WORKFLOW.md)
+- [下一个 Agent 交接文档](NEXT_AGENT_HANDOFF.md)
 - [媒体抓取设计](crawler/media-acquisition-design.md)
 - [爬虫后端调研 2026-06-09](research/crawler-backend-survey-2026-06-09.md)
 - [通用媒体发现调研 2026-06-09](research/generic-media-discovery-survey-2026-06-09.md)
