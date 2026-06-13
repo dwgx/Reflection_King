@@ -184,14 +184,26 @@ docker compose --env-file .env.docker up -d --build
 
 ### GitHub 和 CI
 
-当前已确认：
+当前规则：
+
+```text
+branch: master
+status requirement: latest GitHub Actions run on master must be success
+local command: git rev-parse --short HEAD
+remote command: git ls-remote origin refs/heads/master
+vps command: cd /opt/reflection-king && git rev-parse --short HEAD
+```
+
+最近一次已确认通过的功能基线：
 
 ```text
 commit: b3e4533
-branch: master
 GitHub Actions run: 27457817046
 status: success
 ```
+
+本文档之后的纯文档提交不改变功能基线，但交接时仍要重新核对 `master` 最新 CI、
+远端 `origin/master` 和 VPS 当前 HEAD。
 
 CI 覆盖：
 
@@ -212,7 +224,8 @@ CI 覆盖：
 
 ```text
 URL: http://154.40.36.22:8780
-commit: b3e4533
+commit requirement: /opt/reflection-king must match origin/master
+last functional baseline: b3e4533
 reflection-api: active
 reflection-browser: active
 nginx: active
