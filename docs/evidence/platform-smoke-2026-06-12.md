@@ -474,6 +474,12 @@ job: 841e20d0-aa4b-4b1f-bb31-60c31f8a99d4
 result: 1 browser manifest observed, but no selectable candidates because the
 candidate is marked failed / needs dedicated iQIYI runtime signature adapter.
 
+deployment guard check:
+job: 69119f5c-4eb6-41bf-a1aa-c074cf36e735
+manual POST /api/jobs/{id}/select-candidates with the failed candidate returned
+HTTP 400:
+{"error":"invalid request: candidate c6134e47-d066-431d-8c62-8c6a9d129f63 is not selectable: failed_validation"}
+
 url: https://www.83dm.com/yinghua_9334-2-1.html
 job: 28b17771-450c-4faa-9f84-fff84235cd70
 result: 2 MacCMS route candidates observed, but no selectable candidates because
