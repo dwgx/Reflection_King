@@ -336,3 +336,92 @@ must stay experimental. The sidecar has a Hanime1 filter that prefers complete
 `hembed.com` MP4 files over HLS fragments when the page is reachable, but the
 remaining blocker is Cloudflare challenge handling rather than candidate
 scoring.
+
+## Follow-Up Fix Verification, 2026-06-13
+
+Changes verified in this round:
+
+- Added `hanime1` dedicated mobile-HTML extractor ahead of browser probing.
+- Added `mac_cms` extractor for `player_aaaa` episode pages.
+- MacCMS candidates now validate HLS with GET master playlist, GET variant
+  playlist, and Range GET of the first segment instead of trusting HEAD.
+- iQIYI browser stream noise from `static-d.iqiyi.com/lequ` is filtered.
+- iQIYI browser manifests that are visible but blocked on segment replay are
+  marked as failed candidates with an explicit reason instead of being offered
+  as normal usable resources.
+
+### Hanime1
+
+```text
+url: https://hanime1.me/watch?v=406643
+job: c82fae2f-9395-4468-912b-0255778e650d
+status: ready
+candidates: 1080p, 720p, 480p MP4 from vdownload.hembed.com
+artifact: video/mp4, 115,076,887 bytes
+raw url: http://154.40.36.22:8780/media/c82fae2f-9395-4468-912b-0255778e650d/video-1992fdc5-1ddb-4e37-a911-c9405b763830.mp4
+vrchat_raw_url_check: HEAD 200, Range 206, faststart OK, h264 1080x1440, yuv420p, aac 2ch
+
+url: https://hanime1.me/watch?v=406627
+job: a19545d5-bab4-41fe-8455-30d841a54be3
+status: ready
+candidates: 1080p, 720p, 480p MP4 from vdownload.hembed.com
+artifact: video/mp4, 45,890,335 bytes
+raw url: http://154.40.36.22:8780/media/a19545d5-bab4-41fe-8455-30d841a54be3/video-e2304ae4-750a-41f9-8db4-be60facb07ee.mp4
+vrchat_raw_url_check: HEAD 200, Range 206, faststart OK, h264 1620x1080, yuv420p, aac 2ch
+```
+
+Hanime1 is now working for these two supplied pages when the mobile page is
+reachable. It still remains experimental because Cloudflare can return
+`Attention Required` / HTTP 403; the extractor now reports that state clearly
+instead of surfacing a generic browser no-candidate failure.
+
+### MacCMS Episode Sites
+
+```text
+url: https://www.dmttang.com/vodplay/872-14-1.html
+job: 959085e8-7aef-48d8-9bfa-5ab90b2eb112
+resolved extractor: mac_cms>yt_dlp>you_get>streamlink>browser_probe
+candidates: 2
+state: region_blocked
+failure: cdn region blocked: HTTP 404 Not Found
+route: mac_cms/lzm3u8/current and mac_cms/lzm3u8/next
+```
+
+`dmttang` parsing is now correct: `player_aaaa` is read directly and no generic
+playback click changes the episode. The current route is not reusable from the
+VPS because the CDN returns a regional 404 page.
+
+```text
+url: https://www.83dm.com/yinghua_9334-2-1.html
+job: ebac21b2-4f19-40b6-9078-f206ff301069
+resolved extractor: mac_cms>yt_dlp>you_get>streamlink>browser_probe
+candidates: 2
+state: region_blocked
+failure: cdn region blocked: HTTP 403 Forbidden
+route: mac_cms/dyttm3u8/current and mac_cms/dyttm3u8/next
+```
+
+From the local Windows network, `vip.dytt-cine.com` returned a playable master
+m3u8. From the VPS, every tested Referer variant returned HTTP 403 with a region
+block page. The application now marks these candidates as `region_blocked`, so
+the UI does not present them as ordinary selectable resources.
+
+### iQIYI Domestic Page
+
+```text
+url: https://www.iqiyi.com/v_2dkhwocyjk4.html
+job: 77b29304-29de-4b99-8484-d4bc8f26073f
+resolved extractor: yt_dlp>you_get>streamlink>browser_probe
+candidates: 1
+candidate: https://meta-cdn.video.iqiyi.com/...m3u8
+state: failed
+protection: needs_profile
+failure: iQIYI browser manifest segment replay is blocked by QWS 403; needs dedicated iQIYI runtime signature adapter
+```
+
+The browser can observe a signed iQIYI manifest, but server-side ffmpeg cannot
+replay the first TS segment: direct checks return QWS HTTP 403 even with browser
+UA and Referer, and Profile header replay did not fix it. This is now classified
+as a dedicated iQIYI runtime/signature adapter gap rather than a successful
+media candidate. The earlier `static-d.iqiyi.com/lequ` 5-second MP4 false
+positive is filtered out.

@@ -457,7 +457,8 @@ fn classify_http_failure(status: StatusCode, body: &str) -> String {
     if body.contains("国内网络") {
         return format!("cdn region blocked: HTTP {status}");
     }
-    if body.contains("当前区域禁止访问") || body.to_ascii_lowercase().contains("the region") {
+    if body.contains("当前区域禁止访问") || body.to_ascii_lowercase().contains("the region")
+    {
         return format!("cdn region blocked: HTTP {status}");
     }
     if status == StatusCode::FORBIDDEN {
