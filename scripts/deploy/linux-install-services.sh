@@ -6,6 +6,7 @@ ENV_DIR="/etc/reflection-king"
 YTDLP_VENV="${APP_DIR}/storage/yt-dlp-venv"
 PHANTOMJS_DIR="${APP_DIR}/storage/phantomjs"
 PUBLIC_PORT="${RK_PUBLIC_PORT:-8780}"
+ADMIN_KEY_FILE="${RK_ADMIN_KEY_FILE:-/root/reflection-king-admin-key.txt}"
 
 if [[ "${EUID}" -ne 0 ]]; then
   echo "Run as root on the target Linux server." >&2
@@ -47,6 +48,16 @@ RK_YTDLP_MAX_JSON_MB=8
 RK_EXTERNAL_PROBE_TIMEOUT_SECONDS=45
 RK_API_KEY=${API_KEY}
 EOF
+  chmod 600 "${ENV_DIR}/reflection.env"
+else
+  API_KEY="$(grep -E '^RK_API_KEY=' "${ENV_DIR}/reflection.env" | tail -n 1 | cut -d= -f2- || true)"
+  PUBLIC_BASE_URL="$(grep -E '^RK_PUBLIC_BASE_URL=' "${ENV_DIR}/reflection.env" | tail -n 1 | cut -d= -f2- || true)"
+  PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-${RK_PUBLIC_BASE_URL:-http://localhost:${PUBLIC_PORT}}}"
+fi
+
+if [[ -n "${API_KEY}" ]]; then
+  install -m 600 /dev/null "${ADMIN_KEY_FILE}"
+  printf '%s\n' "${API_KEY}" > "${ADMIN_KEY_FILE}"
 fi
 
 source /root/.cargo/env || true
@@ -118,5 +129,11 @@ systemctl daemon-reload
 systemctl enable nginx reflection-browser reflection-api
 systemctl restart nginx reflection-browser reflection-api
 
-echo "Services installed. Check with:"
+echo
+echo "Reflection King installed."
+echo "Dashboard: ${PUBLIC_BASE_URL}"
+echo "Admin key: ${API_KEY}"
+echo "Admin key file: ${ADMIN_KEY_FILE}"
+echo
+echo "Check services:"
 echo "  systemctl status nginx reflection-browser reflection-api"

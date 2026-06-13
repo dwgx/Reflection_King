@@ -20,12 +20,14 @@ apt-get install -y \
   pkg-config \
   sqlite3
 
-if ! command -v node >/dev/null 2>&1; then
-  apt-get install -y nodejs
+NODE_MAJOR="0"
+if command -v node >/dev/null 2>&1; then
+  NODE_MAJOR="$(node -p "process.versions.node.split('.')[0]" 2>/dev/null || echo 0)"
 fi
 
-if ! command -v npm >/dev/null 2>&1; then
-  apt-get install -y npm
+if [[ "${NODE_MAJOR}" -lt 20 ]] || ! command -v npm >/dev/null 2>&1; then
+  curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+  apt-get install -y nodejs
 fi
 
 if ! command -v cargo >/dev/null 2>&1; then

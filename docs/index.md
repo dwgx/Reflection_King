@@ -8,6 +8,7 @@ Start here:
 - [VRChat Playback](VRCHAT_PLAYBACK.md)
 - [Roadmap](ROADMAP.md)
 - [Operations](OPERATIONS.md)
+- [Deployment](DEPLOYMENT.md)
 - [Workflow](WORKFLOW.md)
 - [Media Acquisition Design](crawler/media-acquisition-design.md)
 - [Crawler Backend Survey 2026-06-09](research/crawler-backend-survey-2026-06-09.md)

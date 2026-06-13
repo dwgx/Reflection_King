@@ -3,6 +3,7 @@
 /.tmp/
 /.local/
 /.env
+/.env.docker
 /crates/reflection-api/dashboard-dist/
 /services/reflection-browser/node_modules/
 /services/reflection-browser/dist/

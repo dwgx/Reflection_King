@@ -111,6 +111,13 @@ permission checks.
 
 ## Linux Deployment
 
+For a one-command VPS install, use [DEPLOYMENT.md](DEPLOYMENT.md). The short
+path is:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dwgx/Reflection_King/master/install.sh | sudo bash
+```
+
 If the repository is public, the server can update without a GitHub login:
 
 ```bash
@@ -138,6 +145,10 @@ sudo RK_PUBLIC_BASE_URL=http://your-server-or-domain \
 
 The install script keeps the API and browser sidecar bound to localhost and
 configures nginx on the requested public port as the reverse proxy.
+
+The install script prints the dashboard URL and initial admin key when it
+finishes. The key is stored on the server in `/etc/reflection-king/reflection.env`
+and `/root/reflection-king-admin-key.txt`.
 
 Verify the deployment:
 

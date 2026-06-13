@@ -1,188 +1,158 @@
 # Reflection King
 
-Reflection King is a Rust backend for media acquisition, processing, and delivery.
+Reflection King 是一个 Rust 媒体抓取、转码和 raw URL 输出后端。目标是把
+公开可访问、用户有权限访问的页面或媒体 URL 转成自己的服务器产物，供外部
+播放器直接访问，例如 VRChat 视频播放器。
 
-The implemented slice has two paths:
+当前能力：
 
-- Direct media URL to MP3 for VRChat-style players.
-- External extractor page URL to media candidates through constrained `yt-dlp`
-  metadata discovery.
-- Browser-probed page URL to media candidates, followed by explicit candidate
-  selection and server-side artifact generation.
+- Axum API + React 控制台。
+- SQLite 持久任务队列。
+- SSRF 和私网地址拦截。
+- ffmpeg 转码、remux、MP4 faststart。
+- `/media/{id}/{file}` raw URL，支持 HTTP Range。
+- `yt-dlp`、`you-get`、`streamlink` 外部解析。
+- Playwright 浏览器探测 sidecar。
+- 服务器端浏览器 Profile/Cookie 导入。
+- 候选资源评分、失败候选拦截、地区限制/DRM/广告风险标记。
+- 部分站点专用适配：Bilibili、Hanime1、MacCMS/资源站页面等。
 
-1. Accept a remote direct media URL.
-2. Validate the URL and block private network targets.
-3. Persist the job in a local SQLite queue.
-4. Download the source with size limits.
-5. Transcode audio to MP3 with `ffmpeg`.
-6. Serve a public direct `audio/mpeg` URL under `/media/...` with HTTP Range support.
+本项目不会绕过 DRM、付费墙、验证码、登录墙或访问控制。只用于你拥有权利
+或已获授权的内容。
 
-The browser path is intended for authorized Bilibili, YouTube, SoundCloud,
-Douyin, Kuaishou, Pornhub, AcFun, iQIYI, Youku, TikTok, Vimeo, and similar
-public page workflows. It does not bypass DRM, captchas, paywalls, login walls,
-or access controls.
+## 快速部署
 
-## Layout
+### VPS 一键安装
 
-```text
-crates/reflection-core     Shared config, models, job store, URL safety, download, transcode
-crates/reflection-api      Axum HTTP API, persistent queue dispatch, and media serving
-crates/reflection-worker   Future standalone worker entrypoint
-services/reflection-browser Playwright sidecar for browser-based candidate discovery
-docs/                      Architecture, operations, media pipeline, security
-config/                    Example runtime policy/config files
-scripts/                   Local maintenance and verification scripts
-tests/                     Integration test notes and future fixtures
+公开 VPS 上最简单的安装方式：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dwgx/Reflection_King/master/install.sh | sudo bash
 ```
 
-## Local Requirements
+指定公网地址：
 
-- Rust stable toolchain
-- Visual Studio C++ Build Tools on Windows for the default MSVC Rust target
-- `ffmpeg` on `PATH`, or set `RK_FFMPEG_PATH`
-- `yt-dlp` on `PATH`, or set `RK_YTDLP_PATH`, for external discovery
-- Optional external probes: `you-get` (`RK_YOU_GET_PATH`), `lux`
-  (`RK_LUX_PATH`), and `streamlink` (`RK_STREAMLINK_PATH`)
-- Node.js for the Playwright browser sidecar
+```bash
+curl -fsSL https://raw.githubusercontent.com/dwgx/Reflection_King/master/install.sh | sudo bash -s -- \
+  --public-base-url http://你的服务器IP:8780
+```
 
-Run `.\scripts\dev\bootstrap.ps1` on a fresh Windows machine to install Rust,
-the MSVC build tools, FFmpeg, Node dependencies, and Playwright Chromium.
+安装完成后控制台会显示：
 
-Runtime job state is stored in `storage/reflection.db` by default. The API will
-recover queued or interrupted jobs when it starts.
+```text
+Dashboard: http://你的服务器IP:8780
+Admin key: <初始管理密钥>
+Admin key file: /root/reflection-king-admin-key.txt
+```
 
-## Run
+### Docker Compose
+
+```bash
+git clone https://github.com/dwgx/Reflection_King.git
+cd Reflection_King
+cp .env.docker.example .env.docker
+docker compose --env-file .env.docker up -d --build
+docker compose logs -f reflection-king
+```
+
+第一次启动会在日志里打印管理密钥，并保存到 Docker volume 的
+`/data/admin-key.txt`。
+
+更多部署细节见 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)。
+
+## 本地开发
+
+Windows 本地开发：
 
 ```powershell
 cd D:\Project\Reflection_King
 copy .env.example .env
+.\scripts\dev\bootstrap.ps1
 .\scripts\dev\run-local.ps1
 ```
 
-Open:
+打开：
 
 ```text
 http://localhost:8787
 ```
 
-The root page serves the Reflection Dashboard after `apps/reflection-dashboard`
-has been built. The dashboard can create jobs, inspect recent jobs, submit
-browser-discovered candidates, and open generated media artifacts.
+Linux 本地或 VPS 手动部署：
 
-Create a job:
-
-```powershell
-$body = @{
-  url = "https://example.com/audio.m4a"
-  bitrate = "192k"
-} | ConvertTo-Json
-
-Invoke-RestMethod `
-  -Method Post `
-  -Uri "http://localhost:8787/api/jobs" `
-  -ContentType "application/json" `
-  -Body $body
+```bash
+git clone https://github.com/dwgx/Reflection_King.git /opt/reflection-king
+cd /opt/reflection-king
+sudo bash scripts/deploy/linux-bootstrap.sh
+sudo RK_PUBLIC_BASE_URL=http://你的服务器IP:8780 \
+  APP_DIR=/opt/reflection-king \
+  bash scripts/deploy/linux-install-services.sh
 ```
 
-Poll the returned `status_url`. When the job is `ready`, paste `media_url` into the VRC player.
+## 仓库结构
 
-With `discovery = "auto"`, the resolver aggregates every configured route that
-is allowed by the current key: direct URL detection, yt-dlp, optional external
-adapters, and browser probing. Candidates are deduplicated and scored with
-quality, output type, signature/protection hints, ad risk, route confidence, and
-basic validation state. The dashboard shows the recommended resource first, but
-still lets an operator inspect or override the selection.
-
-Create an external extractor job:
-
-```powershell
-$body = @{
-  url = "https://www.youtube.com/watch?v=..."
-  discovery = "external"
-  platform_hint = "youtube"
-  outputs = @("audio")
-} | ConvertTo-Json
-
-$job = Invoke-RestMethod `
-  -Method Post `
-  -Uri "http://localhost:8787/api/jobs" `
-  -ContentType "application/json" `
-  -Body $body
+```text
+crates/reflection-core       配置、模型、任务存储、URL 安全、下载、转码
+crates/reflection-api        Axum HTTP API、队列调度、媒体服务、Dashboard 静态资源
+crates/reflection-worker     未来独立 worker 入口
+services/reflection-browser  Playwright 浏览器探测 sidecar
+apps/reflection-dashboard    React 控制台
+docs/                        架构、安全、部署、媒体管线和 smoke 证据
+config/                      策略和转码配置示例
+scripts/                     开发、部署、cookie 导入和 smoke 脚本
+tests/                       集成测试说明和未来 fixture
 ```
 
-Create a browser-probed job:
+## API 示例
 
-```powershell
-$body = @{
-  url = "https://www.bilibili.com/video/BV..."
-  discovery = "browser"
-  platform_hint = "bilibili"
-  outputs = @("audio", "video")
-  auth_mode = "profile"
-  profile_id = "admin_default"
-} | ConvertTo-Json
+创建任务：
 
-$job = Invoke-RestMethod `
-  -Method Post `
-  -Uri "http://localhost:8787/api/jobs" `
-  -ContentType "application/json" `
-  -Body $body
+```bash
+curl -X POST http://127.0.0.1:8787/api/jobs \
+  -H 'content-type: application/json' \
+  -H 'x-api-key: <管理密钥>' \
+  -d '{
+    "url": "https://example.com/video.mp4",
+    "discovery": "auto",
+    "platform_hint": "auto",
+    "outputs": ["video"],
+    "bitrate": "auto"
+  }'
 ```
 
-Poll until the job status is `candidates_ready`, then inspect:
+查看候选资源：
 
-```powershell
-Invoke-RestMethod "http://localhost:8787/api/jobs/$($job.id)/candidates"
+```bash
+curl -H 'x-api-key: <管理密钥>' \
+  http://127.0.0.1:8787/api/jobs/<job-id>/candidates
 ```
 
-Select candidate IDs:
+提交候选：
 
-```powershell
-$selection = @{
-  candidate_ids = @("candidate-uuid-1", "candidate-uuid-2")
-} | ConvertTo-Json
-
-Invoke-RestMethod `
-  -Method Post `
-  -Uri "http://localhost:8787/api/jobs/$($job.id)/select-candidates" `
-  -ContentType "application/json" `
-  -Body $selection
+```bash
+curl -X POST http://127.0.0.1:8787/api/jobs/<job-id>/select-candidates \
+  -H 'content-type: application/json' \
+  -H 'x-api-key: <管理密钥>' \
+  -d '{"candidate_ids":["<candidate-id>"]}'
 ```
 
-Browser Profile login is handled by the admin page's server-side remote browser
-session. Open `管理 -> 浏览器账号配置`, choose a Profile ID, start a session,
-and operate the server browser screenshot. Cookies stay in the server Profile
-and are not returned to the dashboard. Direct Cookie JSON import remains
-available for operators who already have a trusted export.
+## 运维命令
 
-For a logged-in Windows browser profile, use the explicit Python importer:
-
-```powershell
-python -m pip install --user -U yt-dlp browser-cookie3
-python scripts/cookies/import_browser_cookies.py `
-  --base-url http://154.40.36.22:8780 `
-  --api-key "<admin-key>" `
-  --browser edge `
-  --platform bilibili `
-  --profile-id admin_default
+```bash
+sudo systemctl status nginx reflection-browser reflection-api
+sudo journalctl -u reflection-api -f
+sudo journalctl -u reflection-browser -f
+curl http://127.0.0.1:8787/api/health
 ```
 
-If Edge/Chrome is open and Windows locks the cookie database, close that browser
-and retry `--engine yt-dlp`, or run with `--engine browser-cookie3` from an
-administrator terminal. The script prints counts and domains only, not cookie
-values.
+## 安全
 
-## Public URLs
+- 不要把 `.env`、`.env.docker`、`reflection.env`、`storage/`、Cookie
+  JSON、浏览器 Profile、SQLite 数据库提交到 GitHub。
+- 默认公开部署会启用管理密钥。不要无密钥公网部署。
+- 不要公开 Playwright sidecar、CDP、VNC 或调试端口。
+- `RK_PUBLIC_BASE_URL` 必须是外部客户端能访问的地址，否则 `/media/...`
+  raw URL 只能在本机使用。
+- 生产环境建议配置 HTTPS，特别是需要在控制台输入管理密钥时。
 
-VRChat clients cannot access your local `localhost`. Use a VPS, reverse proxy, or HTTPS tunnel. Set:
-
-```powershell
-$env:RK_PUBLIC_BASE_URL = "https://your-public-domain.example"
-cargo run -p reflection-api
-```
-
-Generated media URLs will use that public base.
-
-## Safety
-
-Use this backend only for media you own or have permission to use. The current code includes baseline SSRF blocking, download size limits, optional API key protection, and simple storage expiry planning. See [docs/SECURITY.md](docs/SECURITY.md).
+更多内容见 [docs/SECURITY.md](docs/SECURITY.md) 和
+[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)。
