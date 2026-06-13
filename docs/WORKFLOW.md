@@ -1,154 +1,137 @@
-# Project Workflow
+# 项目工作流
 
-This document is the operating contract for Reflection King development.
+本文件是 Reflection King 开发、审查、部署和证据记录的协作约定。
 
-## Project Purpose
+## 项目目的
 
-Reflection King is a policy-bound media acquisition backend.
+Reflection King 是一个受策略约束的媒体抓取、候选选择、转码和 raw URL 输出后端。
 
-Current implemented capabilities:
+当前能力：
 
-- Accept direct media URLs, download them with SSRF and size checks, transcode
-  audio to MP3, and serve byte-range media URLs.
-- Use a Playwright sidecar to load authorized public pages, observe browser
-  network activity, save media candidates, let the caller select candidates,
-  and generate server-owned artifacts.
-- Discover media on unknown pages through generic DOM, performance-resource,
-  anchor, metadata, network, and inline-script URL scanning.
-- Parse Bilibili public-page `__playinfo__` DASH candidates and generate MP3
-  audio artifacts from verified public video samples.
-- Serve a Vite React dashboard for job creation, recent job inspection,
-  candidate selection, and artifact playback.
-- Persist jobs, candidates, and artifacts in SQLite.
+- 接收直接媒体 URL，经过 SSRF 和大小校验后下载、转码并提供 Range 媒体 URL。
+- 使用 Playwright sidecar 打开用户有权访问的页面，观察网络和播放器状态，生成候选资源。
+- 通过 DOM、metadata、anchor、performance resource、inline script、manifest URL 等路径做通用发现。
+- 用 SQLite 持久化任务、候选资源、产物、隐藏历史和 API key。
+- 提供 React 控制台，用于创建任务、查看候选、选择资源、播放产物和管理密钥。
+- 支持 `yt-dlp`、`you-get`、`streamlink` 等外部适配器。
 
-Intended near-term targets:
+短期目标：
 
-- SoundCloud public audio candidate discovery and MP3 artifacts. Current
-  evidence shows browser probing alone does not find audio candidates.
-- YouTube public video candidate discovery. Current evidence shows browser
-  probing alone only found page UI audio before filtering, not real media.
+- 让 Bilibili、Douyin、Kuaishou、AcFun、Youku、iQIYI、SoundCloud、YouTube、
+  TikTok、MacCMS 资源站等平台的成功、失败和待适配状态都有明确证据。
+- 对候选资源做更严格的可复放验证，避免广告、假资源、区域限制或 DRM manifest 被当成可用视频。
+- 让 VPS 一键部署、Docker Compose 和 GitHub CI 都能复现最小可运行环境。
 
-Non-goals:
+明确非目标：
 
-- DRM removal.
-- Captcha solving.
-- Paywall, login-wall, or access-control bypass.
-- Guessing private tokens or evading rate limits.
-- Claims about platform support that have not been verified with evidence.
+- DRM 移除。
+- 验证码求解。
+- 付费墙、登录墙、年龄门槛、区域限制或访问控制绕过。
+- 猜测私有 token、规避平台限流或隐藏真实失败原因。
+- 没有证据就宣称某个平台“已支持”。
 
-## Evidence Rules
+## 证据规则
 
-- Do not state that a feature works unless it has been built and verified.
-- If a claim comes from docs or code inspection, name the source.
-- If a claim comes from a live test, record the command or scenario.
-- If a behavior is inferred, label it as inference and identify the missing
-  proof.
-- If a review finds a possible issue, ground it in a file path, function, API
-  contract, test result, or documented requirement.
-- Do not invent future failures during review. Separate confirmed defects from
-  risks and open questions.
+- 没有构建和验证过的能力，不写成“已完成”。
+- 来自代码检查的结论要给文件或函数。
+- 来自真实测试的结论要记录命令、URL 类型、候选结构和产物检查。
+- 推理必须标注为推理，并说明缺少什么证据。
+- review 只报告有文件、函数、API 合约、测试或日志支撑的问题。
+- 不臆造未来 bug。把已确认缺陷、风险和开放问题分开写。
 
-## Coding Rules
+## 编码规则
 
-- Keep the direct URL path working while adding browser acquisition.
-- Discovery must only produce candidates; downloading and transcoding stay in
-  the Rust backend.
-- Every candidate URL must pass the same URL policy as user-provided URLs.
-- Browser sidecar must not return Cookie/Auth headers through public job or
-  candidate APIs.
-- Persistent browser profiles, `node_modules`, build outputs, storage, and logs
-  must never be committed.
-- Prefer small, verifiable milestones over broad rewrites.
-- Update docs and API examples in the same change when public behavior changes.
+- 保持直接 URL 路径可用，不因新增浏览器探测破坏基础下载转码。
+- discovery 只生成候选；下载、合并和转码由 Rust 后端统一执行。
+- 每个候选 URL 必须通过和用户输入 URL 同等级别的安全策略。
+- 浏览器 sidecar 不得通过公开任务或候选 API 返回 Cookie/Auth header 明文。
+- `node_modules`、`target`、`storage`、浏览器 Profile、Cookie、日志和生成媒体不得提交。
+- 行为变化要同步更新 README、部署文档、API 示例或证据文档。
 
-## Required Checks
+## 提交前检查
 
-Run before every commit:
+本地优先运行：
 
 ```powershell
 .\scripts\check.ps1
 ```
 
-The check script must cover:
+当前 CI 覆盖：
 
-- Rust formatting, clippy, and tests.
-- Browser sidecar TypeScript type checking.
-- PowerShell script syntax for project scripts.
-- Git ignore safety for browser profiles and dependency folders.
+- `bash -n install.sh scripts/deploy/*.sh`
+- `cargo fmt --all -- --check`
+- `cargo clippy --workspace --all-targets -- -D warnings`
+- `cargo test --workspace`
+- 浏览器 sidecar TypeScript 检查
+- Dashboard 构建
+- Docker build
+- `docker compose config`
+- `docker compose up` 后访问 `/api/health`
 
-If a check cannot run, document the exact missing dependency or error in the
-handoff or final response.
+如果某项检查无法运行，必须在交接或最终说明里写明缺失依赖和错误文本。
 
-## Review Workflow
+## Review 工作流
 
-When asked for a review:
+用户要求 review 时：
 
-1. Read the changed code and relevant docs first.
-2. Report confirmed findings first, ordered by severity.
-3. Cite file paths and lines when available.
-4. Include missing tests only when they are tied to a concrete risk.
-5. End with a short residual-risk note if no issues are found.
+1. 先读变更代码和相关文档。
+2. 按严重性列出已确认问题。
+3. 尽量给出文件和行号。
+4. 只有缺测试和具体风险有关时才列为发现。
+5. 没有发现问题时，说明剩余风险和未跑检查。
 
-Review output must not speculate about unsupported platforms or hidden bugs
-without evidence. Use "risk" or "open question" labels when proof is missing.
+不要把没有证据的猜测包装成确定问题。
 
-## Git And GitHub Workflow
+## Git 和 GitHub
 
-- Keep `master` clean and buildable.
-- Commit coherent slices with short imperative messages.
-- Do not commit secrets, browser profiles, `node_modules`, `target`, storage,
-  generated media, or local logs.
-- Before publishing a public repo, ensure no sensitive files exist in current
-  HEAD. If sensitive local state entered history, squash or rewrite the local
-  branch before the first public push.
-- Once a GitHub remote exists, set it explicitly:
-
-```powershell
-git remote add origin https://github.com/<owner>/<repo>.git
-git push -u origin master
-```
-
-- Public GitHub repos can be pulled anonymously on the server with HTTPS:
+- `master` 必须保持可构建。
+- 一次提交只做一个清晰主题。
+- 不提交密钥、Cookie、Profile、数据库、产物、依赖目录或本地日志。
+- 公开仓库可以在服务器上匿名 HTTPS clone/pull：
 
 ```bash
-git clone https://github.com/<owner>/<repo>.git /opt/reflection-king
+git clone https://github.com/dwgx/Reflection_King.git /opt/reflection-king
+cd /opt/reflection-king
 git pull --ff-only
 ```
 
-- Private repos require a deploy key, token, or SSH key. Do not use password
-  prompts or commit credentials.
+私有仓库需要 deploy key、token 或 SSH key。不要使用密码交互，也不要提交凭据。
 
-## Deployment Workflow
+## 部署工作流
 
-Preferred server update path after a public GitHub repo exists:
+VPS 推荐一键安装：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dwgx/Reflection_King/master/install.sh | sudo bash -s -- \
+  --public-base-url http://你的服务器IP:8780
+```
+
+已有部署更新：
 
 ```bash
 cd /opt/reflection-king
-git pull --ff-only
-sudo APP_DIR=/opt/reflection-king bash scripts/deploy/linux-install-services.sh
+sudo git fetch origin master
+sudo git reset --hard origin/master
+sudo RK_PUBLIC_BASE_URL=http://你的服务器IP:8780 \
+  APP_DIR=/opt/reflection-king \
+  bash scripts/deploy/linux-install-services.sh
 ```
 
-If no remote exists yet:
+Docker 部署：
 
-1. Upload the working tree with `scp` or `rsync`.
-2. Run `scripts/deploy/linux-bootstrap.sh` once.
-3. Run `scripts/deploy/linux-install-services.sh`.
+```bash
+git clone https://github.com/dwgx/Reflection_King.git
+cd Reflection_King
+cp .env.docker.example .env.docker
+docker compose --env-file .env.docker up -d --build
+```
 
-Use SSH keys for automation. If a root password was shared during setup, rotate
-it after deployment and move to key-based login.
+如果部署期间曾共享 root 密码，部署后应切换到 SSH key 并轮换密码。
 
-## Next Milestones
+## 下一批里程碑
 
-1. Add automated fixtures for generic unknown-page discovery: DOM media,
-   metadata, link preload, performance resources, inline JSON, script URL
-   extraction, and manifest URLs.
-2. Add CDP-backed network capture for redirect chains, initiators, and bounded
-   small JSON/manifest body inspection.
-3. Add HLS and DASH manifest parsers with child URL SSRF validation, variant
-   metadata, protection markers, and hard segment/duration limits.
-4. Add artifact selection UI or a small CLI helper for candidate selection.
-5. Add noVNC/Xvfb deployment for headed Linux profile login.
-6. Build site-specific SoundCloud and YouTube extractors only after the generic
-   discovery evidence shows which platform-specific layer is still missing.
-7. Add automated integration tests around candidate selection and Range media
-   responses.
+1. 为通用未知网页 discovery 增加自动 fixture：DOM media、metadata、preload、performance resources、inline JSON、script URL、manifest。
+2. 增加 CDP 网络捕获，记录重定向链、initiator 和受限体积的 JSON/manifest 片段。
+3. 增加 HLS/DASH manifest 解析器，包含子 URL SSRF 校验、variant 元数据、保护标记和分片/时长硬限制。
+4. 持续完善站点专项适配器，并把失败分类写入 evidence 文档。
+5. 为候选选择、Range 媒体响应、Docker 启动和 VPS 一键部署增加更强回归测试。

@@ -5,6 +5,7 @@ WORKDIR /src
 COPY apps/reflection-dashboard/package*.json apps/reflection-dashboard/
 RUN cd apps/reflection-dashboard && npm ci
 COPY apps/reflection-dashboard apps/reflection-dashboard
+RUN mkdir -p crates/reflection-api
 RUN cd apps/reflection-dashboard && npm run build
 
 FROM node:22-bookworm AS browser-build

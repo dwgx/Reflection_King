@@ -1,26 +1,37 @@
-# Reflection King Docs
+# Reflection King 文档索引
 
-Start here:
+优先阅读：
 
-- [Architecture](ARCHITECTURE.md)
-- [Security](SECURITY.md)
-- [Media Pipeline](MEDIA_PIPELINE.md)
-- [VRChat Playback](VRCHAT_PLAYBACK.md)
-- [Roadmap](ROADMAP.md)
-- [Operations](OPERATIONS.md)
-- [Deployment](DEPLOYMENT.md)
-- [Workflow](WORKFLOW.md)
-- [Media Acquisition Design](crawler/media-acquisition-design.md)
-- [Crawler Backend Survey 2026-06-09](research/crawler-backend-survey-2026-06-09.md)
-- [Generic Media Discovery Survey 2026-06-09](research/generic-media-discovery-survey-2026-06-09.md)
+- [架构说明](ARCHITECTURE.md)
+- [安全边界](SECURITY.md)
+- [部署指南](DEPLOYMENT.md)
+- [运维手册](OPERATIONS.md)
+- [媒体管线](MEDIA_PIPELINE.md)
+- [VRChat 播放](VRCHAT_PLAYBACK.md)
+- [路线图](ROADMAP.md)
+- [工作流](WORKFLOW.md)
+- [媒体抓取设计](crawler/media-acquisition-design.md)
+- [爬虫后端调研 2026-06-09](research/crawler-backend-survey-2026-06-09.md)
+- [通用媒体发现调研 2026-06-09](research/generic-media-discovery-survey-2026-06-09.md)
 
-Evidence:
+验证证据：
 
-- [Bilibili Public Probe Evidence](evidence/bilibili-public-probe-2026-06-09.md)
-- [Generic Browser Discovery Evidence](evidence/generic-browser-discovery-2026-06-09.md)
-- [SoundCloud / YouTube Public Probe Evidence](evidence/soundcloud-youtube-public-probe-2026-06-09.md)
-- [External yt-dlp Probe Evidence](evidence/external-yt-dlp-probe-2026-06-09.md)
+- [Bilibili 公开探测证据](evidence/bilibili-public-probe-2026-06-09.md)
+- [通用浏览器探测证据](evidence/generic-browser-discovery-2026-06-09.md)
+- [SoundCloud / YouTube 公开探测证据](evidence/soundcloud-youtube-public-probe-2026-06-09.md)
+- [外部 yt-dlp 探测证据](evidence/external-yt-dlp-probe-2026-06-09.md)
+- [平台 smoke 证据](evidence/platform-smoke-2026-06-12.md)
 
-Long-term documentation is grouped under `architecture/`, `adr/`, `policies/`,
-`security/`, `media/`, `crawler/`, `research/`, `operations/`, `api/`, and
-`testing/`.
+目录说明：
+
+- `architecture/`：组件边界和系统视图。
+- `adr/`：架构决策记录。
+- `api/`：公开 API 和错误模型。
+- `crawler/`：媒体抓取和候选资源设计。
+- `evidence/`：真实站点 smoke、候选和失败原因记录。
+- `media/`：下载、转码、直播和输出格式。
+- `operations/`：部署、备份、日志和运行维护。
+- `policies/`：版权、授权和 URL 抓取策略。
+- `research/`：外部项目和通用方案调研。
+- `security/`：SSRF、威胁模型和安全要求。
+- `testing/`：测试策略。

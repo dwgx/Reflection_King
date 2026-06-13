@@ -6,6 +6,11 @@ if [[ "${EUID}" -ne 0 ]]; then
   exit 1
 fi
 
+if ! command -v apt-get >/dev/null 2>&1; then
+  echo "linux-bootstrap.sh targets Debian/Ubuntu hosts with apt-get." >&2
+  exit 1
+fi
+
 apt-get update
 apt-get install -y \
   build-essential \

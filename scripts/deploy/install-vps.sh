@@ -12,6 +12,23 @@ if [[ "${EUID}" -ne 0 ]]; then
   exit 1
 fi
 
+if ! command -v apt-get >/dev/null 2>&1; then
+  echo "This installer targets Debian/Ubuntu VPS hosts with apt-get." >&2
+  echo "Use Docker Compose on other Linux distributions." >&2
+  exit 1
+fi
+
+if ! command -v systemctl >/dev/null 2>&1; then
+  echo "This installer requires systemd/systemctl." >&2
+  echo "Use Docker Compose in containers or non-systemd environments." >&2
+  exit 1
+fi
+
+if [[ "${APP_DIR}" != /* ]] || [[ "${APP_DIR}" =~ [[:space:]] ]]; then
+  echo "APP_DIR must be an absolute path without whitespace." >&2
+  exit 1
+fi
+
 apt-get update
 apt-get install -y ca-certificates curl git openssl
 

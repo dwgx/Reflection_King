@@ -1,41 +1,54 @@
-# Security
+# 安全边界
 
-Media backends are high-risk because they fetch arbitrary remote URLs and run heavy native codecs.
+媒体抓取后端风险很高：它会访问用户提供的 URL，解析第三方页面，并运行 ffmpeg、Chromium、
+yt-dlp 等重型组件。Reflection King 的默认目标是“安全地处理用户有权访问的公开或授权内容”，
+不是绕过 DRM、付费墙、验证码、年龄门槛、区域限制或平台访问控制。
 
-## Implemented Baseline
+## 已实现的基础防线
 
-- Only `http` and `https` sources are accepted.
-- Hostnames are resolved before fetch.
-- Private, loopback, link-local, multicast, documentation, and reserved network targets are blocked.
-- Redirects are followed manually and each redirect target is validated.
-- Download size is capped by `RK_MAX_DOWNLOAD_MB`.
-- `text/html` responses are rejected to catch webpage URLs instead of direct media URLs.
-- `POST /api/jobs` can require `x-api-key` via `RK_API_KEY`.
-- Browser Profile login is controlled through authenticated API routes. The
-  dashboard receives screenshots and sends click/key events; Cookie values stay
-  inside the server-side Playwright Profile.
+- 只接受 `http` 和 `https` 来源。
+- 请求前解析域名。
+- 阻止私网、回环、链路本地、多播、保留和文档网段。
+- 手动跟随重定向，并对每一次重定向目标重新执行 URL 策略。
+- 通过 `RK_MAX_DOWNLOAD_MB` 限制下载大小。
+- 对候选资源记录可复放状态、失败原因、授权需求、区域限制、DRM/广告风险。
+- `POST /api/jobs`、候选选择和管理接口可以通过 `RK_API_KEY` 强制鉴权。
+- 用户密钥可以限制是否允许浏览器探测、yt-dlp、外部适配器和 Profile 登录。
+- 浏览器 Profile 登录通过已鉴权 API 控制。前端只接收截图并发送点击/键盘事件，Cookie 值留在服务器 Profile。
+- 媒体产物通过 `/media/...` raw URL 提供，不带 Cookie 和 API key，便于播放器读取。
 
-## Required Before Public Use
+## 公网部署前必须做
 
-- Put the service behind HTTPS.
-- Set `RK_API_KEY` or real auth.
-- Add per-IP and per-user rate limits.
-- Add domain policy: allowlist, denylist, or user trust tiers.
-- Run workers in a constrained account/container.
-- Put `storage/` on a disk with quota.
-- Add cleanup for old jobs and failed temp files.
-- Log job IDs, not secrets or private URLs.
-- Keep any browser CDP/VNC/debug ports bound to localhost or an internal
-  network. Do not expose them directly to the public internet.
+- 设置 `RK_API_KEY`，不要无密钥公网部署。
+- 使用 HTTPS，尤其是控制台需要输入管理密钥时。
+- 给 VPS 或容器配置磁盘配额，防止下载和转码占满磁盘。
+- 设置反向代理请求体限制、连接超时和访问日志。
+- 增加按 IP、用户密钥或租户的速率限制。
+- 只记录任务 ID、平台和错误分类，不记录完整 Cookie、密钥或私密 URL。
+- 保持 Playwright sidecar、CDP、VNC、调试端口只监听 localhost 或内网。
+- 定期清理旧任务、失败临时文件和过期 Profile。
 
-## Copyright And Authorization
+## Cookie 和授权
 
-The backend must not be positioned as a bypass tool. Users should only process media they own, created, licensed, or otherwise have permission to use. Public sharing to VRChat or other platforms may require additional rights.
+Profile Cookie 只能用于操作者已经有权限访问的内容。它可以帮助服务端复用登录态和必要 Header，
+但不能用于规避 DRM、付费墙、验证码、二次验证、年龄确认、区域封锁或法律限制。
 
-Profile cookies are an authorization aid for content the operator can already
-access. They must not be used to bypass DRM, paywalls, captcha, 2FA, regional
-access controls, or legal age gates.
+不要把 Cookie JSON、浏览器 Profile、SQLite 数据库、`.env`、`.env.docker`、
+`/etc/reflection-king/reflection.env` 或 `/root/reflection-king-admin-key.txt` 提交到 GitHub。
 
-## SSRF Notes
+## SSRF 要求
 
-SSRF checks must be repeated after every redirect and after every future extractor step. Platform extractors can return new media URLs; those URLs need the same validation as the original input.
+SSRF 校验不能只在原始 URL 上做一次。以下位置都必须重复校验：
+
+- 用户提交的来源 URL。
+- HTTP 重定向目标。
+- 外部适配器返回的媒体 URL。
+- 浏览器探测得到的 manifest、分片和直接文件 URL。
+- 未来对象存储、代理下载或录制入口。
+
+如果 URL 解析、DNS、重定向或内容类型不确定，默认拒绝并把原因写入任务错误摘要。
+
+## 版权和平台规则
+
+项目不能被描述为“绕过平台限制”的工具。使用者应只处理自己拥有、创作、授权、许可或依法可使用的媒体。
+把产物公开给 VRChat、网页播放器或其他平台时，仍然需要遵守来源站点和目标平台的规则。

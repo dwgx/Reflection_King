@@ -9,7 +9,7 @@ members = [
 [workspace.package]
 edition = "2021"
 license = "MIT"
-repository = "https://example.invalid/reflection-king"
+repository = "https://github.com/dwgx/Reflection_King"
 authors = ["Reflection King Contributors"]
 
 [workspace.dependencies]

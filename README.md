@@ -26,6 +26,14 @@ Reflection King 是一个 Rust 媒体抓取、转码和 raw URL 输出后端。�
 
 公开 VPS 上最简单的安装方式：
 
+适用前提：
+
+- Debian 12、Ubuntu 22.04/24.04 或兼容的 apt + systemd 服务器。
+- 使用 root 或 sudo 执行。
+- 建议至少 2 核 CPU、2 GB 内存、15 GB 可用磁盘。
+- 公网防火墙放行 `8780/tcp`，或按 `--port` 指定其他端口。
+- 非 Debian/Ubuntu、无 systemd 的容器或轻量系统，建议改用 Docker Compose。
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/dwgx/Reflection_King/master/install.sh | sudo bash
 ```

@@ -1,11 +1,12 @@
-# Risk Register
+# 风险登记
 
-| Risk | Severity | Owner | Mitigation | Status |
+| 风险 | 严重性 | 负责人 | 缓解措施 | 状态 |
 | --- | --- | --- | --- | --- |
-| Unauthorized media processing | High | Product/Security | Authorization policy and takedown workflow | Open |
-| Access-control bypass pressure | High | Product/Security | Explicit non-goals for DRM, captcha, paywall, login-wall, and enforcement bypass | Open |
-| SSRF | High | Backend/Security | URL policy, redirect checks, network isolation | Started |
-| Resource exhaustion | High | Backend/Infra | Quotas, queue limits, worker sandbox | Open |
-| Browser probe overreach | High | Backend/Security | Separate queue, request budgets, no captcha solving, no sensitive body capture by default | Open |
-| Public URL abuse | Medium | Backend | API key, rate limits, retention | Started |
-| VRChat playback incompatibility | Medium | Media | Output contract tests and target player testing | Open |
+| 未授权媒体处理 | 高 | 产品 / 安全 | 明确授权策略、下架流程和用户密钥权限 | 未完成 |
+| 被要求绕过访问控制 | 高 | 产品 / 安全 | 文档明确非目标：DRM、验证码、付费墙、登录墙、区域和年龄限制绕过 | 进行中 |
+| SSRF | 高 | 后端 / 安全 | URL 策略、重定向校验、私网拦截、候选 URL 重复校验 | 进行中 |
+| 资源耗尽 | 高 | 后端 / 运维 | 下载上限、并发限制、磁盘配额、任务清理 | 进行中 |
+| 浏览器探测越界 | 高 | 后端 / 安全 | 独立 sidecar、请求预算、候选过滤、Cookie 不回传前端 | 进行中 |
+| 公网 raw URL 被滥用 | 中 | 后端 | 管理密钥、用户密钥、保留时间、访问日志和后续限速 | 进行中 |
+| VRChat 播放不兼容 | 中 | 媒体 | Range/HEAD/faststart 自检和目标播放器实测 | 进行中 |
+| Docker 或 VPS 部署失效 | 中 | 运维 | CI 覆盖 Docker build、Compose health、shell 语法和 VPS 实机部署验证 | 进行中 |

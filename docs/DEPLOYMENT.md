@@ -9,6 +9,15 @@ Profile、SQLite 数据库或 `storage/` 提交到 GitHub。
 Playwright Chromium、yt-dlp、you-get、streamlink，构建前端和后端，
 写入 systemd 服务，并配置 nginx 反代到公网端口。
 
+适用前提：
+
+- Debian 12、Ubuntu 22.04/24.04 或兼容的 apt + systemd 服务器。
+- 使用 root 或 sudo 执行安装命令。
+- 建议至少 2 核 CPU、2 GB 内存、15 GB 可用磁盘；浏览器探测和 Docker 构建会消耗较多资源。
+- 公网安全组或防火墙放行 `8780/tcp`，或用 `--port` 指定其他公网端口。
+- `RK_PUBLIC_BASE_URL` 必须是外部播放器能访问的地址，否则 `/media/...` raw URL 只能本机访问。
+- 非 Debian/Ubuntu、无 systemd 的容器或轻量系统，使用 Docker Compose 部署。
+
 最短命令：
 
 ```bash

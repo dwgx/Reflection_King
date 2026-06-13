@@ -1,91 +1,146 @@
-# Operations
+# 运维手册
 
-## Environment
+本文件记录 Reflection King 在本地、VPS 和 Docker 环境里的日常运维方式。
+一键部署和 Docker 启动命令见 [DEPLOYMENT.md](DEPLOYMENT.md)。
 
-See `.env.example`.
+## 环境变量
 
-## Runtime Files
+常用配置见 `.env.example`、`.env.docker.example` 和 `/etc/reflection-king/reflection.env`。
 
-```text
-storage/tmp            Temporary download inputs
-storage/public         Served outputs
-storage/reflection.db  SQLite job records and recovery queue
-storage/browser-profiles  Playwright persistent browser profiles
-```
-
-Do not commit `storage/`.
-
-## Health
+关键变量：
 
 ```text
-GET /api/health
+RK_API_KEY                         管理密钥。公网部署必须设置。
+RK_PUBLIC_BASE_URL                 外部访问地址，用于生成 /media raw URL。
+RK_STORAGE_DIR                     任务数据库、产物和临时文件目录。
+RK_MAX_DOWNLOAD_MB                 单任务下载上限。
+RK_MAX_CONCURRENT_JOBS             并发任务数。
+RK_BROWSER_PROBE_URL               浏览器 sidecar 地址，默认 http://127.0.0.1:8791。
+RK_BROWSER_PROFILE_ROOT            Playwright Profile 和 Cookie 存储目录。
+RK_YTDLP_PATH                      yt-dlp 可执行文件。
+RK_YOU_GET_PATH                    you-get 可执行文件。
+RK_STREAMLINK_PATH                 streamlink 可执行文件。
 ```
 
-Returns service name, version, ffmpeg path, public base URL, storage path, and
-database path.
+## 运行时文件
 
-## Logs
-
-Use `RUST_LOG`:
-
-```powershell
-$env:RUST_LOG = "reflection_api=debug,reflection_core=debug,tower_http=info"
-```
-
-## Browser Sidecar
-
-Browser discovery requires `services/reflection-browser`.
-
-```powershell
-cd services\reflection-browser
-npm install
-npx playwright install chromium
-npm run dev
-```
-
-Set `RK_BROWSER_PROBE_URL=http://127.0.0.1:8791` for the API. The admin
-dashboard can start a server-side remote browser session for a persistent
-Profile. The browser process stays inside the sidecar; the dashboard receives a
-short-lived screenshot controller and never receives Cookie values.
-
-## External Adapters
-
-The API can aggregate candidates from multiple adapter routes when a job uses
-`discovery=auto` or `discovery=external`:
+默认路径：
 
 ```text
-RK_YTDLP_PATH=yt-dlp
-RK_YOU_GET_PATH=you-get
-RK_LUX_PATH=lux
-RK_STREAMLINK_PATH=streamlink
-RK_EXTERNAL_PROBE_TIMEOUT_SECONDS=45
+storage/tmp                 临时下载输入
+storage/public              对外提供的媒体产物
+storage/reflection.db       SQLite 任务、候选和恢复记录
+storage/browser-profiles    Playwright 持久 Profile
 ```
 
-`yt-dlp` remains the broadest first external adapter. `you-get` is useful for
-some Chinese video sites, `streamlink` is useful for live/manifest workflows,
-and `lux` can be configured manually when its Go binary is installed. The
-resolver deduplicates URLs across routes and records protection, route,
-confidence, ad-risk, and validation hints for the dashboard.
+Docker 部署时这些内容位于 `/data` volume。不要把 `storage/`、`/data`、
+Cookie JSON、浏览器 Profile、SQLite 数据库或任何 `.env` 文件提交到 GitHub。
 
-## Browser Profile Login And Cookies
+## 健康检查
 
-The primary Profile path is the admin page remote browser:
+```bash
+curl http://127.0.0.1:8787/api/health
+```
 
-1. Open `管理 -> 浏览器账号配置`.
-2. Set the target `Profile ID`, for example `admin_default`.
-3. Enter the site URL and start the server browser session.
-4. Click the screenshot, type through the input bar, or scan a QR code with a
-   phone.
-5. Close the session after login. The Profile directory keeps the site cookies
-   for later browser probing and header replay.
+公网反代部署后：
 
-Direct Cookie JSON import is still supported from the same admin card. Export
-cookies from a browser profile and paste the JSON array into `Cookie JSON`, then
-import it into the target Profile ID.
+```bash
+curl http://127.0.0.1:8780/api/health
+```
 
-For Windows machines where the operator is already logged into Edge, Chrome, or
-Firefox, the local Python importer can extract only the requested site domains
-and upload them to the server profile:
+该接口会返回服务名、版本、ffmpeg 路径、公开地址、存储路径和数据库路径。
+
+## systemd 服务
+
+VPS 一键安装会创建：
+
+```text
+reflection-api.service       Rust API 和任务调度
+reflection-browser.service   Playwright 浏览器探测 sidecar
+nginx.service                公网反向代理
+```
+
+查看状态：
+
+```bash
+sudo systemctl status nginx reflection-browser reflection-api
+```
+
+查看日志：
+
+```bash
+sudo journalctl -u reflection-api -f
+sudo journalctl -u reflection-browser -f
+sudo journalctl -u nginx -f
+```
+
+重启：
+
+```bash
+sudo systemctl restart reflection-browser reflection-api nginx
+```
+
+更新到 GitHub 最新版本：
+
+```bash
+cd /opt/reflection-king
+sudo git fetch origin master
+sudo git reset --hard origin/master
+sudo RK_PUBLIC_BASE_URL=http://你的服务器IP:8780 \
+  APP_DIR=/opt/reflection-king \
+  bash scripts/deploy/linux-install-services.sh
+```
+
+安装脚本会等待 `http://127.0.0.1:8787/api/health` 变为可用后再打印完成信息。
+
+## Docker 运维
+
+启动：
+
+```bash
+docker compose --env-file .env.docker up -d --build
+```
+
+查看日志：
+
+```bash
+docker compose logs -f reflection-king
+```
+
+查看健康状态：
+
+```bash
+curl http://127.0.0.1:8780/api/health
+```
+
+查看容器内保存的初始管理密钥：
+
+```bash
+docker compose exec reflection-king cat /data/admin-key.txt
+```
+
+更新：
+
+```bash
+git pull --ff-only
+docker compose --env-file .env.docker up -d --build
+```
+
+## 浏览器 Profile 和 Cookie
+
+推荐路径是管理页里的服务端远程浏览器：
+
+1. 打开 `管理 -> 浏览器账号配置`。
+2. 设置 `Profile ID`，例如 `admin_default`。
+3. 输入目标站点地址并启动服务端浏览器会话。
+4. 在网页截图控制器里点击、输入或扫码登录。
+5. 关闭会话。Cookie 会保存在服务器 Profile 目录，用于后续浏览器探测和 Header 回放。
+
+同一张管理卡片也支持 Cookie JSON 导入。把浏览器插件导出的 Cookie JSON 数组粘贴到
+`Cookie JSON`，再导入到目标 Profile ID。
+
+如果 Windows 本机已经登录 Edge、Chrome 或 Firefox，可以用本地 Python 导入器只抽取指定站点
+Cookie 并上传到服务器 Profile：
 
 ```powershell
 python -m pip install --user -U yt-dlp browser-cookie3
@@ -97,63 +152,65 @@ python scripts/cookies/import_browser_cookies.py `
   --profile-id admin_default
 ```
 
-Use `--dry-run` first to confirm only cookie counts and domains. Cookie values
-are not printed. If Chromium reports that the cookie database cannot be copied,
-close that browser and retry the default `--engine yt-dlp`. If Windows requires
-shadow-copy access, run `--engine browser-cookie3` from an administrator
-terminal. This is an explicit local import command, not a protocol handler.
+建议先加 `--dry-run` 确认域名和数量。脚本不会打印 Cookie 值。
 
-Local protocol handlers and PowerShell desktop helpers are intentionally not
-supported. They are hard to trust, fail in common browser security contexts, and
-do not work reliably for a remote VPS dashboard. Do not expose browser CDP/VNC
-ports directly to the public internet; keep interaction behind the API
-permission checks.
+不再支持本机协议处理器和 PowerShell 桌面助手。它们在远程 VPS 场景下不稳定，也不利于权限边界。
+不要把 CDP、VNC 或浏览器调试端口直接暴露到公网。
 
-## Linux Deployment
+## 外部适配器
 
-For a one-command VPS install, use [DEPLOYMENT.md](DEPLOYMENT.md). The short
-path is:
+自动解析会聚合多个候选来源：
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/dwgx/Reflection_King/master/install.sh | sudo bash
+```text
+RK_YTDLP_PATH=yt-dlp
+RK_YOU_GET_PATH=you-get
+RK_LUX_PATH=lux
+RK_STREAMLINK_PATH=streamlink
+RK_EXTERNAL_PROBE_TIMEOUT_SECONDS=45
 ```
 
-If the repository is public, the server can update without a GitHub login:
+`yt-dlp` 仍是最宽覆盖的第一适配器；`you-get` 对部分中文站点有帮助；
+`streamlink` 适合直播和 manifest 场景；`lux` 可在手动安装 Go 二进制后启用。
+
+解析器会去重候选 URL，并记录保护类型、适配路线、置信度、广告风险和验证提示，前端用这些字段区分
+“可直接转码”“需要 Cookie/Profile”“区域限制”“DRM/不可复放”“待适配”。
+
+## 备份
+
+VPS：
 
 ```bash
-git clone https://github.com/<owner>/<repo>.git /opt/reflection-king
-cd /opt/reflection-king
-git pull --ff-only
+sudo systemctl stop reflection-api reflection-browser
+sudo tar -czf reflection-king-storage-$(date +%F).tar.gz -C /opt/reflection-king storage
+sudo systemctl start reflection-browser reflection-api
 ```
 
-If no public remote exists yet, upload the working tree to `/opt/reflection-king`
-with `scp` or `rsync`, then run:
+Docker：
 
 ```bash
-sudo bash scripts/deploy/linux-bootstrap.sh
-sudo APP_DIR=/opt/reflection-king bash scripts/deploy/linux-install-services.sh
+docker compose stop
+docker run --rm -v reflection_king_reflection_data:/data -v "$PWD:/backup" alpine \
+  tar -czf /backup/reflection-king-data-$(date +%F).tar.gz -C /data .
+docker compose start
 ```
 
-For a public HTTP deployment, pass the external base URL when installing
-services:
+## VRChat raw URL 自检
 
-```bash
-sudo RK_PUBLIC_BASE_URL=http://your-server-or-domain \
-  APP_DIR=/opt/reflection-king \
-  bash scripts/deploy/linux-install-services.sh
+对单个产物：
+
+```powershell
+python scripts\smoke\vrchat_raw_url_check.py `
+  --url "http://154.40.36.22:8780/media/<job-id>/<artifact>.mp4"
 ```
 
-The install script keeps the API and browser sidecar bound to localhost and
-configures nginx on the requested public port as the reverse proxy.
+对整个任务：
 
-The install script prints the dashboard URL and initial admin key when it
-finishes. The key is stored on the server in `/etc/reflection-king/reflection.env`
-and `/root/reflection-king-admin-key.txt`.
-
-Verify the deployment:
-
-```bash
-systemctl status nginx reflection-browser reflection-api
-curl http://127.0.0.1:8787/api/health
-curl http://127.0.0.1/api/health
+```powershell
+$env:RK_API_KEY = "<admin-or-user-key>"
+python scripts\smoke\vrchat_raw_url_check.py `
+  --base-url "http://154.40.36.22:8780" `
+  --job-id "<job-id>"
 ```
+
+自检会验证 `HEAD`、`Range: bytes=0-511`、`Accept-Ranges`、MIME、`Content-Length`、
+MP4 faststart、H.264/AAC 或 MP3 音频流等关键项。
