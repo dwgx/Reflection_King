@@ -425,3 +425,66 @@ UA and Referer, and Profile header replay did not fix it. This is now classified
 as a dedicated iQIYI runtime/signature adapter gap rather than a successful
 media candidate. The earlier `static-d.iqiyi.com/lequ` 5-second MP4 false
 positive is filtered out.
+
+## Selection Guard Verification, 2026-06-13
+
+Changes verified in this round:
+
+- `live_smoke.py` can now run one ad-hoc URL through `--url`, so supplied
+  regression URLs do not require editing the script.
+- Smoke candidate selection now skips candidates with `failure_reason`,
+  `validation_state=failed`, `protection=drm`, `protection=region_blocked`, or
+  ad risk.
+- The API rejects manual `select-candidates` requests for blocked, failed, DRM,
+  expired, or ad-risk candidates.
+- Transcode fallback ordering no longer tries blocked or failed candidates after
+  the selected candidate fails.
+- The dashboard disables those candidates in the resource list instead of
+  letting users submit known-bad URLs.
+
+### AcFun
+
+```text
+url: https://www.acfun.cn/v/ac48589257
+job: 9d4de516-ff2a-4990-b83d-c5202c6cf130
+status: ready
+candidates: 45
+artifact: video/mp4, 99,652,086 bytes
+raw url: http://154.40.36.22:8780/media/9d4de516-ff2a-4990-b83d-c5202c6cf130/video-b62f06ae-7721-4d0e-8be3-f9e7b615a7cc.mp4
+vrchat_raw_url_check: HEAD 200, Range 206, faststart OK, h264 2160x3840, yuv420p, aac 2ch
+```
+
+### Youku
+
+```text
+url: https://v.youku.com/v_show/id_XNTk0Njk3NDI2MA==.html
+job: 60ca06b7-1fde-4a91-a8f8-97522c8048aa
+status: ready
+candidates: 53
+artifact: video/mp4, 357,010,562 bytes
+raw url: http://154.40.36.22:8780/media/60ca06b7-1fde-4a91-a8f8-97522c8048aa/video-cd649633-156e-40e3-a1bf-967d297c6f1c.mp4
+vrchat_raw_url_check: HEAD 200, Range 206, faststart OK, h264 1280x720, yuv420p, aac 2ch
+```
+
+### Blocked Or Non-Reusable Candidates
+
+```text
+url: https://www.iqiyi.com/v_2dkhwocyjk4.html
+job: 841e20d0-aa4b-4b1f-bb31-60c31f8a99d4
+result: 1 browser manifest observed, but no selectable candidates because the
+candidate is marked failed / needs dedicated iQIYI runtime signature adapter.
+
+url: https://www.83dm.com/yinghua_9334-2-1.html
+job: 28b17771-450c-4faa-9f84-fff84235cd70
+result: 2 MacCMS route candidates observed, but no selectable candidates because
+the CDN manifests are region_blocked from the VPS.
+
+url: https://www.dmttang.com/vodplay/872-14-1.html
+job: 2275ed88-e3ec-4118-b92c-616a697b3703
+result: 2 MacCMS route candidates observed, but no selectable candidates because
+the CDN manifests are region_blocked / failed from the VPS.
+```
+
+These three cases are intentionally not treated as successful extraction. They
+remain useful diagnostics, but they should not enter the conversion queue until
+a dedicated adapter can produce a replayable media URL.

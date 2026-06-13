@@ -885,6 +885,16 @@
     background: #1b1014;
   }
 
+  .candidate-row.disabled {
+    cursor: not-allowed;
+    opacity: 0.72;
+  }
+
+  .candidate-row.disabled:hover {
+    border-color: #63313a;
+    background: #1b1014;
+  }
+
   .candidate-row input {
     width: 16px;
     height: 16px;

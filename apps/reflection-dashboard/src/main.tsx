@@ -638,6 +638,11 @@ function App() {
   }
 
   function toggleCandidate(id: string) {
+    const candidate = candidates.find((item) => item.id === id);
+    if (candidate && !isUsableCandidate(candidate)) {
+      notify("该资源已标记为不可转换，请选择其他可用资源", "warn");
+      return;
+    }
     const next = new Set(selectedCandidates);
     if (next.has(id)) next.delete(id);
     else next.add(id);
@@ -1181,6 +1186,7 @@ function App() {
                     recommended={!selectedCandidates.size && defaultCandidateIds.includes(candidate.id)}
                     index={pagedCandidates.start + index}
                     selected={selectedCandidates.has(candidate.id)}
+                    disabled={!isUsableCandidate(candidate)}
                     onToggle={() => toggleCandidate(candidate.id)}
                   />
                 ))}
@@ -1872,6 +1878,7 @@ function CandidateRow(props: {
   index: number;
   selected: boolean;
   recommended: boolean;
+  disabled: boolean;
   onToggle: () => void;
 }) {
   const summary = candidateSummary(props.candidate);
@@ -1889,11 +1896,12 @@ function CandidateRow(props: {
           : props.selected || props.recommended
           ? "selected"
           : ""
-      }`}
+      } ${props.disabled ? "disabled" : ""}`}
     >
       <input
         type="checkbox"
         checked={props.selected}
+        disabled={props.disabled}
         onChange={props.onToggle}
       />
       <div className="candidate-main">
@@ -1923,6 +1931,7 @@ function CandidateRow(props: {
           {summary.adRisk && <em className="danger">广告/跟踪嫌疑</em>}
           {validation && validation !== "untested" && <em className={isBad ? "danger" : "ok"}>{validationLabel(validation)}</em>}
           {props.candidate.failure_reason && <em className="danger">{friendlyError(props.candidate.failure_reason)}</em>}
+          {props.disabled && !props.candidate.failure_reason && <em className="danger">不可转换</em>}
         </div>
         <div className="candidate-url">第 {props.index + 1} 项 · {compactUrl(props.candidate.url)}</div>
       </div>
@@ -2211,13 +2220,14 @@ function candidateDisplayList(candidates: Candidate[], job: JobView | null, show
   if (showAll) return ranked;
 
   const wantedKinds = preferredCandidateKinds(job);
-  const primary = ranked.filter((candidate) => wantedKinds.has(candidate.kind));
-  const usable = primary.length ? primary : ranked.filter((candidate) => candidate.kind !== "image" && candidate.kind !== "html");
-  return usable.slice(0, 8);
+  const primary = ranked.filter((candidate) => wantedKinds.has(candidate.kind) && isUsableCandidate(candidate));
+  if (primary.length) return primary.slice(0, 8);
+  const fallback = ranked.filter((candidate) => candidate.kind !== "image" && candidate.kind !== "html");
+  return fallback.slice(0, 8);
 }
 
 function bestCandidate(candidates: Candidate[], job: JobView | null): Candidate | null {
-  return candidateDisplayList(candidates, job, false)[0] ?? null;
+  return candidateDisplayList(candidates, job, false).find(isUsableCandidate) ?? null;
 }
 
 function defaultCandidatesForJob(
@@ -2251,7 +2261,7 @@ function defaultCandidatesForJob(
       return [audioCandidate];
     }
   }
-  return fallback ? [fallback] : [];
+  return fallback && isUsableCandidate(fallback) ? [fallback] : [];
 }
 
 function candidateNeedsAudioCompanion(candidate: Candidate): boolean {
@@ -2368,7 +2378,7 @@ function isUsableCandidate(candidate: Candidate): boolean {
   if (isLikelyAdCandidate(candidate)) return false;
   if (candidate.validation_status?.startsWith("failed")) return false;
   if (candidate.failure_reason) return false;
-  if (["drm", "expired", "region_blocked"].includes(candidate.validation_state ?? "")) return false;
+  if (["drm", "expired", "failed", "region_blocked", "suspect_ad"].includes(candidate.validation_state ?? "")) return false;
   if (["drm", "region_blocked"].includes(candidate.protection ?? "")) return false;
   return true;
 }

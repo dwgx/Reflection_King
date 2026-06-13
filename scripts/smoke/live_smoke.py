@@ -344,7 +344,7 @@ def select_candidate_ids(candidates: list[dict[str, Any]], case: SmokeCase) -> l
                 candidate
                 for candidate in ranked
                 if candidate.get("kind") in {"video", "manifest"}
-                and candidate.get("protection") != "drm"
+                and candidate_is_selectable(candidate)
                 and not candidate.get("ad_risk")
             ),
             None,
@@ -362,10 +362,22 @@ def select_candidate_ids(candidates: list[dict[str, Any]], case: SmokeCase) -> l
     for candidate in ranked:
         if len(selected) >= case.max_selected:
             break
-        if candidate.get("protection") == "drm" or candidate.get("ad_risk"):
+        if not candidate_is_selectable(candidate):
             continue
         selected.append(candidate["id"])
     return selected
+
+
+def candidate_is_selectable(candidate: dict[str, Any]) -> bool:
+    if candidate.get("ad_risk"):
+        return False
+    if candidate.get("failure_reason"):
+        return False
+    if candidate.get("validation_state") == "failed":
+        return False
+    if candidate.get("protection") in {"drm", "region_blocked"}:
+        return False
+    return True
 
 
 def candidate_needs_audio_companion(candidate: dict[str, Any]) -> bool:
@@ -536,6 +548,16 @@ def main() -> int:
     parser.add_argument("--api-key-file")
     parser.add_argument("--timeout-seconds", type=int, default=240)
     parser.add_argument("--case", action="append", help="Run only matching case name. Can be repeated.")
+    parser.add_argument("--url", help="Run a single ad-hoc smoke case for this URL.")
+    parser.add_argument("--name", default="adhoc", help="Name for --url smoke case.")
+    parser.add_argument("--discovery", default="auto", choices=["auto", "browser", "external", "direct"])
+    parser.add_argument("--platform", default="auto", help="Platform hint for --url smoke case.")
+    parser.add_argument("--output", action="append", choices=["video", "audio", "image", "html"])
+    parser.add_argument("--bitrate", default="auto")
+    parser.add_argument("--auth-mode", default="auto")
+    parser.add_argument("--profile-id", default="admin_default")
+    parser.add_argument("--max-selected", type=int, default=8)
+    parser.add_argument("--expect-success", action="store_true", help="Make --url fail the smoke run unless it creates an artifact.")
     parser.add_argument(
         "--tier",
         action="append",
@@ -552,18 +574,34 @@ def main() -> int:
         return 0
 
     api_key = load_api_key(args)
-    selected_names = set(args.case or [])
-    selected_tiers = {"core", "platform", "experimental"} if args.all_tiers else set(args.tier or ["core"])
-    cases = [
-        case
-        for case in DEFAULT_CASES
-        if (not selected_names or case.name in selected_names)
-        and (selected_names or case.tier in selected_tiers)
-    ]
-    if selected_names and len(cases) != len(selected_names):
-        known = {case.name for case in DEFAULT_CASES}
-        missing = sorted(selected_names - known)
-        raise SystemExit(f"unknown smoke case(s): {', '.join(missing)}")
+    if args.url:
+        cases = [
+            SmokeCase(
+                name=args.name,
+                url=args.url,
+                discovery=args.discovery,
+                platform_hint=args.platform,
+                outputs=args.output or ["video"],
+                bitrate=args.bitrate,
+                auth_mode=args.auth_mode,
+                profile_id=args.profile_id,
+                max_selected=args.max_selected,
+                expect_success=args.expect_success,
+            )
+        ]
+    else:
+        selected_names = set(args.case or [])
+        selected_tiers = {"core", "platform", "experimental"} if args.all_tiers else set(args.tier or ["core"])
+        cases = [
+            case
+            for case in DEFAULT_CASES
+            if (not selected_names or case.name in selected_names)
+            and (selected_names or case.tier in selected_tiers)
+        ]
+        if selected_names and len(cases) != len(selected_names):
+            known = {case.name for case in DEFAULT_CASES}
+            missing = sorted(selected_names - known)
+            raise SystemExit(f"unknown smoke case(s): {', '.join(missing)}")
 
     client = Client(args.base_url, api_key)
     results = []

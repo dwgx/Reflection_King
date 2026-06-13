@@ -11,10 +11,10 @@ use reflection_core::{
     extractors::{ExtractContext, SourceResolver},
     job_store::JobStore,
     models::{
-        ApiKeyRecord, ApiKeyView, ArtifactView, CandidateKind, ClearJobsResponse,
-        CreateUserKeyRequest, CreatedUserKeyResponse, DiscoveryMode, HiddenJobBatchView, JobRecord,
-        JobStatus, JobView, MediaCandidate, OutputKind, RestoreJobsResponse,
-        RotatedAdminKeyResponse,
+        ApiKeyRecord, ApiKeyView, ArtifactView, CandidateKind, CandidateProtection,
+        CandidateValidationState, ClearJobsResponse, CreateUserKeyRequest, CreatedUserKeyResponse,
+        DiscoveryMode, HiddenJobBatchView, JobRecord, JobStatus, JobView, MediaCandidate,
+        OutputKind, RestoreJobsResponse, RotatedAdminKeyResponse,
     },
     observability::{ErrorClass, JobTrace, PipelineEvent, PipelineEventType},
     paths::StoragePaths,
@@ -451,10 +451,16 @@ impl AppState {
         }
 
         for candidate_id in &candidate_ids {
-            self.job_store
+            let candidate = self
+                .job_store
                 .get_candidate(job_id, *candidate_id)
                 .await?
                 .ok_or_else(|| RkError::NotFound(format!("candidate {candidate_id}")))?;
+            if let Some(reason) = candidate_not_selectable_reason(&candidate) {
+                return Err(RkError::BadRequest(format!(
+                    "candidate {candidate_id} is not selectable: {reason}"
+                )));
+            }
         }
 
         self.job_store
@@ -724,6 +730,14 @@ impl AppState {
             return Err(RkError::Source(
                 "no candidates match requested outputs".to_string(),
             ));
+        }
+        if let Some((candidate, reason)) = selected.iter().find_map(|candidate| {
+            candidate_not_selectable_reason(candidate).map(|reason| (candidate, reason))
+        }) {
+            return Err(RkError::Source(format!(
+                "selected candidate {} is not reusable: {reason}",
+                candidate.id
+            )));
         }
 
         if should_build_image_slideshow(&job, &selected) {
@@ -1500,6 +1514,7 @@ fn candidate_attempt_order<'a>(
         out.extend(
             all.iter()
                 .filter(|candidate| candidate.id != selected_id)
+                .filter(|candidate| candidate_not_selectable_reason(candidate).is_none())
                 .filter(|candidate| {
                     candidate.kind == selected_kind || is_compatible_fallback(job, candidate)
                 }),
@@ -1562,10 +1577,35 @@ fn candidate_attempt_rank(job: &JobRecord, candidate: &MediaCandidate) -> i64 {
     if candidate.requires_authorization {
         rank -= 100;
     }
-    if is_likely_ad_or_tracking_candidate(candidate) {
-        rank -= 5_000;
+    if let Some(reason) = candidate_not_selectable_reason(candidate) {
+        rank -= match reason {
+            "suspect_ad" => 5_000,
+            "requires_drm" | "region_blocked" => 20_000,
+            _ => 15_000,
+        };
     }
     rank
+}
+
+fn candidate_not_selectable_reason(candidate: &MediaCandidate) -> Option<&'static str> {
+    if candidate.failure_reason.is_some() {
+        return Some("failed_validation");
+    }
+    match candidate.validation_state {
+        Some(CandidateValidationState::Failed) => Some("failed_validation"),
+        Some(CandidateValidationState::RegionBlocked) => Some("region_blocked"),
+        Some(CandidateValidationState::Drm) => Some("requires_drm"),
+        Some(CandidateValidationState::Expired) => Some("signed_url_expired"),
+        Some(CandidateValidationState::SuspectAd) => Some("suspect_ad"),
+        _ => match candidate.protection {
+            Some(CandidateProtection::RegionBlocked) => Some("region_blocked"),
+            Some(CandidateProtection::Drm) => Some("requires_drm"),
+            _ if candidate.ad_risk || is_likely_ad_or_tracking_candidate(candidate) => {
+                Some("suspect_ad")
+            }
+            _ => None,
+        },
+    }
 }
 
 fn quality_preference_rank(preference: &str, candidate: &MediaCandidate) -> i64 {
@@ -1954,6 +1994,99 @@ mod tests {
             best_companion_audio(attempts[0], &all).map(|c| c.id),
             Some(audio.id)
         );
+    }
+
+    #[test]
+    fn failed_or_blocked_candidates_are_not_selectable() {
+        let job_id = Uuid::new_v4();
+        let mut failed = candidate(
+            job_id,
+            CandidateKind::Manifest,
+            "https://cdn.example.com/bad.m3u8",
+            "720p",
+            json!({}),
+        );
+        failed.failure_reason = Some("segment returned 403".to_string());
+        assert_eq!(
+            candidate_not_selectable_reason(&failed),
+            Some("failed_validation")
+        );
+
+        let mut blocked = candidate(
+            job_id,
+            CandidateKind::Manifest,
+            "https://cdn.example.com/blocked.m3u8",
+            "720p",
+            json!({}),
+        );
+        blocked.protection = Some(CandidateProtection::RegionBlocked);
+        blocked.validation_state = Some(CandidateValidationState::RegionBlocked);
+        assert_eq!(
+            candidate_not_selectable_reason(&blocked),
+            Some("region_blocked")
+        );
+
+        let mut ad = candidate(
+            job_id,
+            CandidateKind::Video,
+            "https://cdn.example.com/vast/preroll.mp4",
+            "720p",
+            json!({}),
+        );
+        ad.ad_risk = true;
+        assert_eq!(candidate_not_selectable_reason(&ad), Some("suspect_ad"));
+    }
+
+    #[test]
+    fn fallback_attempts_skip_failed_candidates() {
+        let mut job = JobRecord::new_with_options(
+            "https://example.com/watch".to_string(),
+            "auto".to_string(),
+            "http://127.0.0.1:8787",
+            JobCreateOptions {
+                discovery: DiscoveryMode::External,
+                outputs: vec![OutputKind::Video],
+                ..JobCreateOptions::default()
+            },
+        );
+        let selected = candidate(
+            job.id,
+            CandidateKind::Manifest,
+            "https://cdn.example.com/selected.m3u8",
+            "720p",
+            json!({ "height": 720 }),
+        );
+        let mut failed_fallback = candidate(
+            job.id,
+            CandidateKind::Manifest,
+            "https://cdn.example.com/blocked.m3u8",
+            "1080p",
+            json!({ "height": 1080 }),
+        );
+        failed_fallback.failure_reason = Some("segment returned 403".to_string());
+        let good_fallback = candidate(
+            job.id,
+            CandidateKind::Manifest,
+            "https://cdn.example.com/good.m3u8",
+            "480p",
+            json!({ "height": 480 }),
+        );
+        job.selected_candidate_ids = vec![selected.id];
+
+        let all = vec![
+            selected.clone(),
+            failed_fallback.clone(),
+            good_fallback.clone(),
+        ];
+        let attempts = candidate_attempt_order(&job, std::slice::from_ref(&selected), &all);
+        let attempt_ids = attempts
+            .iter()
+            .map(|candidate| candidate.id)
+            .collect::<Vec<_>>();
+
+        assert!(attempt_ids.contains(&selected.id));
+        assert!(attempt_ids.contains(&good_fallback.id));
+        assert!(!attempt_ids.contains(&failed_fallback.id));
     }
 
     #[test]
