@@ -1560,6 +1560,11 @@ function filterCnVideoPlatformCandidates(
       ...candidate,
       score: candidate.score + (candidate.kind === "manifest" ? 45 : candidate.kind === "video" ? 35 : 5),
       requiresAuthorization: platform === "iqiyi" ? true : candidate.requiresAuthorization,
+      failureReason:
+        platform === "iqiyi"
+          ? "iQIYI browser manifest segment replay is blocked by QWS 403; needs dedicated iQIYI runtime signature adapter"
+          : candidate.failureReason,
+      validationState: platform === "iqiyi" ? "failed" : candidate.validationState,
       metadata: {
         ...(candidate.metadata ?? {}),
         source: `${platform}_filter`,

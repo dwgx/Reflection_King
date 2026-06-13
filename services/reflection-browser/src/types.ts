@@ -23,6 +23,8 @@ export interface BrowserCandidate {
   qualityLabel?: string;
   score: number;
   requiresAuthorization: boolean;
+  failureReason?: string;
+  validationState?: string;
   metadata?: Record<string, unknown>;
 }
 

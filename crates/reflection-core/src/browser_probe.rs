@@ -83,6 +83,10 @@ pub struct BrowserCandidate {
     pub score: i64,
     #[serde(rename = "requiresAuthorization")]
     pub requires_authorization: bool,
+    #[serde(rename = "failureReason")]
+    pub failure_reason: Option<String>,
+    #[serde(rename = "validationState")]
+    pub validation_state: Option<String>,
     pub metadata: Option<serde_json::Value>,
 }
 
@@ -578,11 +582,14 @@ impl BrowserCandidate {
             ad_risk,
             evidence_count: 1,
             paired_candidate_ids: Vec::new(),
-            failure_reason: None,
+            failure_reason: self.failure_reason,
             validation_state: Some(if ad_risk {
                 CandidateValidationState::SuspectAd
             } else {
-                CandidateValidationState::Untested
+                self.validation_state
+                    .as_deref()
+                    .and_then(CandidateValidationState::parse)
+                    .unwrap_or(CandidateValidationState::Untested)
             }),
             metadata_json: serde_json::json!({
                 "final_url": metadata.final_url,
