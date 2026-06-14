@@ -1,6 +1,7 @@
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
+    time::Duration,
 };
 
 use reflection_core::{
@@ -14,7 +15,8 @@ use reflection_core::{
         ApiKeyRecord, ApiKeyView, ArtifactView, CandidateKind, CandidateProtection,
         CandidateValidationState, ClearJobsResponse, CreateUserKeyRequest, CreatedUserKeyResponse,
         DiscoveryMode, HiddenJobBatchView, JobRecord, JobStatus, JobView, MediaCandidate,
-        OutputKind, RestoreJobsResponse, RotatedAdminKeyResponse,
+        OutputKind, RestoreJobsResponse, RotatedAdminKeyResponse, RuntimeSettingsView,
+        UpdateRuntimeSettingsRequest,
     },
     observability::{ErrorClass, JobTrace, PipelineEvent, PipelineEventType},
     paths::StoragePaths,
@@ -159,11 +161,79 @@ impl AppState {
         });
     }
 
-    fn transcoder(&self) -> Transcoder {
-        Transcoder::with_timeout(
-            self.config.ffmpeg_path.clone(),
-            self.config.download_timeout,
-        )
+    async fn runtime_settings(&self) -> Result<EffectiveRuntimeSettings> {
+        let values = self.job_store.runtime_setting_values().await?;
+        Ok(EffectiveRuntimeSettings::from_config(&self.config, &values))
+    }
+
+    pub async fn runtime_settings_view(&self) -> Result<RuntimeSettingsView> {
+        Ok(self.runtime_settings().await?.to_view(&self.config))
+    }
+
+    pub async fn update_runtime_settings(
+        &self,
+        request: UpdateRuntimeSettingsRequest,
+    ) -> Result<RuntimeSettingsView> {
+        self.job_store.update_runtime_settings(request).await?;
+        self.runtime_settings_view().await
+    }
+
+    async fn effective_limits_for_job(&self, job: &JobRecord) -> Result<EffectiveRuntimeSettings> {
+        let mut settings = self.runtime_settings().await?;
+        if let Some(key_id) = job.requester_key_id {
+            if let Some(record) = self.job_store.get_api_key(key_id).await? {
+                if let Some(limit) = record.max_download_bytes {
+                    settings.max_download_bytes = settings.max_download_bytes.min(limit);
+                }
+            }
+        }
+        Ok(settings)
+    }
+
+    fn transcoder(&self, settings: &EffectiveRuntimeSettings) -> Transcoder {
+        Transcoder::with_timeout(self.config.ffmpeg_path.clone(), settings.download_timeout)
+    }
+
+    fn yt_dlp_probe_for_settings(&self, settings: &EffectiveRuntimeSettings) -> Option<YtDlpProbe> {
+        self.config.yt_dlp_path.clone().map(|path| {
+            YtDlpProbe::new(
+                path,
+                settings.yt_dlp_timeout,
+                settings.yt_dlp_max_json_bytes,
+            )
+        })
+    }
+
+    fn external_tool_probes_for_settings(
+        &self,
+        settings: &EffectiveRuntimeSettings,
+    ) -> Vec<ExternalToolProbe> {
+        let mut probes = Vec::new();
+        if let Some(path) = self.config.you_get_path.clone() {
+            probes.push(ExternalToolProbe::new(
+                ExternalToolKind::YouGet,
+                path,
+                self.config.external_probe_timeout,
+                settings.yt_dlp_max_json_bytes,
+            ));
+        }
+        if let Some(path) = self.config.lux_path.clone() {
+            probes.push(ExternalToolProbe::new(
+                ExternalToolKind::Lux,
+                path,
+                self.config.external_probe_timeout,
+                settings.yt_dlp_max_json_bytes,
+            ));
+        }
+        if let Some(path) = self.config.streamlink_path.clone() {
+            probes.push(ExternalToolProbe::new(
+                ExternalToolKind::Streamlink,
+                path,
+                self.config.external_probe_timeout,
+                settings.yt_dlp_max_json_bytes,
+            ));
+        }
+        probes
     }
 
     pub async fn insert_and_enqueue(&self, record: JobRecord) -> Result<JobView> {
@@ -266,8 +336,11 @@ impl AppState {
         self.job_store.create_user_key(request).await
     }
 
-    pub async fn rotate_admin_key(&self) -> Result<RotatedAdminKeyResponse> {
-        self.job_store.rotate_admin_key().await
+    pub async fn rotate_admin_key(
+        &self,
+        custom_key: Option<&str>,
+    ) -> Result<RotatedAdminKeyResponse> {
+        self.job_store.rotate_admin_key(custom_key).await
     }
 
     pub async fn revoke_api_key(&self, id: Uuid) -> Result<bool> {
@@ -572,6 +645,7 @@ impl AppState {
         }
 
         self.update_status(job.id, JobStatus::Resolving).await?;
+        let settings = self.effective_limits_for_job(&job).await?;
 
         let url = reflection_core::url_policy::parse_and_validate_url(&job.source_url)?;
         let ctx = ExtractContext {
@@ -583,8 +657,8 @@ impl AppState {
             discovery: job.discovery,
             platform_hint: job.platform_hint,
             auth_mode: job.auth_mode,
-            yt_dlp: self.yt_dlp_probe.clone(),
-            external_tools: self.external_tool_probes.clone(),
+            yt_dlp: self.yt_dlp_probe_for_settings(&settings),
+            external_tools: self.external_tool_probes_for_settings(&settings),
             browser: self.browser_probe.clone(),
         };
 
@@ -738,15 +812,20 @@ impl AppState {
             )));
         }
 
+        let settings = self.effective_limits_for_job(&job).await?;
         if should_build_image_slideshow(&job, &selected) {
-            self.process_image_slideshow(&job, &selected).await?;
+            self.process_image_slideshow(&job, &selected, &settings)
+                .await?;
         } else {
             let attempts = candidate_attempt_order(&job, &selected, &candidates);
             let mut failures = Vec::new();
             let mut success_count = 0usize;
 
             for candidate in attempts {
-                match self.process_candidate(&job, candidate, &candidates).await {
+                match self
+                    .process_candidate(&job, candidate, &candidates, &settings)
+                    .await
+                {
                     Ok(()) => {
                         success_count += 1;
                         self.job_store
@@ -805,10 +884,7 @@ impl AppState {
             .first()
             .map(|artifact| artifact.media_url.clone())
             .unwrap_or_else(|| {
-                format!(
-                    "{}/api/jobs/{}/artifacts",
-                    self.config.public_base_url, job.id
-                )
+                format!("{}/api/jobs/{}/artifacts", settings.public_base_url, job.id)
             });
         self.mark_ready(job.id, media_url).await?;
         Ok(())
@@ -818,6 +894,7 @@ impl AppState {
         &self,
         job: &JobRecord,
         candidates: &[MediaCandidate],
+        settings: &EffectiveRuntimeSettings,
     ) -> Result<()> {
         let mut image_candidates = candidates
             .iter()
@@ -836,8 +913,7 @@ impl AppState {
         tokio::fs::create_dir_all(&temp_dir).await?;
 
         self.update_status(job.id, JobStatus::Downloading).await?;
-        let downloader =
-            Downloader::new(self.config.download_timeout, self.config.max_download_bytes)?;
+        let downloader = Downloader::new(settings.download_timeout, settings.max_download_bytes)?;
         let mut image_paths = Vec::with_capacity(image_candidates.len());
         for (index, candidate) in image_candidates.iter().enumerate() {
             validate_candidate_url(&candidate.url)?;
@@ -857,11 +933,17 @@ impl AppState {
         let concat = concat_demuxer_file(&image_paths, 2.75)?;
         tokio::fs::write(&list_path, concat).await?;
         let output_path = job_dir.join("slideshow.mp4");
-        self.transcoder()
+        self.transcoder(settings)
             .images_to_mp4(&list_path, &output_path, 1920, 1080)
             .await?;
-        self.insert_artifact(job.id, OutputKind::Video, output_path, "video/mp4")
-            .await?;
+        self.insert_artifact(
+            job.id,
+            OutputKind::Video,
+            output_path,
+            "video/mp4",
+            &settings.public_base_url,
+        )
+        .await?;
 
         tokio::fs::remove_dir_all(&temp_dir).await.ok();
         Ok(())
@@ -872,6 +954,7 @@ impl AppState {
         job: &JobRecord,
         candidate: &MediaCandidate,
         available_candidates: &[MediaCandidate],
+        settings: &EffectiveRuntimeSettings,
     ) -> Result<()> {
         if !is_yt_dlp_inline_manifest_candidate(candidate) {
             validate_candidate_url(&candidate.url)?;
@@ -895,25 +978,31 @@ impl AppState {
                 let input_path = temp_dir.join(format!("{}.input", candidate.id));
                 let headers = self.download_headers(job, candidate).await?;
                 let downloader =
-                    Downloader::new(self.config.download_timeout, self.config.max_download_bytes)?;
+                    Downloader::new(settings.download_timeout, settings.max_download_bytes)?;
                 downloader
                     .download_to_file_with_headers(&candidate.url, &input_path, headers)
                     .await?;
 
                 self.update_status(job.id, JobStatus::Transcoding).await?;
                 let output_path = job_dir.join(format!("audio-{}.mp3", candidate.id));
-                self.transcoder()
+                self.transcoder(settings)
                     .audio_to_mp3(&input_path, &output_path, &job.bitrate)
                     .await?;
-                self.insert_artifact(job.id, OutputKind::Audio, output_path, "audio/mpeg")
-                    .await?;
+                self.insert_artifact(
+                    job.id,
+                    OutputKind::Audio,
+                    output_path,
+                    "audio/mpeg",
+                    &settings.public_base_url,
+                )
+                .await?;
             }
             CandidateKind::Video | CandidateKind::Manifest => {
                 let headers = self.download_headers(job, candidate).await?;
                 if candidate.kind == CandidateKind::Manifest
                     && !is_yt_dlp_inline_manifest_candidate(candidate)
                 {
-                    self.validate_manifest_candidate(job.id, candidate, headers.clone())
+                    self.validate_manifest_candidate(job.id, candidate, headers.clone(), settings)
                         .await?;
                 }
                 if job.outputs.contains(&OutputKind::Audio)
@@ -927,11 +1016,12 @@ impl AppState {
                             &temp_dir,
                             &output_path,
                             OutputKind::Audio,
+                            settings,
                         )
                         .await?;
                     } else {
                         let raw_result = async {
-                            let transcoder = self.transcoder();
+                            let transcoder = self.transcoder(settings);
                             let stream_info = transcoder
                                 .probe_url_with_headers(&candidate.url, &headers)
                                 .await?;
@@ -959,6 +1049,7 @@ impl AppState {
                                     &temp_dir,
                                     &output_path,
                                     OutputKind::Audio,
+                                    settings,
                                 )
                                 .await
                                 .map_err(|fallback_error| {
@@ -971,8 +1062,14 @@ impl AppState {
                             }
                         }
                     }
-                    self.insert_artifact(job.id, OutputKind::Audio, output_path, "audio/mpeg")
-                        .await?;
+                    self.insert_artifact(
+                        job.id,
+                        OutputKind::Audio,
+                        output_path,
+                        "audio/mpeg",
+                        &settings.public_base_url,
+                    )
+                    .await?;
                 } else {
                     let output_path = job_dir.join(format!("video-{}.mp4", candidate.id));
                     if is_yt_dlp_inline_manifest_candidate(candidate) {
@@ -982,11 +1079,12 @@ impl AppState {
                             &temp_dir,
                             &output_path,
                             OutputKind::Video,
+                            settings,
                         )
                         .await?;
                     } else {
                         let raw_result = async {
-                            let transcoder = self.transcoder();
+                            let transcoder = self.transcoder(settings);
                             let stream_info = transcoder
                                 .probe_url_with_headers(&candidate.url, &headers)
                                 .await?;
@@ -1038,6 +1136,7 @@ impl AppState {
                                     &temp_dir,
                                     &output_path,
                                     OutputKind::Video,
+                                    settings,
                                 )
                                 .await
                                 .map_err(|fallback_error| {
@@ -1050,15 +1149,21 @@ impl AppState {
                             }
                         }
                     }
-                    self.insert_artifact(job.id, OutputKind::Video, output_path, "video/mp4")
-                        .await?;
+                    self.insert_artifact(
+                        job.id,
+                        OutputKind::Video,
+                        output_path,
+                        "video/mp4",
+                        &settings.public_base_url,
+                    )
+                    .await?;
                 }
             }
             CandidateKind::Image => {
                 self.update_status(job.id, JobStatus::Downloading).await?;
                 let output_path = job_dir.join(format!("image-{}.bin", candidate.id));
                 let headers = self.download_headers(job, candidate).await?;
-                Downloader::new(self.config.download_timeout, self.config.max_download_bytes)?
+                Downloader::new(settings.download_timeout, settings.max_download_bytes)?
                     .download_to_file_with_headers(&candidate.url, &output_path, headers)
                     .await?;
                 self.insert_artifact(
@@ -1069,6 +1174,7 @@ impl AppState {
                         .content_type
                         .as_deref()
                         .unwrap_or("application/octet-stream"),
+                    &settings.public_base_url,
                 )
                 .await?;
             }
@@ -1116,6 +1222,7 @@ impl AppState {
         job_id: Uuid,
         candidate: &MediaCandidate,
         headers: HeaderMap,
+        settings: &EffectiveRuntimeSettings,
     ) -> Result<()> {
         self.record_event(PipelineEvent::new(
             job_id,
@@ -1130,7 +1237,7 @@ impl AppState {
         ))
         .await;
         let client = reqwest::Client::builder()
-            .timeout(self.config.download_timeout)
+            .timeout(settings.download_timeout)
             .redirect(reqwest::redirect::Policy::none())
             .user_agent("ReflectionKing/0.1")
             .build()?;
@@ -1158,6 +1265,7 @@ impl AppState {
         temp_dir: &Path,
         output_path: &Path,
         output_kind: OutputKind,
+        settings: &EffectiveRuntimeSettings,
     ) -> Result<()> {
         let source_url = if is_yt_dlp_inline_manifest_candidate(candidate) {
             job.source_url.as_str()
@@ -1188,7 +1296,7 @@ impl AppState {
             .arg("--no-playlist")
             .arg("--no-cache-dir")
             .arg("--max-filesize")
-            .arg(yt_dlp_max_filesize(self.config.max_download_bytes))
+            .arg(yt_dlp_max_filesize(settings.max_download_bytes))
             .arg("-o")
             .arg(&output_template);
         let headers = self.download_headers(job, candidate).await?;
@@ -1205,7 +1313,7 @@ impl AppState {
         command.arg(source_url);
 
         command.kill_on_drop(true);
-        let output_result = tokio_time::timeout(self.config.download_timeout, command.output())
+        let output_result = tokio_time::timeout(settings.download_timeout, command.output())
             .await
             .map_err(|_| RkError::Source("yt-dlp delegated download timed out".to_string()))
             .and_then(|result| result.map_err(RkError::Io));
@@ -1237,22 +1345,22 @@ impl AppState {
 
         let downloaded = find_delegated_download(temp_dir, candidate.id)?;
         let bytes = tokio::fs::metadata(&downloaded).await?.len();
-        if bytes > self.config.max_download_bytes {
+        if bytes > settings.max_download_bytes {
             return Err(RkError::DownloadTooLarge {
-                max_bytes: self.config.max_download_bytes,
+                max_bytes: settings.max_download_bytes,
             });
         }
 
         match output_kind {
             OutputKind::Audio => {
                 self.update_status(job.id, JobStatus::Transcoding).await?;
-                self.transcoder()
+                self.transcoder(settings)
                     .audio_to_mp3(&downloaded, output_path, &job.bitrate)
                     .await
             }
             OutputKind::Video => {
                 self.update_status(job.id, JobStatus::Remuxing).await?;
-                self.transcoder()
+                self.transcoder(settings)
                     .media_to_mp4(&downloaded, output_path)
                     .await
             }
@@ -1298,6 +1406,7 @@ impl AppState {
         kind: OutputKind,
         path: std::path::PathBuf,
         content_type: &str,
+        public_base_url: &str,
     ) -> Result<()> {
         let bytes = tokio::fs::metadata(&path).await?.len() as i64;
         let filename = path
@@ -1309,7 +1418,7 @@ impl AppState {
             job_id,
             kind,
             path: path.display().to_string(),
-            media_url: format!("{}/media/{job_id}/{filename}", self.config.public_base_url),
+            media_url: format!("{public_base_url}/media/{job_id}/{filename}"),
             content_type: content_type.to_string(),
             bytes,
             created_at: OffsetDateTime::now_utc(),
@@ -1530,6 +1639,106 @@ fn limited_process_stderr(bytes: &[u8]) -> String {
 fn yt_dlp_max_filesize(max_bytes: u64) -> String {
     let mib = (max_bytes / 1024 / 1024).max(1);
     format!("{mib}M")
+}
+
+#[derive(Debug, Clone)]
+struct EffectiveRuntimeSettings {
+    public_base_url: String,
+    max_download_bytes: u64,
+    download_timeout: Duration,
+    yt_dlp_timeout: Duration,
+    yt_dlp_max_json_bytes: usize,
+    job_ttl_hours: u64,
+}
+
+impl EffectiveRuntimeSettings {
+    fn from_config(config: &AppConfig, values: &std::collections::HashMap<String, String>) -> Self {
+        let max_download_mb = setting_u64(
+            values,
+            "max_download_mb",
+            config.max_download_bytes / 1024 / 1024,
+        );
+        let download_timeout_seconds = setting_u64(
+            values,
+            "download_timeout_seconds",
+            config.download_timeout.as_secs(),
+        );
+        let yt_dlp_timeout_seconds = setting_u64(
+            values,
+            "yt_dlp_timeout_seconds",
+            config.yt_dlp_timeout.as_secs(),
+        );
+        let yt_dlp_max_json_mb = setting_usize(
+            values,
+            "yt_dlp_max_json_mb",
+            config.yt_dlp_max_json_bytes / 1024 / 1024,
+        );
+        Self {
+            public_base_url: values
+                .get("public_base_url")
+                .cloned()
+                .unwrap_or_else(|| config.public_base_url.clone()),
+            max_download_bytes: max_download_mb.saturating_mul(1024).saturating_mul(1024),
+            download_timeout: Duration::from_secs(download_timeout_seconds),
+            yt_dlp_timeout: Duration::from_secs(yt_dlp_timeout_seconds),
+            yt_dlp_max_json_bytes: yt_dlp_max_json_mb.saturating_mul(1024).saturating_mul(1024),
+            job_ttl_hours: setting_u64(values, "job_ttl_hours", config.job_ttl_hours),
+        }
+    }
+
+    fn to_view(&self, config: &AppConfig) -> RuntimeSettingsView {
+        RuntimeSettingsView {
+            public_base_url: self.public_base_url.clone(),
+            max_download_bytes: self.max_download_bytes,
+            max_concurrent_jobs: config.max_concurrent_jobs,
+            download_timeout_seconds: self.download_timeout.as_secs(),
+            browser_probe_timeout_seconds: config.browser_probe_timeout.as_secs(),
+            yt_dlp_timeout_seconds: self.yt_dlp_timeout.as_secs(),
+            yt_dlp_max_json_bytes: self.yt_dlp_max_json_bytes,
+            job_ttl_hours: self.job_ttl_hours,
+            ffmpeg_path: config.ffmpeg_path.display().to_string(),
+            browser_probe_url: config.browser_probe_url.clone(),
+            yt_dlp_path: config
+                .yt_dlp_path
+                .as_ref()
+                .map(|path| path.display().to_string()),
+            you_get_path: config
+                .you_get_path
+                .as_ref()
+                .map(|path| path.display().to_string()),
+            lux_path: config
+                .lux_path
+                .as_ref()
+                .map(|path| path.display().to_string()),
+            streamlink_path: config
+                .streamlink_path
+                .as_ref()
+                .map(|path| path.display().to_string()),
+            external_probe_timeout_seconds: config.external_probe_timeout.as_secs(),
+        }
+    }
+}
+
+fn setting_u64(
+    values: &std::collections::HashMap<String, String>,
+    key: &str,
+    fallback: u64,
+) -> u64 {
+    values
+        .get(key)
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(fallback)
+}
+
+fn setting_usize(
+    values: &std::collections::HashMap<String, String>,
+    key: &str,
+    fallback: usize,
+) -> usize {
+    values
+        .get(key)
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(fallback)
 }
 
 fn candidate_attempt_order<'a>(

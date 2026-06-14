@@ -3,7 +3,7 @@ mod state;
 use std::sync::Arc;
 
 use axum::{
-    body::Body,
+    body::{Body, Bytes},
     extract::{ConnectInfo, Path, Query, State},
     http::{header, HeaderMap, HeaderValue, StatusCode},
     response::{Html, IntoResponse, Response},
@@ -16,6 +16,7 @@ use reflection_core::{
         ApiKeyView, AuthMode, ClearJobsResponse, CreateJobRequest, CreateUserKeyRequest,
         CreatedUserKeyResponse, DiscoveryMode, HiddenJobBatchView, JobCreateOptions, JobRecord,
         JobView, PlatformHint, RestoreJobsResponse, SelectCandidatesRequest,
+        UpdateRuntimeSettingsRequest,
     },
     AppConfig, RkError,
 };
@@ -80,6 +81,10 @@ fn build_router(state: Arc<AppState>) -> Router {
         )
         .route("/api/admin/user-keys/{id}/revoke", post(revoke_user_key))
         .route("/api/admin/admin-key/rotate", post(rotate_admin_key))
+        .route(
+            "/api/admin/settings",
+            get(get_admin_settings).patch(update_admin_settings),
+        )
         .route(
             "/api/admin/browser-profiles/{profile_id}/cookies/import",
             post(import_profile_cookies),
@@ -151,17 +156,18 @@ async fn dashboard_asset(Path(path): Path<String>) -> Result<Response, ApiError>
         .map_err(|error| RkError::Source(format!("failed to build response: {error}")))?)
 }
 
-async fn health(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
-    Json(serde_json::json!({
+async fn health(State(state): State<Arc<AppState>>) -> Result<Json<serde_json::Value>, ApiError> {
+    let settings = state.runtime_settings_view().await?;
+    Ok(Json(serde_json::json!({
         "ok": true,
         "service": "reflection-king",
         "version": env!("CARGO_PKG_VERSION"),
-        "public_base_url": state.config.public_base_url,
+        "public_base_url": settings.public_base_url,
         "storage_dir": state.paths.root().display().to_string(),
         "database_path": state.paths.database_path().display().to_string(),
         "ffmpeg_path": state.config.ffmpeg_path.display().to_string(),
-        "max_download_bytes": state.config.max_download_bytes,
-    }))
+        "max_download_bytes": settings.max_download_bytes,
+    })))
 }
 
 async fn capabilities(
@@ -169,6 +175,11 @@ async fn capabilities(
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let principal = authorize(&state, &headers).await?;
+    let settings = state.runtime_settings_view().await?;
+    let effective_max_download_bytes = principal
+        .max_download_bytes
+        .map(|limit| limit.min(settings.max_download_bytes))
+        .unwrap_or(settings.max_download_bytes);
     let allow_browser_probe = principal.allow_browser_probe && state.browser_probe_configured();
     let allow_ytdlp = principal.allow_ytdlp && state.yt_dlp_configured();
     let allow_external_adapters = principal.allow_external_adapters
@@ -186,13 +197,15 @@ async fn capabilities(
         "you_get_path": state.config.you_get_path.as_ref().map(|path| path.display().to_string()),
         "lux_path": state.config.lux_path.as_ref().map(|path| path.display().to_string()),
         "streamlink_path": state.config.streamlink_path.as_ref().map(|path| path.display().to_string()),
-        "public_base_url": state.config.public_base_url,
-        "max_download_bytes": state.config.max_download_bytes,
+        "public_base_url": settings.public_base_url,
+        "max_download_bytes": effective_max_download_bytes,
+        "system_max_download_bytes": settings.max_download_bytes,
         "max_concurrent_jobs": state.config.max_concurrent_jobs,
         "browser_probe_timeout_seconds": state.config.browser_probe_timeout.as_secs(),
-        "yt_dlp_timeout_seconds": state.config.yt_dlp_timeout.as_secs(),
-        "yt_dlp_max_json_bytes": state.config.yt_dlp_max_json_bytes,
-        "download_timeout_seconds": state.config.download_timeout.as_secs(),
+        "yt_dlp_timeout_seconds": settings.yt_dlp_timeout_seconds,
+        "yt_dlp_max_json_bytes": settings.yt_dlp_max_json_bytes,
+        "download_timeout_seconds": settings.download_timeout_seconds,
+        "job_ttl_hours": settings.job_ttl_hours,
         "supported_discovery": supported_discovery_modes(&principal),
         "supported_platform_hints": [
             "auto", "bilibili", "youtube", "soundcloud", "douyin", "kuaishou", "pornhub",
@@ -206,6 +219,7 @@ async fn capabilities(
             "allow_ytdlp": principal.allow_ytdlp,
             "allow_external_adapters": principal.allow_external_adapters,
             "allow_login_profile": principal.allow_login_profile,
+            "max_download_bytes": principal.max_download_bytes,
         },
     })))
 }
@@ -331,10 +345,11 @@ async fn create_job(
     let outputs = normalize_outputs(request.outputs);
     let profile_id = normalize_profile_id(request.profile_id);
     let auth_mode = request.auth_mode.unwrap_or(AuthMode::Auto);
+    let settings = state.runtime_settings_view().await?;
     let record = JobRecord::new_with_options(
         source_url.to_string(),
         bitrate,
-        state.config.public_base_url.as_str(),
+        settings.public_base_url.as_str(),
         JobCreateOptions {
             discovery,
             platform_hint,
@@ -456,10 +471,44 @@ async fn revoke_user_key(
 async fn rotate_admin_key(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    body: Bytes,
 ) -> Result<Json<reflection_core::models::RotatedAdminKeyResponse>, ApiError> {
     let principal = authorize(&state, &headers).await?;
     ensure_admin(&principal)?;
-    Ok(Json(state.rotate_admin_key().await?))
+    let request = if body.is_empty() {
+        None
+    } else {
+        Some(serde_json::from_slice::<RotateAdminKeyRequest>(&body).map_err(RkError::Json)?)
+    };
+    Ok(Json(
+        state
+            .rotate_admin_key(request.as_ref().and_then(|body| body.key.as_deref()))
+            .await?,
+    ))
+}
+
+async fn get_admin_settings(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<reflection_core::models::RuntimeSettingsView>, ApiError> {
+    let principal = authorize(&state, &headers).await?;
+    ensure_admin(&principal)?;
+    Ok(Json(state.runtime_settings_view().await?))
+}
+
+async fn update_admin_settings(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<UpdateRuntimeSettingsRequest>,
+) -> Result<Json<reflection_core::models::RuntimeSettingsView>, ApiError> {
+    let principal = authorize(&state, &headers).await?;
+    ensure_admin(&principal)?;
+    Ok(Json(state.update_runtime_settings(request).await?))
+}
+
+#[derive(Debug, Deserialize)]
+struct RotateAdminKeyRequest {
+    key: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -749,6 +798,7 @@ struct AuthPrincipal {
     key_id: Option<Uuid>,
     label: String,
     role: ApiKeyRole,
+    max_download_bytes: Option<u64>,
     allow_browser_probe: bool,
     allow_ytdlp: bool,
     allow_external_adapters: bool,
@@ -780,6 +830,7 @@ fn principal_from_record(record: ApiKeyRecord) -> AuthPrincipal {
         key_id: Some(record.id),
         label: record.label,
         role: record.role,
+        max_download_bytes: record.max_download_bytes,
         allow_browser_probe: record.role == ApiKeyRole::Admin || record.allow_browser_probe,
         allow_ytdlp: record.role == ApiKeyRole::Admin || record.allow_ytdlp,
         allow_external_adapters: record.role == ApiKeyRole::Admin || record.allow_external_adapters,

@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{collections::HashMap, path::Path};
 
 use sha2::{Digest, Sha256};
 use sqlx::{
@@ -14,6 +14,7 @@ use crate::{
         CandidateProtection, CandidateValidationState, ClearJobsResponse, CreateUserKeyRequest,
         CreatedUserKeyResponse, DiscoveryMode, HiddenJobBatchView, JobRecord, JobStatus,
         MediaCandidate, OutputKind, PlatformHint, RestoreJobsResponse, RotatedAdminKeyResponse,
+        UpdateRuntimeSettingsRequest,
     },
     observability::{
         BrowserSession, DomainPolicy, ErrorClass, JobTrace, MediaProbe, PipelineEvent,
@@ -600,6 +601,7 @@ impl JobStore {
                    key_hash,
                    key_prefix,
                    role,
+                   max_download_bytes,
                    allow_browser_probe,
                    allow_ytdlp,
                    allow_external_adapters,
@@ -611,6 +613,35 @@ impl JobStore {
             "#,
         )
         .bind(key_hash)
+        .fetch_optional(&self.pool)
+        .await?
+        else {
+            return Ok(None);
+        };
+
+        Ok(Some(row_to_api_key(row)?))
+    }
+
+    pub async fn get_api_key(&self, id: Uuid) -> Result<Option<ApiKeyRecord>> {
+        let Some(row) = sqlx::query(
+            r#"
+            SELECT id,
+                   label,
+                   key_hash,
+                   key_prefix,
+                   role,
+                   max_download_bytes,
+                   allow_browser_probe,
+                   allow_ytdlp,
+                   allow_external_adapters,
+                   allow_login_profile,
+                   created_at,
+                   revoked_at
+            FROM api_keys
+            WHERE id = ?
+            "#,
+        )
+        .bind(id.to_string())
         .fetch_optional(&self.pool)
         .await?
         else {
@@ -641,6 +672,7 @@ impl JobStore {
                    key_hash,
                    key_prefix,
                    role,
+                   max_download_bytes,
                    allow_browser_probe,
                    allow_ytdlp,
                    allow_external_adapters,
@@ -664,7 +696,15 @@ impl JobStore {
         &self,
         request: CreateUserKeyRequest,
     ) -> Result<CreatedUserKeyResponse> {
-        let key = generate_api_key("rk_user");
+        if let Some(value) = request.max_download_mb {
+            validate_range("max_download_mb", value, 1, 102_400)?;
+        }
+        let key = request
+            .key
+            .as_deref()
+            .map(normalize_custom_api_key)
+            .transpose()?
+            .unwrap_or_else(|| generate_api_key("rk_user"));
         let record = self
             .insert_api_key(ApiKeyRecord {
                 id: Uuid::new_v4(),
@@ -672,6 +712,7 @@ impl JobStore {
                 key_hash: hash_api_key(&key),
                 key_prefix: key.chars().take(16).collect(),
                 role: ApiKeyRole::User,
+                max_download_bytes: request.max_download_mb.map(mib_to_bytes),
                 allow_browser_probe: request.allow_browser_probe,
                 allow_ytdlp: request.allow_ytdlp,
                 allow_external_adapters: request.allow_external_adapters || request.allow_ytdlp,
@@ -699,6 +740,7 @@ impl JobStore {
             key_hash: hash_api_key(key),
             key_prefix: key.chars().take(16).collect(),
             role: ApiKeyRole::Admin,
+            max_download_bytes: None,
             allow_browser_probe: true,
             allow_ytdlp: true,
             allow_external_adapters: true,
@@ -710,8 +752,14 @@ impl JobStore {
         Ok(())
     }
 
-    pub async fn rotate_admin_key(&self) -> Result<RotatedAdminKeyResponse> {
-        let key = generate_api_key("rk_admin");
+    pub async fn rotate_admin_key(
+        &self,
+        custom_key: Option<&str>,
+    ) -> Result<RotatedAdminKeyResponse> {
+        let key = custom_key
+            .map(normalize_custom_api_key)
+            .transpose()?
+            .unwrap_or_else(|| generate_api_key("rk_admin"));
         let now = OffsetDateTime::now_utc();
         let record = ApiKeyRecord {
             id: Uuid::new_v4(),
@@ -719,6 +767,7 @@ impl JobStore {
             key_hash: hash_api_key(&key),
             key_prefix: key.chars().take(16).collect(),
             role: ApiKeyRole::Admin,
+            max_download_bytes: None,
             allow_browser_probe: true,
             allow_ytdlp: true,
             allow_external_adapters: true,
@@ -747,6 +796,7 @@ impl JobStore {
                 key_hash,
                 key_prefix,
                 role,
+                max_download_bytes,
                 allow_browser_probe,
                 allow_ytdlp,
                 allow_external_adapters,
@@ -754,7 +804,7 @@ impl JobStore {
                 created_at,
                 revoked_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(record.id.to_string())
@@ -762,6 +812,7 @@ impl JobStore {
         .bind(&record.key_hash)
         .bind(&record.key_prefix)
         .bind(record.role.as_str())
+        .bind(record.max_download_bytes.map(|value| value as i64))
         .bind(record.allow_browser_probe)
         .bind(record.allow_ytdlp)
         .bind(record.allow_external_adapters)
@@ -787,6 +838,7 @@ impl JobStore {
                 key_hash,
                 key_prefix,
                 role,
+                max_download_bytes,
                 allow_browser_probe,
                 allow_ytdlp,
                 allow_external_adapters,
@@ -794,7 +846,7 @@ impl JobStore {
                 created_at,
                 revoked_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(record.id.to_string())
@@ -802,6 +854,7 @@ impl JobStore {
         .bind(&record.key_hash)
         .bind(&record.key_prefix)
         .bind(record.role.as_str())
+        .bind(record.max_download_bytes.map(|value| value as i64))
         .bind(record.allow_browser_probe)
         .bind(record.allow_ytdlp)
         .bind(record.allow_external_adapters)
@@ -827,6 +880,55 @@ impl JobStore {
         .await?;
 
         Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn runtime_setting_values(&self) -> Result<HashMap<String, String>> {
+        let rows = sqlx::query(
+            r#"
+            SELECT key, value
+            FROM runtime_settings
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| (row.get::<String, _>("key"), row.get::<String, _>("value")))
+            .collect())
+    }
+
+    pub async fn update_runtime_settings(
+        &self,
+        request: UpdateRuntimeSettingsRequest,
+    ) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        if let Some(value) = request.public_base_url {
+            let value = normalize_public_base_url(&value)?;
+            upsert_runtime_setting(&mut tx, "public_base_url", &value).await?;
+        }
+        if let Some(value) = request.max_download_mb {
+            validate_range("max_download_mb", value, 1, 102_400)?;
+            upsert_runtime_setting(&mut tx, "max_download_mb", &value.to_string()).await?;
+        }
+        if let Some(value) = request.download_timeout_seconds {
+            validate_range("download_timeout_seconds", value, 5, 86_400)?;
+            upsert_runtime_setting(&mut tx, "download_timeout_seconds", &value.to_string()).await?;
+        }
+        if let Some(value) = request.yt_dlp_timeout_seconds {
+            validate_range("yt_dlp_timeout_seconds", value, 5, 86_400)?;
+            upsert_runtime_setting(&mut tx, "yt_dlp_timeout_seconds", &value.to_string()).await?;
+        }
+        if let Some(value) = request.yt_dlp_max_json_mb {
+            validate_range("yt_dlp_max_json_mb", value as u64, 1, 256)?;
+            upsert_runtime_setting(&mut tx, "yt_dlp_max_json_mb", &value.to_string()).await?;
+        }
+        if let Some(value) = request.job_ttl_hours {
+            validate_range("job_ttl_hours", value, 1, 8_760)?;
+            upsert_runtime_setting(&mut tx, "job_ttl_hours", &value.to_string()).await?;
+        }
+        tx.commit().await?;
+        Ok(())
     }
 
     pub async fn set_selected_candidates(&self, id: Uuid, candidate_ids: &[Uuid]) -> Result<()> {
@@ -1652,6 +1754,7 @@ impl JobStore {
                 key_hash TEXT NOT NULL UNIQUE,
                 key_prefix TEXT NOT NULL,
                 role TEXT NOT NULL,
+                max_download_bytes INTEGER,
                 allow_browser_probe INTEGER NOT NULL,
                 allow_ytdlp INTEGER NOT NULL,
                 allow_external_adapters INTEGER NOT NULL DEFAULT 1,
@@ -1664,6 +1767,8 @@ impl JobStore {
         .execute(&self.pool)
         .await?;
 
+        self.add_column_if_missing("api_keys", "max_download_bytes", "INTEGER")
+            .await?;
         self.add_column_if_missing(
             "api_keys",
             "allow_external_adapters",
@@ -1679,6 +1784,18 @@ impl JobStore {
 
         sqlx::query(
             "CREATE INDEX IF NOT EXISTS idx_api_keys_role_created_at ON api_keys(role, created_at)",
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS runtime_settings (
+                key TEXT PRIMARY KEY NOT NULL,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            "#,
         )
         .execute(&self.pool)
         .await?;
@@ -2135,6 +2252,9 @@ fn row_to_api_key(row: sqlx::sqlite::SqliteRow) -> Result<ApiKeyRecord> {
         key_hash: row.get("key_hash"),
         key_prefix: row.get("key_prefix"),
         role: ApiKeyRole::parse(&role).unwrap_or(ApiKeyRole::User),
+        max_download_bytes: row
+            .get::<Option<i64>, _>("max_download_bytes")
+            .map(|value| value.max(0) as u64),
         allow_browser_probe: row.get::<i64, _>("allow_browser_probe") != 0,
         allow_ytdlp: row.get::<i64, _>("allow_ytdlp") != 0,
         allow_external_adapters: row.get::<i64, _>("allow_external_adapters") != 0,
@@ -2448,6 +2568,76 @@ fn generate_api_key(prefix: &str) -> String {
     )
 }
 
+fn normalize_custom_api_key(value: &str) -> Result<String> {
+    let key = value.trim();
+    if key.len() < 16 {
+        return Err(RkError::BadRequest(
+            "api key must be at least 16 characters".to_string(),
+        ));
+    }
+    if key.len() > 256 {
+        return Err(RkError::BadRequest(
+            "api key must be 256 characters or shorter".to_string(),
+        ));
+    }
+    if key
+        .chars()
+        .any(|character| character.is_control() || character.is_whitespace())
+    {
+        return Err(RkError::BadRequest(
+            "api key cannot contain whitespace or control characters".to_string(),
+        ));
+    }
+    Ok(key.to_string())
+}
+
+fn mib_to_bytes(value: u64) -> u64 {
+    value.saturating_mul(1024).saturating_mul(1024)
+}
+
+fn normalize_public_base_url(value: &str) -> Result<String> {
+    let trimmed = value.trim().trim_end_matches('/');
+    let url = url::Url::parse(trimmed)
+        .map_err(|error| RkError::BadRequest(format!("invalid public base URL: {error}")))?;
+    match url.scheme() {
+        "http" | "https" => Ok(trimmed.to_string()),
+        _ => Err(RkError::BadRequest(
+            "public base URL must use http or https".to_string(),
+        )),
+    }
+}
+
+fn validate_range(name: &str, value: u64, min: u64, max: u64) -> Result<()> {
+    if value < min || value > max {
+        return Err(RkError::BadRequest(format!(
+            "{name} must be between {min} and {max}"
+        )));
+    }
+    Ok(())
+}
+
+async fn upsert_runtime_setting(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    key: &str,
+    value: &str,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO runtime_settings (key, value, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET
+            value = excluded.value,
+            updated_at = excluded.updated_at
+        "#,
+    )
+    .bind(key)
+    .bind(value)
+    .bind(format_time(OffsetDateTime::now_utc())?)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
 fn normalize_api_key_label(value: Option<&str>) -> String {
     let label = value.unwrap_or("用户密钥").trim();
     if label.is_empty() {
@@ -2598,6 +2788,8 @@ mod tests {
         let created = store
             .create_user_key(CreateUserKeyRequest {
                 label: Some("tester".to_string()),
+                key: None,
+                max_download_mb: None,
                 allow_browser_probe: true,
                 allow_ytdlp: false,
                 allow_external_adapters: true,
@@ -2620,6 +2812,95 @@ mod tests {
 
         assert!(store.revoke_api_key(created.record.id).await.unwrap());
         assert!(store.find_api_key(&created.key).await.unwrap().is_none());
+
+        drop(store);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[tokio::test]
+    async fn api_keys_can_use_custom_secrets_and_limits() {
+        let path = temp_db_path();
+        let store = JobStore::connect(&path).await.unwrap();
+
+        let custom_user_key = "user-custom-secret-12345";
+        let created = store
+            .create_user_key(CreateUserKeyRequest {
+                label: Some("limited".to_string()),
+                key: Some(custom_user_key.to_string()),
+                max_download_mb: Some(512),
+                allow_browser_probe: false,
+                allow_ytdlp: true,
+                allow_external_adapters: false,
+                allow_login_profile: false,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(created.key, custom_user_key);
+        assert_eq!(created.record.max_download_bytes, Some(512 * 1024 * 1024));
+        let found = store.find_api_key(custom_user_key).await.unwrap().unwrap();
+        assert_eq!(found.max_download_bytes, Some(512 * 1024 * 1024));
+        assert!(found.allow_external_adapters);
+
+        let custom_admin_key = "admin-custom-secret-12345";
+        let rotated = store
+            .rotate_admin_key(Some(custom_admin_key))
+            .await
+            .unwrap();
+        assert_eq!(rotated.key, custom_admin_key);
+        assert_eq!(
+            store
+                .find_api_key(custom_admin_key)
+                .await
+                .unwrap()
+                .unwrap()
+                .role,
+            ApiKeyRole::Admin
+        );
+
+        drop(store);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[tokio::test]
+    async fn runtime_settings_are_persisted() {
+        let path = temp_db_path();
+        let store = JobStore::connect(&path).await.unwrap();
+
+        store
+            .update_runtime_settings(UpdateRuntimeSettingsRequest {
+                public_base_url: Some("https://rk.example.test/".to_string()),
+                max_download_mb: Some(2048),
+                download_timeout_seconds: Some(900),
+                yt_dlp_timeout_seconds: Some(120),
+                yt_dlp_max_json_mb: Some(16),
+                job_ttl_hours: Some(72),
+            })
+            .await
+            .unwrap();
+
+        let values = store.runtime_setting_values().await.unwrap();
+        assert_eq!(
+            values.get("public_base_url").map(String::as_str),
+            Some("https://rk.example.test")
+        );
+        assert_eq!(
+            values.get("max_download_mb").map(String::as_str),
+            Some("2048")
+        );
+        assert_eq!(
+            values.get("download_timeout_seconds").map(String::as_str),
+            Some("900")
+        );
+        assert_eq!(
+            values.get("yt_dlp_timeout_seconds").map(String::as_str),
+            Some("120")
+        );
+        assert_eq!(
+            values.get("yt_dlp_max_json_mb").map(String::as_str),
+            Some("16")
+        );
+        assert_eq!(values.get("job_ttl_hours").map(String::as_str), Some("72"));
 
         drop(store);
         std::fs::remove_file(&path).ok();
@@ -2706,7 +2987,7 @@ mod tests {
         let seeded = store.find_api_key("seed-admin-key").await.unwrap().unwrap();
         assert_eq!(seeded.role, ApiKeyRole::Admin);
 
-        let rotated = store.rotate_admin_key().await.unwrap();
+        let rotated = store.rotate_admin_key(None).await.unwrap();
         assert!(rotated.key.starts_with("rk_admin_"));
         assert_eq!(rotated.record.role, ApiKeyRole::Admin);
         assert!(store

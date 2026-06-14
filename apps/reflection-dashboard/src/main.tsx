@@ -8,10 +8,8 @@ import {
   CheckCircle2,
   Clipboard,
   Database,
-  Eye,
   ExternalLink,
   FileAudio,
-  History,
   HelpCircle,
   KeyRound,
   ListRestart,
@@ -45,7 +43,7 @@ type PlatformHint =
   | "generic";
 type OutputKind = "audio" | "video" | "image" | "page_html";
 type OutputMode = "auto" | "video" | "audio" | "image" | "page_html";
-type ViewMode = "console" | "history" | "admin" | "help";
+type ViewMode = "console" | "admin" | "help";
 type LoginClickMode = "left" | "right" | "double";
 
 interface Health {
@@ -78,6 +76,7 @@ interface Capabilities {
   yt_dlp_timeout_seconds: number;
   yt_dlp_max_json_bytes: number;
   download_timeout_seconds: number;
+  job_ttl_hours?: number;
   supported_discovery: DiscoveryMode[];
   supported_platform_hints: PlatformHint[];
   supported_outputs: OutputKind[];
@@ -88,7 +87,35 @@ interface Capabilities {
     allow_ytdlp: boolean;
     allow_external_adapters?: boolean;
     allow_login_profile?: boolean;
+    max_download_bytes?: number | null;
   };
+}
+
+interface RuntimeSettingsView {
+  public_base_url: string;
+  max_download_bytes: number;
+  max_concurrent_jobs: number;
+  download_timeout_seconds: number;
+  browser_probe_timeout_seconds: number;
+  yt_dlp_timeout_seconds: number;
+  yt_dlp_max_json_bytes: number;
+  job_ttl_hours: number;
+  ffmpeg_path: string;
+  browser_probe_url: string | null;
+  yt_dlp_path: string | null;
+  you_get_path: string | null;
+  lux_path: string | null;
+  streamlink_path: string | null;
+  external_probe_timeout_seconds: number;
+}
+
+interface RuntimeSettingsForm {
+  public_base_url: string;
+  max_download_mb: string;
+  download_timeout_seconds: string;
+  yt_dlp_timeout_seconds: string;
+  yt_dlp_max_json_mb: string;
+  job_ttl_hours: string;
 }
 
 interface JobView {
@@ -179,6 +206,7 @@ interface UserKeyView {
   label: string;
   key_prefix: string;
   role: "admin" | "user";
+  max_download_bytes: number | null;
   allow_browser_probe: boolean;
   allow_ytdlp: boolean;
   allow_external_adapters?: boolean;
@@ -266,6 +294,15 @@ const LOGIN_TARGETS = [
   { id: "acfun", label: "AcFun", url: "https://www.acfun.cn/" },
 ];
 
+const EMPTY_RUNTIME_FORM: RuntimeSettingsForm = {
+  public_base_url: "",
+  max_download_mb: "",
+  download_timeout_seconds: "",
+  yt_dlp_timeout_seconds: "",
+  yt_dlp_max_json_mb: "",
+  job_ttl_hours: "",
+};
+
 function App() {
   const [apiKey, setApiKey] = useState(() => localStorage.getItem("reflection_api_key") ?? "");
   const [health, setHealth] = useState<Health | null>(null);
@@ -290,8 +327,13 @@ function App() {
   const [userKeys, setUserKeys] = useState<UserKeyView[]>([]);
   const [newUserKey, setNewUserKey] = useState("");
   const [newAdminKey, setNewAdminKey] = useState("");
+  const [adminKeyForm, setAdminKeyForm] = useState("");
+  const [runtimeSettings, setRuntimeSettings] = useState<RuntimeSettingsView | null>(null);
+  const [settingsForm, setSettingsForm] = useState<RuntimeSettingsForm>(EMPTY_RUNTIME_FORM);
   const [keyForm, setKeyForm] = useState({
     label: "普通用户",
+    key: "",
+    max_download_mb: "",
     allow_browser_probe: true,
     allow_ytdlp: true,
     allow_external_adapters: true,
@@ -337,7 +379,13 @@ function App() {
   }, [isAdmin, viewMode]);
 
   useEffect(() => {
-    if (viewMode === "history" && apiKey) {
+    if (viewMode === "admin" && isAdmin) {
+      void refreshAdminPanel();
+    }
+  }, [viewMode, isAdmin, headers]);
+
+  useEffect(() => {
+    if (viewMode === "admin" && apiKey) {
       void refreshHiddenBatches();
     }
   }, [viewMode, headers]);
@@ -490,6 +538,53 @@ function App() {
       setHiddenBatches(data);
     } catch (error) {
       notify(errorMessage(error), "error");
+    }
+  }
+
+  async function refreshRuntimeSettings() {
+    try {
+      const data = await request<RuntimeSettingsView>("/api/admin/settings");
+      setRuntimeSettings(data);
+      setSettingsForm(runtimeSettingsToForm(data));
+    } catch (error) {
+      notify(errorMessage(error), "error");
+    }
+  }
+
+  async function refreshAdminPanel() {
+    if (!isAdmin) return;
+    await Promise.all([
+      refreshRuntimeSettings(),
+      refreshUserKeys(),
+      refreshHiddenBatches(),
+    ]);
+  }
+
+  async function saveRuntimeSettings(event: React.FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      const payload = {
+        public_base_url: settingsForm.public_base_url.trim(),
+        max_download_mb: parsePositiveInt(settingsForm.max_download_mb, "视频最大下载大小"),
+        download_timeout_seconds: parsePositiveInt(settingsForm.download_timeout_seconds, "下载超时"),
+        yt_dlp_timeout_seconds: parsePositiveInt(settingsForm.yt_dlp_timeout_seconds, "yt-dlp 超时"),
+        yt_dlp_max_json_mb: parsePositiveInt(settingsForm.yt_dlp_max_json_mb, "yt-dlp JSON 上限"),
+        job_ttl_hours: parsePositiveInt(settingsForm.job_ttl_hours, "任务保留小时"),
+      };
+      const data = await request<RuntimeSettingsView>("/api/admin/settings", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      setRuntimeSettings(data);
+      setSettingsForm(runtimeSettingsToForm(data));
+      await refreshSystem();
+      notify("高级运行设置已保存", "success");
+    } catch (error) {
+      notify(errorMessage(error), "error");
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -662,12 +757,22 @@ function App() {
     setBusy(true);
     setNewUserKey("");
     try {
+      const payload = {
+        label: keyForm.label.trim() || undefined,
+        key: keyForm.key.trim() || undefined,
+        max_download_mb: parseOptionalPositiveInt(keyForm.max_download_mb, "用户最大下载大小"),
+        allow_browser_probe: keyForm.allow_browser_probe,
+        allow_ytdlp: keyForm.allow_ytdlp,
+        allow_external_adapters: keyForm.allow_external_adapters,
+        allow_login_profile: keyForm.allow_login_profile,
+      };
       const response = await request<CreatedUserKeyResponse>("/api/admin/user-keys", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(keyForm),
+        body: JSON.stringify(payload),
       });
       setNewUserKey(response.key);
+      setKeyForm({ ...keyForm, key: "", max_download_mb: "" });
       await refreshUserKeys();
       notify("已创建用户密钥，明文只显示这一次。", "success");
     } catch (error) {
@@ -691,9 +796,12 @@ function App() {
   }
 
   async function rotateAdminKey() {
+    const customKey = adminKeyForm.trim();
     askConfirm({
       title: "轮换管理员密钥",
-      message: "旧管理员密钥会立即失效。新管理员密钥只显示一次，并会自动填入当前页面。",
+      message: customKey
+        ? "旧管理员密钥会立即失效。将使用你输入的自定义新密钥，并自动填入当前页面。"
+        : "旧管理员密钥会立即失效。新管理员密钥只显示一次，并会自动填入当前页面。",
       confirmLabel: "轮换密钥",
       danger: true,
       onConfirm: async () => {
@@ -702,8 +810,11 @@ function App() {
         try {
           const response = await request<RotatedAdminKeyResponse>("/api/admin/admin-key/rotate", {
             method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(customKey ? { key: customKey } : {}),
           });
           setNewAdminKey(response.key);
+          setAdminKeyForm("");
           setApiKey(response.key);
           await refreshUserKeys();
           notify("已轮换管理员密钥，明文只显示这一次。", "success");
@@ -1044,9 +1155,6 @@ function App() {
           icon={<Activity size={16} />}
           action={
             <div className="panel-actions">
-              <Button variant="secondary" onClick={restoreHiddenJobs} disabled={busy}>
-                <Eye size={16} /> 恢复
-              </Button>
               <Button variant="secondary" onClick={clearVisibleJobs} disabled={busy || !jobs.length}>
                 <X size={16} /> 清空
               </Button>
@@ -1241,42 +1349,185 @@ function App() {
   const adminView = (
     <div className="view-stack">
       <Card
-        title="管理员密钥"
-        icon={<Shield size={16} />}
+        title="运行设置"
+        icon={<Settings size={16} />}
         action={
-          <Button variant="secondary" onClick={rotateAdminKey} disabled={busy || !isAdmin}>
-            <RefreshCw size={16} /> 轮换管理员密钥
-          </Button>
+          <div className="panel-actions">
+            <Button variant="secondary" onClick={refreshAdminPanel} disabled={busy || !isAdmin}>
+              <RefreshCw size={16} /> 刷新
+            </Button>
+            <Button form="runtime-settings-form" type="submit" disabled={busy || !isAdmin}>
+              保存设置
+            </Button>
+          </div>
         }
       >
-        <div className="admin-key-panel">
-          <div>
-            <strong>当前管理权限</strong>
-            <span>{capabilities?.auth ? `${roleLabel(capabilities.auth.role)} / ${capabilities.auth.label}` : "未确认"}</span>
+        <form id="runtime-settings-form" className="admin-form" onSubmit={saveRuntimeSettings}>
+          <div className="settings-grid">
+            <Field label="公网 Base URL">
+              <Input
+                value={settingsForm.public_base_url}
+                placeholder={window.location.origin}
+                onChange={(event) => setSettingsForm({ ...settingsForm, public_base_url: event.target.value })}
+              />
+            </Field>
+            <Field label="视频最大下载大小 MB">
+              <Input
+                inputMode="numeric"
+                value={settingsForm.max_download_mb}
+                onChange={(event) => setSettingsForm({ ...settingsForm, max_download_mb: event.target.value })}
+              />
+            </Field>
+            <Field label="下载/转码超时 秒">
+              <Input
+                inputMode="numeric"
+                value={settingsForm.download_timeout_seconds}
+                onChange={(event) => setSettingsForm({ ...settingsForm, download_timeout_seconds: event.target.value })}
+              />
+            </Field>
+            <Field label="yt-dlp 超时 秒">
+              <Input
+                inputMode="numeric"
+                value={settingsForm.yt_dlp_timeout_seconds}
+                onChange={(event) => setSettingsForm({ ...settingsForm, yt_dlp_timeout_seconds: event.target.value })}
+              />
+            </Field>
+            <Field label="yt-dlp JSON 上限 MB">
+              <Input
+                inputMode="numeric"
+                value={settingsForm.yt_dlp_max_json_mb}
+                onChange={(event) => setSettingsForm({ ...settingsForm, yt_dlp_max_json_mb: event.target.value })}
+              />
+            </Field>
+            <Field label="任务保留小时">
+              <Input
+                inputMode="numeric"
+                value={settingsForm.job_ttl_hours}
+                onChange={(event) => setSettingsForm({ ...settingsForm, job_ttl_hours: event.target.value })}
+              />
+            </Field>
           </div>
-          <p>轮换后旧管理员密钥立即失效。新密钥只在这里显示一次，并会自动填入顶部密钥输入框。</p>
-          {newAdminKey && (
-            <div className="key-result">
-              <strong>新管理员密钥，只显示一次</strong>
-              <code>{newAdminKey}</code>
-              <Button className="h-8" variant="secondary" onClick={() => copy(newAdminKey)}>
-                <Clipboard size={14} /> 复制
-              </Button>
-            </div>
-          )}
-        </div>
+          <div className="settings-readonly-grid">
+            <MetaLine label="当前全局大小" value={formatBytes(runtimeSettings?.max_download_bytes ?? health?.max_download_bytes)} />
+            <MetaLine label="当前密钥大小" value={formatBytes(capabilities?.max_download_bytes)} />
+            <MetaLine label="并发任务" value={runtimeSettings?.max_concurrent_jobs ?? capabilities?.max_concurrent_jobs ?? "-"} />
+            <MetaLine label="浏览器超时" value={`${runtimeSettings?.browser_probe_timeout_seconds ?? capabilities?.browser_probe_timeout_seconds ?? "-"} 秒`} />
+            <MetaLine label="外部解析超时" value={`${runtimeSettings?.external_probe_timeout_seconds ?? "-"} 秒`} />
+            <MetaLine label="FFmpeg" value={runtimeSettings?.ffmpeg_path ?? capabilities?.ffmpeg_path ?? "-"} />
+            <MetaLine label="Browser Probe" value={runtimeSettings?.browser_probe_url ?? "-"} />
+            <MetaLine label="yt-dlp" value={runtimeSettings?.yt_dlp_path ?? capabilities?.yt_dlp_path ?? "-"} />
+            <MetaLine label="you-get" value={runtimeSettings?.you_get_path ?? capabilities?.you_get_path ?? "-"} />
+            <MetaLine label="lux" value={runtimeSettings?.lux_path ?? capabilities?.lux_path ?? "-"} />
+            <MetaLine label="Streamlink" value={runtimeSettings?.streamlink_path ?? capabilities?.streamlink_path ?? "-"} />
+            <MetaLine label="外部工具" value={capabilities?.external_tools?.length ? capabilities.external_tools.join(", ") : "-"} />
+          </div>
+        </form>
       </Card>
 
       <section className="admin-grid">
+        <Card
+          title="任务恢复"
+          icon={<ListRestart size={16} />}
+          action={
+            <div className="panel-actions">
+              <Button variant="secondary" onClick={restoreHiddenJobs} disabled={busy || !apiKey}>
+                恢复上一批
+              </Button>
+              <Button variant="secondary" onClick={refreshHiddenBatches} disabled={!apiKey}>
+                <RefreshCw size={16} /> 刷新
+              </Button>
+            </div>
+          }
+        >
+          <div className="history-list">
+            {hiddenBatches.map((batch) => (
+              <div key={batch.id} className={`history-row ${batch.restored_at ? "restored" : ""}`}>
+                <div>
+                  <strong>{batch.actor_label ?? "未知密钥"}</strong>
+                  <span>{batch.id}</span>
+                </div>
+                <div className="history-stats">
+                  <em>隐藏 {batch.hidden_count}</em>
+                  <em>已恢复 {batch.restored_count}</em>
+                  <em>{formatShortDate(batch.created_at)}</em>
+                  {batch.restored_at && <em>恢复于 {formatShortDate(batch.restored_at)}</em>}
+                </div>
+                <Button
+                  className="h-8"
+                  variant="secondary"
+                  disabled={busy || Boolean(batch.restored_at)}
+                  onClick={() => restoreHiddenBatch(batch.id)}
+                >
+                  恢复此批
+                </Button>
+              </div>
+            ))}
+            {!hiddenBatches.length && <Empty label={apiKey ? "暂无隐藏批次" : "需要先填写密钥"} />}
+          </div>
+        </Card>
+
+        <Card
+          title="管理员密钥"
+          icon={<Shield size={16} />}
+          action={
+            <Button variant="secondary" onClick={rotateAdminKey} disabled={busy || !isAdmin}>
+              <RefreshCw size={16} /> 轮换
+            </Button>
+          }
+        >
+          <div className="admin-key-panel">
+            <div>
+              <strong>当前管理权限</strong>
+              <span>{capabilities?.auth ? `${roleLabel(capabilities.auth.role)} / ${capabilities.auth.label}` : "未确认"}</span>
+            </div>
+            <Field label="自定义新管理员密钥">
+              <Input
+                type="password"
+                value={adminKeyForm}
+                placeholder="留空则自动生成"
+                onChange={(event) => setAdminKeyForm(event.target.value)}
+              />
+            </Field>
+            <p>轮换后旧管理员密钥立即失效。自定义密钥长度 16-256，不能包含空白或控制字符。</p>
+            {newAdminKey && (
+              <div className="key-result">
+                <strong>新管理员密钥，只显示一次</strong>
+                <code>{newAdminKey}</code>
+                <Button className="h-8" variant="secondary" onClick={() => copy(newAdminKey)}>
+                  <Clipboard size={14} /> 复制
+                </Button>
+              </div>
+            )}
+          </div>
+        </Card>
+
         <Card
           title="用户密钥"
           icon={<KeyRound size={16} />}
           action={<Button variant="secondary" onClick={refreshUserKeys}><RefreshCw size={16} /> 刷新</Button>}
         >
           <form className="admin-form" onSubmit={createUserKey}>
-            <Field label="名称">
-              <Input value={keyForm.label} onChange={(event) => setKeyForm({ ...keyForm, label: event.target.value })} />
-            </Field>
+            <div className="settings-grid">
+              <Field label="名称">
+                <Input value={keyForm.label} onChange={(event) => setKeyForm({ ...keyForm, label: event.target.value })} />
+              </Field>
+              <Field label="自定义用户密钥">
+                <Input
+                  type="password"
+                  value={keyForm.key}
+                  placeholder="留空则自动生成"
+                  onChange={(event) => setKeyForm({ ...keyForm, key: event.target.value })}
+                />
+              </Field>
+              <Field label="下载上限 MB">
+                <Input
+                  inputMode="numeric"
+                  value={keyForm.max_download_mb}
+                  placeholder="留空跟随全局"
+                  onChange={(event) => setKeyForm({ ...keyForm, max_download_mb: event.target.value })}
+                />
+              </Field>
+            </div>
             <div className="permission-grid">
               <Toggle
                 checked={keyForm.allow_browser_probe}
@@ -1318,6 +1569,7 @@ function App() {
                   <span>{key.key_prefix}... / {roleLabel(key.role)}</span>
                 </div>
                 <div className="key-flags">
+                  <em>大小：{key.max_download_bytes ? formatBytes(key.max_download_bytes) : "跟随全局"}</em>
                   <em>浏览器：{key.allow_browser_probe ? "允许" : "禁止"}</em>
                   <em>yt-dlp：{key.allow_ytdlp ? "允许" : "禁止"}</em>
                   <em>外部：{key.allow_external_adapters ? "允许" : "禁止"}</em>
@@ -1481,56 +1733,6 @@ function App() {
     </div>
   );
 
-  const historyView = (
-    <div className="view-stack">
-      {!apiKey && (
-        <div className="notice-strip warn">
-          填写管理密钥或用户密钥后可以查看当前密钥可见的隐藏批次。
-        </div>
-      )}
-      <Card
-        title="隐藏历史"
-        icon={<History size={16} />}
-        action={
-          <div className="panel-actions">
-            <Button variant="secondary" onClick={restoreHiddenJobs} disabled={busy}>
-              <Eye size={16} /> 恢复上一批
-            </Button>
-            <Button variant="secondary" onClick={refreshHiddenBatches} disabled={!apiKey}>
-              <RefreshCw size={16} /> 刷新
-            </Button>
-          </div>
-        }
-      >
-        <div className="history-list">
-          {hiddenBatches.map((batch) => (
-            <div key={batch.id} className={`history-row ${batch.restored_at ? "restored" : ""}`}>
-              <div>
-                <strong>{batch.actor_label ?? "未知密钥"}</strong>
-                <span>{batch.id}</span>
-              </div>
-              <div className="history-stats">
-                <em>隐藏 {batch.hidden_count}</em>
-                <em>已恢复 {batch.restored_count}</em>
-                <em>{formatShortDate(batch.created_at)}</em>
-                {batch.restored_at && <em>恢复于 {formatShortDate(batch.restored_at)}</em>}
-              </div>
-              <Button
-                className="h-8"
-                variant="secondary"
-                disabled={busy || Boolean(batch.restored_at)}
-                onClick={() => restoreHiddenBatch(batch.id)}
-              >
-                恢复此批
-              </Button>
-            </div>
-          ))}
-          {!hiddenBatches.length && <Empty label={apiKey ? "暂无隐藏批次" : "需要先填写密钥"} />}
-        </div>
-      </Card>
-    </div>
-  );
-
   const helpView = (
     <div className="view-stack">
       <section className="help-grid">
@@ -1561,8 +1763,7 @@ function App() {
 
   const navItems: Array<{ mode: ViewMode; icon: React.ReactNode }> = [
     { mode: "console", icon: <Activity size={16} /> },
-    { mode: "history", icon: <History size={16} /> },
-    ...(isAdmin ? [{ mode: "admin" as ViewMode, icon: <Shield size={16} /> }] : []),
+    ...(isAdmin ? [{ mode: "admin" as ViewMode, icon: <Settings size={16} /> }] : []),
     { mode: "help", icon: <HelpCircle size={16} /> },
   ];
 
@@ -1585,8 +1786,7 @@ function App() {
               type="button"
               onClick={() => {
                 setViewMode(item.mode);
-                if (item.mode === "admin" && isAdmin) void refreshUserKeys();
-                if (item.mode === "history" && apiKey) void refreshHiddenBatches();
+                if (item.mode === "admin" && isAdmin) void refreshAdminPanel();
               }}
             >
               {item.icon}
@@ -1623,7 +1823,7 @@ function App() {
           </div>
           <div className="identity-box">
             <Database size={16} />
-            <span>{formatBytes(health?.max_download_bytes)}</span>
+            <span>{formatBytes(capabilities?.max_download_bytes ?? health?.max_download_bytes)}</span>
           </div>
         </div>
       </aside>
@@ -1650,7 +1850,6 @@ function App() {
 
         <div className="workspace-body">
           {viewMode === "console" && consoleView}
-          {viewMode === "history" && historyView}
           {viewMode === "admin" && isAdmin && adminView}
           {viewMode === "help" && helpView}
         </div>
@@ -2072,6 +2271,35 @@ function formatBytes(value: number | null | undefined): string {
   return `${size.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
 }
 
+function runtimeSettingsToForm(settings: RuntimeSettingsView): RuntimeSettingsForm {
+  return {
+    public_base_url: settings.public_base_url,
+    max_download_mb: String(bytesToMib(settings.max_download_bytes)),
+    download_timeout_seconds: String(settings.download_timeout_seconds),
+    yt_dlp_timeout_seconds: String(settings.yt_dlp_timeout_seconds),
+    yt_dlp_max_json_mb: String(bytesToMib(settings.yt_dlp_max_json_bytes)),
+    job_ttl_hours: String(settings.job_ttl_hours),
+  };
+}
+
+function bytesToMib(value: number): number {
+  return Math.max(1, Math.round(value / 1024 / 1024));
+}
+
+function parsePositiveInt(value: string, label: string): number {
+  const trimmed = value.trim();
+  const parsed = Number(trimmed);
+  if (!trimmed || !Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`${label} 必须是正整数`);
+  }
+  return parsed;
+}
+
+function parseOptionalPositiveInt(value: string, label: string): number | undefined {
+  if (!value.trim()) return undefined;
+  return parsePositiveInt(value, label);
+}
+
 function paginate<T>(items: T[], page: number, pageSize: number): { items: T[]; page: number; start: number } {
   const safePage = clampPage(page, items.length, pageSize);
   const start = (safePage - 1) * pageSize;
@@ -2096,8 +2324,7 @@ function capabilityStatus(value: boolean | undefined, apiKey: string): string {
 function viewModeLabel(value: ViewMode): string {
   return ({
     console: "控制台",
-    history: "隐藏历史",
-    admin: "管理",
+    admin: "高级设置",
     help: "帮助",
   } as Record<ViewMode, string>)[value];
 }

@@ -62,6 +62,7 @@ pub struct ApiKeyRecord {
     pub key_hash: String,
     pub key_prefix: String,
     pub role: ApiKeyRole,
+    pub max_download_bytes: Option<u64>,
     pub allow_browser_probe: bool,
     pub allow_ytdlp: bool,
     pub allow_external_adapters: bool,
@@ -76,6 +77,7 @@ pub struct ApiKeyView {
     pub label: String,
     pub key_prefix: String,
     pub role: ApiKeyRole,
+    pub max_download_bytes: Option<u64>,
     pub allow_browser_probe: bool,
     pub allow_ytdlp: bool,
     pub allow_external_adapters: bool,
@@ -89,6 +91,8 @@ pub struct ApiKeyView {
 #[derive(Debug, Clone, Deserialize)]
 pub struct CreateUserKeyRequest {
     pub label: Option<String>,
+    pub key: Option<String>,
+    pub max_download_mb: Option<u64>,
     pub allow_browser_probe: bool,
     pub allow_ytdlp: bool,
     #[serde(default)]
@@ -107,6 +111,35 @@ pub struct CreatedUserKeyResponse {
 pub struct RotatedAdminKeyResponse {
     pub key: String,
     pub record: ApiKeyView,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RuntimeSettingsView {
+    pub public_base_url: String,
+    pub max_download_bytes: u64,
+    pub max_concurrent_jobs: usize,
+    pub download_timeout_seconds: u64,
+    pub browser_probe_timeout_seconds: u64,
+    pub yt_dlp_timeout_seconds: u64,
+    pub yt_dlp_max_json_bytes: usize,
+    pub job_ttl_hours: u64,
+    pub ffmpeg_path: String,
+    pub browser_probe_url: Option<String>,
+    pub yt_dlp_path: Option<String>,
+    pub you_get_path: Option<String>,
+    pub lux_path: Option<String>,
+    pub streamlink_path: Option<String>,
+    pub external_probe_timeout_seconds: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpdateRuntimeSettingsRequest {
+    pub public_base_url: Option<String>,
+    pub max_download_mb: Option<u64>,
+    pub download_timeout_seconds: Option<u64>,
+    pub yt_dlp_timeout_seconds: Option<u64>,
+    pub yt_dlp_max_json_mb: Option<usize>,
+    pub job_ttl_hours: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -143,6 +176,7 @@ impl From<ApiKeyRecord> for ApiKeyView {
             label: value.label,
             key_prefix: value.key_prefix,
             role: value.role,
+            max_download_bytes: value.max_download_bytes,
             allow_browser_probe: value.allow_browser_probe,
             allow_ytdlp: value.allow_ytdlp,
             allow_external_adapters: value.allow_external_adapters,

@@ -1151,6 +1151,29 @@
     gap: 12px;
   }
 
+  .settings-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .settings-readonly-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    border: 1px solid #242a34;
+    border-radius: 8px;
+    overflow: hidden;
+  }
+
+  .settings-readonly-grid .meta-line {
+    border-right: 1px solid #242a34;
+    border-bottom: 1px solid #242a34;
+  }
+
+  .settings-readonly-grid .meta-line:nth-child(3n) {
+    border-right: 0;
+  }
+
   .admin-key-panel {
     display: grid;
     gap: 10px;
@@ -1636,10 +1659,16 @@
     .remote-login-head,
     .remote-login-controls,
     .remote-browser-meta,
+    .settings-grid,
+    .settings-readonly-grid,
     .permission-grid,
     .meta-list,
     .key-row {
       grid-template-columns: 1fr;
+    }
+
+    .settings-readonly-grid .meta-line {
+      border-right: 0;
     }
 
     .topbar {
