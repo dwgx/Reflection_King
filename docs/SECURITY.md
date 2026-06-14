@@ -2,7 +2,8 @@
 
 媒体抓取后端风险很高：它会访问用户提供的 URL，解析第三方页面，并运行 ffmpeg、Chromium、
 yt-dlp 等重型组件。Reflection King 的默认目标是“安全地处理用户有权访问的公开或授权内容”，
-不是绕过 DRM、付费墙、验证码、年龄门槛、区域限制或平台访问控制。
+并把生成后的媒体产物作为 `/media/...` raw URL 提供给 VRChat 或其他播放器。
+项目不做 DRM、付费墙、验证码、年龄门槛、区域限制或平台访问控制绕过。
 
 ## 已实现的基础防线
 
@@ -15,7 +16,7 @@ yt-dlp 等重型组件。Reflection King 的默认目标是“安全地处理用
 - `POST /api/jobs`、候选选择和管理接口可以通过 `RK_API_KEY` 强制鉴权。
 - 用户密钥可以限制是否允许浏览器探测、yt-dlp、外部适配器和 Profile 登录。
 - 浏览器 Profile 登录通过已鉴权 API 控制。前端只接收截图并发送点击/键盘事件，Cookie 值留在服务器 Profile。
-- 媒体产物通过 `/media/...` raw URL 提供，不带 Cookie 和 API key，便于播放器读取。
+- 媒体产物通过 `/media/...` raw URL 提供，不带 Cookie 和 API key，便于播放器读取；这是允许且预期的交付边界。
 
 ## 公网部署前必须做
 
@@ -26,6 +27,7 @@ yt-dlp 等重型组件。Reflection King 的默认目标是“安全地处理用
 - 增加按 IP、用户密钥或租户的速率限制。
 - 只记录任务 ID、平台和错误分类，不记录完整 Cookie、密钥或私密 URL。
 - 保持 Playwright sidecar、CDP、VNC、调试端口只监听 localhost 或内网。
+- `/media/...` raw URL 知道地址即可访问，应配合保留时间、访问日志、限速和清理策略使用。
 - 定期清理旧任务、失败临时文件和过期 Profile。
 
 ## Cookie 和授权
@@ -44,6 +46,7 @@ SSRF 校验不能只在原始 URL 上做一次。以下位置都必须重复校�
 - HTTP 重定向目标。
 - 外部适配器返回的媒体 URL。
 - 浏览器探测得到的 manifest、分片和直接文件 URL。
+- HLS/DASH manifest 内部引用的子 URL、初始化片段、密钥 URI 和媒体分片。
 - 未来对象存储、代理下载或录制入口。
 
 如果 URL 解析、DNS、重定向或内容类型不确定，默认拒绝并把原因写入任务错误摘要。

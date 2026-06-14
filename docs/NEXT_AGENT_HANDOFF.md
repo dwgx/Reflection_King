@@ -3,7 +3,7 @@
 更新时间：2026-06-13  
 仓库：`https://github.com/dwgx/Reflection_King`  
 当前主分支：`master`  
-当前公网服务：`http://154.40.36.22:8780`
+当前公网服务：按部署环境设置 `RK_BASE_URL` 或 `--base-url`，不要依赖历史 IP。
 
 本文档用于让下一个 Agent 不依赖聊天窗口也能理解 Reflection King 当前状态、真实目标、
 已验证能力、未完成工作和必须遵守的 workflow。
@@ -223,7 +223,7 @@ CI 覆盖：
 当前 VPS 已确认：
 
 ```text
-URL: http://154.40.36.22:8780
+URL: set RK_BASE_URL or --base-url to the active host
 commit requirement: /opt/reflection-king must match origin/master
 last functional baseline: b3e4533
 reflection-api: active
@@ -232,7 +232,7 @@ nginx: active
 /api/health: ok
 ```
 
-当前公网端点仍是 HTTP。PC VRChat 可在允许不受信任 URL 的情况下测试；
+如果当前公网端点仍是 HTTP，PC VRChat 可在允许不受信任 URL 的情况下测试；
 Android/Quest 或生产使用应配置域名和 HTTPS。
 
 ## 平台支持矩阵
@@ -342,7 +342,7 @@ npm run build  # apps/reflection-dashboard
 如果改了平台解析：
 
 ```powershell
-python scripts\smoke\live_smoke.py --base-url http://154.40.36.22:8780 --case <case>
+python scripts\smoke\live_smoke.py --base-url $env:RK_BASE_URL --case <case>
 python scripts\smoke\vrchat_raw_url_check.py --url "<artifact-url>"
 ```
 
@@ -404,7 +404,7 @@ docs/SECURITY.md。不要猜测平台支持；只有真实 URL、候选结构、
 Range/VRChat 检查或 CI/VPS 证据支持时才能写“已完成”。
 
 当前目标是继续把 Reflection King 做成高质量的 Rust 媒体抓取、候选选择、
-转码和 raw URL 输出后端。公网服务是 http://154.40.36.22:8780，GitHub 仓库是
+转码和 raw URL 输出后端。公网服务地址由当前部署环境提供，GitHub 仓库是
 https://github.com/dwgx/Reflection_King。不要输出真实管理密钥、Cookie、Profile、
 SQLite、storage 或 SSH 私密信息。
 

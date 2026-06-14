@@ -145,7 +145,7 @@ Cookie 并上传到服务器 Profile：
 ```powershell
 python -m pip install --user -U yt-dlp browser-cookie3
 python scripts/cookies/import_browser_cookies.py `
-  --base-url http://154.40.36.22:8780 `
+  --base-url <public-base-url> `
   --api-key "<admin-key>" `
   --browser edge `
   --platform bilibili `
@@ -200,7 +200,7 @@ docker compose start
 
 ```powershell
 python scripts\smoke\vrchat_raw_url_check.py `
-  --url "http://154.40.36.22:8780/media/<job-id>/<artifact>.mp4"
+  --url "<public-base-url>/media/<job-id>/<artifact>.mp4"
 ```
 
 对整个任务：
@@ -208,7 +208,7 @@ python scripts\smoke\vrchat_raw_url_check.py `
 ```powershell
 $env:RK_API_KEY = "<admin-or-user-key>"
 python scripts\smoke\vrchat_raw_url_check.py `
-  --base-url "http://154.40.36.22:8780" `
+  --base-url "<public-base-url>" `
   --job-id "<job-id>"
 ```
 

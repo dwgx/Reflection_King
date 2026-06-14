@@ -17,8 +17,8 @@ Reflection King 的媒体管线分为“发现候选资源”和“捕获转码�
 
 已支持：
 
-- 直接音频、视频和图片 URL。
-- HLS/DASH manifest 的候选发现与部分捕获。
+- 直接音频、视频、图片和 HLS manifest URL；direct 模式会先生成候选，再走统一候选选择和产物管线。
+- HLS manifest 捕获前会解析并校验内部子 URL、初始化片段、密钥 URI 和媒体分片；DASH/MPD 在子 URL 校验闭环前默认拒绝进入 ffmpeg。
 - `yt-dlp`、`you-get`、`streamlink` 外部适配器。
 - Playwright 浏览器探测页面脚本、播放器信息和网络请求。
 - Bilibili 音视频分离候选合并。
@@ -54,7 +54,7 @@ Reflection King 的媒体管线分为“发现候选资源”和“捕获转码�
 - 对候选 URL 重复执行 SSRF 策略。
 - 对重定向目标再次校验。
 - 在下载前用 `ffprobe` 或首段请求确认媒体可复放。
-- 对 HLS/DASH 验证首段和必要 Header。
+- 对 HLS/DASH 验证子 URL、首段和必要 Header；未能完成子资源策略校验时默认拒绝。
 - 控制任务时长、下载大小和分片数量。
 - 按站点记录失败分类，避免把区域限制、DRM、缺 Cookie 和假广告混成一个错误。
 - 生成产物后跑 raw URL 自检，确认 `HEAD`、`Range`、MIME 和 MP4 faststart。

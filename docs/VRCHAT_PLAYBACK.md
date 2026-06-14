@@ -39,13 +39,13 @@ API 会把生成的媒体产物作为不需要 API key 的 raw URL 暴露：
 - 公网 `http` 或 `https` URL，不依赖 API key、Cookie 或复杂重定向。
 - 面向 Android/Quest 时使用 HTTPS。
 
-当前公开测试地址：
+示例公网地址：
 
 ```text
-http://154.40.36.22:8780
+<public-base-url>
 ```
 
-该 IP 域名不在 VRChat 官方 allowlist 内，PC 端测试需要在 VRChat 里启用
+如果你的域名不在 VRChat 官方 allowlist 内，PC 端测试需要在 VRChat 里启用
 `Allow Untrusted URLs`。Android/Quest 对非 allowlist 地址通常要求 HTTPS，
 生产使用应绑定域名并配置 TLS。
 
@@ -55,7 +55,7 @@ http://154.40.36.22:8780
 
 ```powershell
 python scripts\smoke\vrchat_raw_url_check.py `
-  --url "http://154.40.36.22:8780/media/<job-id>/<artifact>.mp4"
+  --url "<public-base-url>/media/<job-id>/<artifact>.mp4"
 ```
 
 检查某个任务的所有产物：
@@ -63,7 +63,7 @@ python scripts\smoke\vrchat_raw_url_check.py `
 ```powershell
 $env:RK_API_KEY = "<user-or-admin-key>"
 python scripts\smoke\vrchat_raw_url_check.py `
-  --base-url "http://154.40.36.22:8780" `
+  --base-url "<public-base-url>" `
   --job-id "<job-id>"
 ```
 
