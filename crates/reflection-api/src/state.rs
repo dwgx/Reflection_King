@@ -653,9 +653,7 @@ impl AppState {
             .filter(|candidate| candidate_not_selectable_reason(candidate).is_none())
             .max_by_key(|candidate| candidate_attempt_rank(job, candidate))
             .ok_or_else(|| {
-                RkError::Source(
-                    "direct URL did not produce a reusable media candidate".to_string(),
-                )
+                RkError::Source("direct URL did not produce a reusable media candidate".to_string())
             })?;
         self.job_store
             .set_selected_candidates(job_id, &[candidate.id])

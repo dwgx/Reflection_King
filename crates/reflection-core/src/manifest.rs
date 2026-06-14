@@ -54,33 +54,39 @@ async fn validate_hls_manifest(
     Ok(())
 }
 
-async fn fetch_manifest_text(client: &Client, start_url: Url, headers: HeaderMap) -> Result<String> {
+async fn fetch_manifest_text(
+    client: &Client,
+    start_url: Url,
+    headers: HeaderMap,
+) -> Result<String> {
     let mut url = start_url;
     for redirect_count in 0..=MAX_REDIRECTS {
         validate_url(&url)?;
-        let response = client.get(url.clone()).headers(headers.clone()).send().await?;
+        let response = client
+            .get(url.clone())
+            .headers(headers.clone())
+            .send()
+            .await?;
         let status = response.status();
 
         if status.is_redirection() {
             if redirect_count == MAX_REDIRECTS {
-                return Err(RkError::Source("manifest had too many redirects".to_string()));
+                return Err(RkError::Source(
+                    "manifest had too many redirects".to_string(),
+                ));
             }
             let location = response
                 .headers()
                 .get(reqwest::header::LOCATION)
                 .ok_or_else(|| RkError::Source("manifest redirect without Location".to_string()))?
                 .to_str()
-                .map_err(|error| {
-                    RkError::Source(format!("invalid manifest redirect: {error}"))
-                })?;
+                .map_err(|error| RkError::Source(format!("invalid manifest redirect: {error}")))?;
             url = url.join(location)?;
             continue;
         }
 
         if status != StatusCode::OK {
-            return Err(RkError::Source(format!(
-                "manifest returned HTTP {status}"
-            )));
+            return Err(RkError::Source(format!("manifest returned HTTP {status}")));
         }
 
         if let Some(length) = response.content_length() {
@@ -113,7 +119,9 @@ async fn fetch_manifest_text(client: &Client, start_url: Url, headers: HeaderMap
             .map_err(|error| RkError::Source(format!("manifest is not UTF-8 text: {error}")));
     }
 
-    Err(RkError::Source("manifest had too many redirects".to_string()))
+    Err(RkError::Source(
+        "manifest had too many redirects".to_string(),
+    ))
 }
 
 fn hls_child_urls(base_url: &Url, body: &str) -> Result<Vec<Url>> {
