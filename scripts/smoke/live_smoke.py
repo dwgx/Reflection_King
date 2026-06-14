@@ -431,7 +431,7 @@ def is_bilibili_pair(left: dict[str, Any], right: dict[str, Any]) -> bool:
 
 
 def external_to_api_path(media_url: str, base_url: str) -> str:
-    for prefix in (base_url.rstrip("/"), "http://127.0.0.1:8787", "http://154.40.36.22:8780"):
+    for prefix in (base_url.rstrip("/"), "http://127.0.0.1:8787"):
         if media_url.startswith(prefix):
             return media_url[len(prefix) :]
     parsed = urllib.parse.urlparse(media_url)

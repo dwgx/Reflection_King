@@ -331,7 +331,7 @@ def load_api_key(args: argparse.Namespace) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--base-url", default=os.environ.get("RK_BASE_URL", "http://154.40.36.22:8780"))
+    parser.add_argument("--base-url", default=os.environ.get("RK_BASE_URL", "http://127.0.0.1:8787"))
     parser.add_argument("--api-key")
     parser.add_argument("--api-key-file")
     parser.add_argument("--profile-id", default="admin_default")

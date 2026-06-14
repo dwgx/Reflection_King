@@ -543,45 +543,10 @@ impl AppState {
             return self.process_selected_candidates(job).await;
         }
 
-        match job.discovery {
-            // External/Browser/Auto all run through the resolver chain; the
-            // chain composition is chosen from the discovery mode.
-            DiscoveryMode::External | DiscoveryMode::Browser | DiscoveryMode::Auto => {
-                return self.resolve_candidates(job).await
-            }
-            // Direct keeps the fast immediate download+transcode path below.
-            DiscoveryMode::Direct => {}
+        self.resolve_candidates(job.clone()).await?;
+        if job.discovery == DiscoveryMode::Direct {
+            self.auto_select_direct_candidate(&job).await?;
         }
-
-        let job_paths = self.paths.prepare_job(job_id).await?;
-
-        self.update_status(job_id, JobStatus::Downloading).await?;
-        let downloader =
-            Downloader::new(self.config.download_timeout, self.config.max_download_bytes)?;
-        downloader
-            .download_to_file(&job.source_url, &job_paths.input_path)
-            .await?;
-
-        self.update_status(job_id, JobStatus::Transcoding).await?;
-        let transcoder = self.transcoder();
-        transcoder
-            .audio_to_mp3(&job_paths.input_path, &job_paths.output_path, &job.bitrate)
-            .await?;
-        self.insert_artifact(
-            job_id,
-            OutputKind::Audio,
-            job_paths.output_path,
-            "audio/mpeg",
-        )
-        .await?;
-
-        tokio::fs::remove_dir_all(&job_paths.temp_dir).await.ok();
-        self.mark_ready(
-            job_id,
-            format!("{}/media/{job_id}/audio.mp3", self.config.public_base_url),
-        )
-        .await?;
-
         Ok(())
     }
 
@@ -678,6 +643,41 @@ impl AppState {
         self.update_status(job.id, JobStatus::CandidatesReady)
             .await?;
         Ok(())
+    }
+
+    async fn auto_select_direct_candidate(&self, job: &JobRecord) -> Result<()> {
+        let job_id = job.id;
+        let candidates = self.job_store.list_candidates(job_id).await?;
+        let candidate = candidates
+            .iter()
+            .filter(|candidate| candidate_not_selectable_reason(candidate).is_none())
+            .max_by_key(|candidate| candidate_attempt_rank(job, candidate))
+            .ok_or_else(|| {
+                RkError::Source(
+                    "direct URL did not produce a reusable media candidate".to_string(),
+                )
+            })?;
+        self.job_store
+            .set_selected_candidates(job_id, &[candidate.id])
+            .await?;
+        self.job_store
+            .set_candidate_selection(candidate.id, true, Some("auto-selected direct candidate"))
+            .await
+            .ok();
+        self.record_event(PipelineEvent::new(
+            job_id,
+            "candidate_selected",
+            "direct",
+            PipelineEventType::CandidateSelected,
+            serde_json::json!({
+                "candidate_ids": vec![candidate.id],
+                "reason": "auto-selected direct candidate",
+            }),
+        ))
+        .await;
+        self.update_status(job_id, JobStatus::CandidateSelected)
+            .await?;
+        self.enqueue(job_id).await
     }
 
     /// Emit a `candidate_found` event summarizing what an extractor surfaced
@@ -912,6 +912,12 @@ impl AppState {
             }
             CandidateKind::Video | CandidateKind::Manifest => {
                 let headers = self.download_headers(job, candidate).await?;
+                if candidate.kind == CandidateKind::Manifest
+                    && !is_yt_dlp_inline_manifest_candidate(candidate)
+                {
+                    self.validate_manifest_candidate(job.id, candidate, headers.clone())
+                        .await?;
+                }
                 if job.outputs.contains(&OutputKind::Audio)
                     && !job.outputs.contains(&OutputKind::Video)
                 {
@@ -1105,6 +1111,32 @@ impl AppState {
             .await?;
         headers.extend(profile_headers);
         Ok(headers)
+    }
+
+    async fn validate_manifest_candidate(
+        &self,
+        job_id: Uuid,
+        candidate: &MediaCandidate,
+        headers: HeaderMap,
+    ) -> Result<()> {
+        self.record_event(PipelineEvent::new(
+            job_id,
+            "manifest_validate",
+            candidate.extractor.clone(),
+            PipelineEventType::Probe,
+            serde_json::json!({
+                "candidate_id": candidate.id,
+                "url": candidate.url,
+                "kind": candidate.kind.as_str(),
+            }),
+        ))
+        .await;
+        let client = reqwest::Client::builder()
+            .timeout(self.config.download_timeout)
+            .redirect(reqwest::redirect::Policy::none())
+            .user_agent("ReflectionKing/0.1")
+            .build()?;
+        reflection_core::manifest::validate_manifest_url(&client, &candidate.url, headers).await
     }
 
     fn should_try_yt_dlp_delegated_download(&self, candidate: &MediaCandidate) -> bool {

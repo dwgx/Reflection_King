@@ -6,6 +6,7 @@ pub mod external_probe;
 pub mod external_tools;
 pub mod extractors;
 pub mod job_store;
+pub mod manifest;
 pub mod models;
 pub mod observability;
 pub mod paths;

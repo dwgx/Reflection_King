@@ -103,14 +103,83 @@ fi
 
 source /root/.cargo/env || true
 
+install_node_deps() {
+  if [[ -f package-lock.json ]]; then
+    npm ci
+  else
+    npm install
+  fi
+}
+
+ensure_admin_key_usable() {
+  local auth_check_url="http://127.0.0.1:8787/api/jobs?limit=1"
+  if [[ -z "${API_KEY:-}" ]]; then
+    return 0
+  fi
+
+  if curl -fsS -H "x-api-key: ${API_KEY}" "${auth_check_url}" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  RK_ADMIN_SECRET="${API_KEY}" RK_DB_PATH="${APP_DIR}/storage/reflection.db" python3 - <<'PY'
+import datetime
+import hashlib
+import os
+import sqlite3
+import uuid
+
+secret = os.environ["RK_ADMIN_SECRET"].strip()
+db_path = os.environ["RK_DB_PATH"]
+if not secret:
+    raise SystemExit(0)
+
+now = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+key_hash = hashlib.sha256(secret.encode("utf-8")).hexdigest()
+key_prefix = secret[:16]
+
+with sqlite3.connect(db_path, timeout=30) as conn:
+    conn.execute(
+        """
+        INSERT INTO api_keys (
+            id,
+            label,
+            key_hash,
+            key_prefix,
+            role,
+            allow_browser_probe,
+            allow_ytdlp,
+            allow_external_adapters,
+            allow_login_profile,
+            created_at,
+            revoked_at
+        )
+        VALUES (?, ?, ?, ?, 'admin', 1, 1, 1, 1, ?, NULL)
+        ON CONFLICT(key_hash) DO UPDATE SET
+            role = 'admin',
+            allow_browser_probe = 1,
+            allow_ytdlp = 1,
+            allow_external_adapters = 1,
+            allow_login_profile = 1,
+            revoked_at = NULL
+        """,
+        (str(uuid.uuid4()), "Admin key", key_hash, key_prefix, now),
+    )
+PY
+
+  if ! curl -fsS -H "x-api-key: ${API_KEY}" "${auth_check_url}" >/dev/null 2>&1; then
+    echo "Admin key file was written, but the API still rejects that key." >&2
+    exit 1
+  fi
+}
+
 cd "${APP_DIR}/services/reflection-browser"
-npm install
+install_node_deps
 npm run build
 npx playwright install chromium
 npx playwright install-deps chromium
 
 cd "${APP_DIR}/apps/reflection-dashboard"
-npm install
+install_node_deps
 npm run build
 
 if [[ ! -x "${YTDLP_VENV}/bin/yt-dlp" ]]; then
@@ -216,6 +285,8 @@ if [[ "${HEALTH_OK:-0}" != "1" ]]; then
   echo "Check logs with: journalctl -u reflection-api -n 100 --no-pager" >&2
   exit 1
 fi
+
+ensure_admin_key_usable
 
 echo
 echo "Reflection King installed."

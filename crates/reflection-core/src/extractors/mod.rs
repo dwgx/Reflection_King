@@ -149,15 +149,17 @@ impl SourceResolver {
 
     /// Build the extractor chain appropriate for a discovery mode.
     ///
+    /// - `Direct`: direct file/manifest URL only.
     /// - `External`: yt-dlp only.
     /// - `Browser`: real browser only.
-    /// - `Direct`/`Auto`: direct/manifest fast path, then yt-dlp, then browser.
+    /// - `Auto`: direct/manifest fast path, then yt-dlp, then browser.
     ///   Dedicated per-site extractors (e.g. StreetVoice) insert ahead of yt-dlp.
     pub fn for_discovery(discovery: DiscoveryMode) -> Self {
         let extractors: Vec<Box<dyn SourceExtractor>> = match discovery {
+            DiscoveryMode::Direct => vec![Box::new(DirectExtractor)],
             DiscoveryMode::External => vec![Box::new(YtDlpExtractor)],
             DiscoveryMode::Browser => vec![Box::new(BrowserExtractor)],
-            DiscoveryMode::Direct | DiscoveryMode::Auto => vec![
+            DiscoveryMode::Auto => vec![
                 Box::new(DirectExtractor),
                 Box::new(HanimeExtractor),
                 Box::new(MacCmsEpisodeExtractor),
@@ -383,6 +385,10 @@ mod tests {
     #[test]
     fn discovery_modes_build_expected_chains() {
         let names = |r: &SourceResolver| r.extractors.iter().map(|e| e.name()).collect::<Vec<_>>();
+        assert_eq!(
+            names(&SourceResolver::for_discovery(DiscoveryMode::Direct)),
+            vec!["direct"]
+        );
         assert_eq!(
             names(&SourceResolver::for_discovery(DiscoveryMode::External)),
             vec!["yt_dlp"]
