@@ -3,10 +3,12 @@
 ## Scope
 
 This evidence records real public-platform smoke results against the deployed
-Reflection King service at:
+Reflection King service. The concrete public host used for the original run is
+intentionally redacted from this long-lived evidence file; use the current
+deployment's `RK_PUBLIC_BASE_URL` when replaying commands:
 
 ```text
-http://154.40.36.22:8780
+<public-base-url>
 ```
 
 The tested URLs are public examples. The smoke process does not bypass DRM,
@@ -54,9 +56,9 @@ Commands:
 
 ```powershell
 python scripts\smoke\live_smoke.py --list
-python scripts\smoke\live_smoke.py --base-url http://154.40.36.22:8780
-python scripts\smoke\live_smoke.py --base-url http://154.40.36.22:8780 --tier platform
-python scripts\smoke\live_smoke.py --base-url http://154.40.36.22:8780 --case acfun-public-external-video
+python scripts\smoke\live_smoke.py --base-url <public-base-url>
+python scripts\smoke\live_smoke.py --base-url <public-base-url> --tier platform
+python scripts\smoke\live_smoke.py --base-url <public-base-url> --case acfun-public-external-video
 ```
 
 Default `core` now uses `mux-hls-low-video` for HLS video. The previous Apple
@@ -69,7 +71,7 @@ case.
 Run command:
 
 ```powershell
-python scripts\smoke\live_smoke.py --base-url http://154.40.36.22:8780 --tier platform --timeout-seconds 320
+python scripts\smoke\live_smoke.py --base-url <public-base-url> --tier platform --timeout-seconds 320
 ```
 
 All platform cases completed with at least one artifact and `Range` playback
@@ -250,7 +252,7 @@ job: a955116c-53de-473d-be43-f30eaa0a0b98
 status: ready
 candidates: 3 HLS manifests, top advertised 720p
 artifact: video/mp4, 214,304,216 bytes
-raw url: http://154.40.36.22:8780/media/a955116c-53de-473d-be43-f30eaa0a0b98/video-ee4b4698-cc55-4a49-beaf-0167bfa84402.mp4
+raw url: <public-base-url>/media/a955116c-53de-473d-be43-f30eaa0a0b98/video-ee4b4698-cc55-4a49-beaf-0167bfa84402.mp4
 vrchat_raw_url_check: HEAD 200, Range 206, faststart OK, h264 960x540, yuv420p, aac 2ch
 ```
 
@@ -267,7 +269,7 @@ job: bdd3c72b-5e79-4c95-a656-2a39c9258dfa
 status: ready
 candidates: 7 HLS manifests, top candidate 3840p
 artifact: video/mp4, 99,652,086 bytes
-raw url: http://154.40.36.22:8780/media/bdd3c72b-5e79-4c95-a656-2a39c9258dfa/video-aed718c2-72b1-49a9-abe0-99c563077dc7.mp4
+raw url: <public-base-url>/media/bdd3c72b-5e79-4c95-a656-2a39c9258dfa/video-aed718c2-72b1-49a9-abe0-99c563077dc7.mp4
 vrchat_raw_url_check: HEAD 200, Range 206, faststart OK, h264 2160x3840, yuv420p, aac 2ch
 ```
 
@@ -358,7 +360,7 @@ job: c82fae2f-9395-4468-912b-0255778e650d
 status: ready
 candidates: 1080p, 720p, 480p MP4 from vdownload.hembed.com
 artifact: video/mp4, 115,076,887 bytes
-raw url: http://154.40.36.22:8780/media/c82fae2f-9395-4468-912b-0255778e650d/video-1992fdc5-1ddb-4e37-a911-c9405b763830.mp4
+raw url: <public-base-url>/media/c82fae2f-9395-4468-912b-0255778e650d/video-1992fdc5-1ddb-4e37-a911-c9405b763830.mp4
 vrchat_raw_url_check: HEAD 200, Range 206, faststart OK, h264 1080x1440, yuv420p, aac 2ch
 
 url: https://hanime1.me/watch?v=406627
@@ -366,7 +368,7 @@ job: a19545d5-bab4-41fe-8455-30d841a54be3
 status: ready
 candidates: 1080p, 720p, 480p MP4 from vdownload.hembed.com
 artifact: video/mp4, 45,890,335 bytes
-raw url: http://154.40.36.22:8780/media/a19545d5-bab4-41fe-8455-30d841a54be3/video-e2304ae4-750a-41f9-8db4-be60facb07ee.mp4
+raw url: <public-base-url>/media/a19545d5-bab4-41fe-8455-30d841a54be3/video-e2304ae4-750a-41f9-8db4-be60facb07ee.mp4
 vrchat_raw_url_check: HEAD 200, Range 206, faststart OK, h264 1620x1080, yuv420p, aac 2ch
 ```
 
@@ -450,7 +452,7 @@ job: 9d4de516-ff2a-4990-b83d-c5202c6cf130
 status: ready
 candidates: 45
 artifact: video/mp4, 99,652,086 bytes
-raw url: http://154.40.36.22:8780/media/9d4de516-ff2a-4990-b83d-c5202c6cf130/video-b62f06ae-7721-4d0e-8be3-f9e7b615a7cc.mp4
+raw url: <public-base-url>/media/9d4de516-ff2a-4990-b83d-c5202c6cf130/video-b62f06ae-7721-4d0e-8be3-f9e7b615a7cc.mp4
 vrchat_raw_url_check: HEAD 200, Range 206, faststart OK, h264 2160x3840, yuv420p, aac 2ch
 ```
 
@@ -462,7 +464,7 @@ job: 60ca06b7-1fde-4a91-a8f8-97522c8048aa
 status: ready
 candidates: 53
 artifact: video/mp4, 357,010,562 bytes
-raw url: http://154.40.36.22:8780/media/60ca06b7-1fde-4a91-a8f8-97522c8048aa/video-cd649633-156e-40e3-a1bf-967d297c6f1c.mp4
+raw url: <public-base-url>/media/60ca06b7-1fde-4a91-a8f8-97522c8048aa/video-cd649633-156e-40e3-a1bf-967d297c6f1c.mp4
 vrchat_raw_url_check: HEAD 200, Range 206, faststart OK, h264 1280x720, yuv420p, aac 2ch
 ```
 
