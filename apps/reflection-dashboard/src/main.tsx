@@ -100,6 +100,9 @@ interface RuntimeSettingsView {
   yt_dlp_timeout_seconds: number;
   yt_dlp_max_json_bytes: number;
   job_ttl_hours: number;
+  page_archive_max_resources?: number;
+  page_archive_max_resource_bytes?: number;
+  page_archive_max_total_bytes?: number;
   ffmpeg_path: string;
   browser_probe_url: string | null;
   yt_dlp_path: string | null;
@@ -116,6 +119,9 @@ interface RuntimeSettingsForm {
   yt_dlp_timeout_seconds: string;
   yt_dlp_max_json_mb: string;
   job_ttl_hours: string;
+  page_archive_max_resources: string;
+  page_archive_max_resource_mb: string;
+  page_archive_max_total_mb: string;
 }
 
 interface JobView {
@@ -135,6 +141,10 @@ interface JobView {
   outputs: OutputKind[];
   profile_id: string;
   auth_mode: string;
+  issue_kind?: "none" | "failed" | "needs_profile" | "unsupported" | "too_large" | "timeout" | "policy_blocked";
+  issue_label?: string;
+  issue_detail?: string | null;
+  profile_action_url?: string | null;
 }
 
 interface Candidate {
@@ -281,7 +291,7 @@ interface ConfirmDialogState {
 }
 
 const OUTPUTS: OutputKind[] = ["audio", "video", "image", "page_html"];
-const TERMINAL = new Set(["ready", "error", "candidates_ready"]);
+const TERMINAL = new Set(["ready", "error", "candidates_ready", "needs_profile"]);
 const PAGE_SIZE_OPTIONS = [3, 5, 10, 20, 50];
 const LOGIN_TARGETS = [
   { id: "douyin", label: "抖音", url: "https://www.douyin.com/" },
@@ -301,6 +311,9 @@ const EMPTY_RUNTIME_FORM: RuntimeSettingsForm = {
   yt_dlp_timeout_seconds: "",
   yt_dlp_max_json_mb: "",
   job_ttl_hours: "",
+  page_archive_max_resources: "",
+  page_archive_max_resource_mb: "",
+  page_archive_max_total_mb: "",
 };
 
 function App() {
@@ -344,6 +357,7 @@ function App() {
   const [loginUrl, setLoginUrl] = useState("https://www.bilibili.com/");
   const [loginText, setLoginText] = useState("");
   const [loginSnapshot, setLoginSnapshot] = useState<BrowserLoginSnapshot | null>(null);
+  const [activeLoginJobId, setActiveLoginJobId] = useState<string | null>(null);
   const [loginClickMode, setLoginClickMode] = useState<LoginClickMode>("left");
   const [loginZoom, setLoginZoom] = useState("1");
   const [hiddenBatches, setHiddenBatches] = useState<HiddenJobBatchView[]>([]);
@@ -566,11 +580,14 @@ function App() {
     try {
       const payload = {
         public_base_url: settingsForm.public_base_url.trim(),
-        max_download_mb: parsePositiveInt(settingsForm.max_download_mb, "视频最大下载大小"),
+        max_download_mb: parsePositiveInt(settingsForm.max_download_mb, "单任务最大大小"),
         download_timeout_seconds: parsePositiveInt(settingsForm.download_timeout_seconds, "下载超时"),
         yt_dlp_timeout_seconds: parsePositiveInt(settingsForm.yt_dlp_timeout_seconds, "yt-dlp 超时"),
         yt_dlp_max_json_mb: parsePositiveInt(settingsForm.yt_dlp_max_json_mb, "yt-dlp JSON 上限"),
         job_ttl_hours: parsePositiveInt(settingsForm.job_ttl_hours, "任务保留小时"),
+        page_archive_max_resources: parsePositiveInt(settingsForm.page_archive_max_resources, "网页资源数上限"),
+        page_archive_max_resource_mb: parsePositiveInt(settingsForm.page_archive_max_resource_mb, "网页单资源上限"),
+        page_archive_max_total_mb: parsePositiveInt(settingsForm.page_archive_max_total_mb, "网页资源包总上限"),
       };
       const data = await request<RuntimeSettingsView>("/api/admin/settings", {
         method: "PATCH",
@@ -729,7 +746,11 @@ function App() {
 
   function setOutputModeAndPayload(mode: OutputMode) {
     setOutputMode(mode);
-    setForm({ ...form, outputs: outputsForMode(mode) });
+    setForm({
+      ...form,
+      outputs: outputsForMode(mode),
+      discovery: mode === "page_html" ? "browser" : form.discovery,
+    });
   }
 
   function toggleCandidate(id: string) {
@@ -850,9 +871,55 @@ function App() {
     }
   }
 
+  function loginSessionEndpoint(action: string): string {
+    const sessionId = encodeURIComponent(loginSnapshot?.session.id ?? "");
+    if (activeLoginJobId) {
+      return `/api/jobs/${encodeURIComponent(activeLoginJobId)}/browser-login-session/${sessionId}/${action}`;
+    }
+    return `/api/admin/browser-login-sessions/${sessionId}/${action}`;
+  }
+
+  async function startJobBrowserLoginSession(job: JobView) {
+    setBusy(true);
+    try {
+      const snapshot = await request<BrowserLoginSnapshot>(
+        `/api/jobs/${encodeURIComponent(job.id)}/browser-login-session`,
+        { method: "POST" },
+      );
+      setActiveLoginJobId(job.id);
+      setProfileId(snapshot.session.profileId);
+      setLoginUrl(snapshot.url);
+      setLoginSnapshot(snapshot);
+      notify("已打开此任务的临时网页登录会话。登录完成后点击继续解析。", "success");
+    } catch (error) {
+      notify(errorMessage(error), "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function resumeSelectedJobWithProfile() {
+    if (!selectedJob) return;
+    setBusy(true);
+    try {
+      const job = await request<JobView>(
+        `/api/jobs/${encodeURIComponent(selectedJob.id)}/resume-with-profile`,
+        { method: "POST" },
+      );
+      setSelectedJob(job);
+      await refreshJobs();
+      notify("已使用登录 Profile 继续解析任务。", "success");
+    } catch (error) {
+      notify(errorMessage(error), "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function startBrowserLoginSession() {
     setBusy(true);
     try {
+      setActiveLoginJobId(null);
       const snapshot = await request<BrowserLoginSnapshot>(
         `/api/admin/browser-profiles/${encodeURIComponent(profileId)}/login-sessions`,
         {
@@ -876,7 +943,7 @@ function App() {
     try {
       if (loginSnapshot) {
         setLoginSnapshot(await request<BrowserLoginSnapshot>(
-          `/api/admin/browser-login-sessions/${encodeURIComponent(loginSnapshot.session.id)}/navigate`,
+          loginSessionEndpoint("navigate"),
           {
             method: "POST",
             headers: { "content-type": "application/json" },
@@ -885,6 +952,7 @@ function App() {
         ));
         notify("已切换服务端远程浏览器站点。", "success");
       } else {
+        setActiveLoginJobId(null);
         const snapshot = await request<BrowserLoginSnapshot>(
           `/api/admin/browser-profiles/${encodeURIComponent(profileId)}/login-sessions`,
           {
@@ -908,7 +976,7 @@ function App() {
     setBusy(true);
     try {
       setLoginSnapshot(await request<BrowserLoginSnapshot>(
-        `/api/admin/browser-login-sessions/${encodeURIComponent(loginSnapshot.session.id)}/snapshot`,
+        loginSessionEndpoint("snapshot"),
       ));
     } catch (error) {
       notify(errorMessage(error), "error");
@@ -934,7 +1002,7 @@ function App() {
     const clickCount = mode === "double" ? 2 : 1;
     try {
       setLoginSnapshot(await request<BrowserLoginSnapshot>(
-        `/api/admin/browser-login-sessions/${encodeURIComponent(loginSnapshot.session.id)}/click`,
+        loginSessionEndpoint("click"),
         {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -952,7 +1020,7 @@ function App() {
     const point = browserPointFromEvent(event);
     try {
       setLoginSnapshot(await request<BrowserLoginSnapshot>(
-        `/api/admin/browser-login-sessions/${encodeURIComponent(loginSnapshot.session.id)}/wheel`,
+        loginSessionEndpoint("wheel"),
         {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -974,7 +1042,7 @@ function App() {
     setBusy(true);
     try {
       setLoginSnapshot(await request<BrowserLoginSnapshot>(
-        `/api/admin/browser-login-sessions/${encodeURIComponent(loginSnapshot.session.id)}/resize`,
+        loginSessionEndpoint("resize"),
         {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -993,7 +1061,7 @@ function App() {
     setBusy(true);
     try {
       setLoginSnapshot(await request<BrowserLoginSnapshot>(
-        `/api/admin/browser-login-sessions/${encodeURIComponent(loginSnapshot.session.id)}/type`,
+        loginSessionEndpoint("type"),
         {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -1013,7 +1081,7 @@ function App() {
     setBusy(true);
     try {
       setLoginSnapshot(await request<BrowserLoginSnapshot>(
-        `/api/admin/browser-login-sessions/${encodeURIComponent(loginSnapshot.session.id)}/press`,
+        loginSessionEndpoint("press"),
         {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -1032,7 +1100,7 @@ function App() {
     setBusy(true);
     try {
       setLoginSnapshot(await request<BrowserLoginSnapshot>(
-        `/api/admin/browser-login-sessions/${encodeURIComponent(loginSnapshot.session.id)}/navigate`,
+        loginSessionEndpoint("navigate"),
         {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -1050,10 +1118,11 @@ function App() {
     if (!loginSnapshot) return;
     setBusy(true);
     try {
-      await request(`/api/admin/browser-login-sessions/${encodeURIComponent(loginSnapshot.session.id)}/close`, {
+      await request(loginSessionEndpoint("close"), {
         method: "POST",
       });
       setLoginSnapshot(null);
+      setActiveLoginJobId(null);
       notify("已关闭服务端浏览器会话，Profile 已保留登录态。", "success");
     } catch (error) {
       notify(errorMessage(error), "error");
@@ -1173,7 +1242,7 @@ function App() {
               <span><strong>{taskStats.candidates}</strong> 待选择</span>
               <span><strong>{taskStats.running}</strong> 处理中</span>
               <span className={taskStats.error ? "bad" : ""}><strong>{taskStats.error}</strong> 失败</span>
-              {taskStats.cookie > 0 && <span className="warn"><strong>{taskStats.cookie}</strong> 需 Cookie</span>}
+              {taskStats.cookie > 0 && <span className="warn"><strong>{taskStats.cookie}</strong> 需授权</span>}
               {taskStats.dependency > 0 && <span className="warn"><strong>{taskStats.dependency}</strong> 缺依赖</span>}
               {taskStats.unsupported > 0 && <span className="info"><strong>{taskStats.unsupported}</strong> 待适配</span>}
             </div>
@@ -1244,6 +1313,64 @@ function App() {
                     <strong>{jobIssue(selectedJob)?.label ?? "失败原因"}</strong>
                     <span>{friendlyError(selectedJob.error, selectedJob)}</span>
                   </div>
+                </div>
+              )}
+              {jobIssue(selectedJob)?.kind === "profile" && (
+                <div className="remote-login-card">
+                  <div className="remote-login-head">
+                    <div>
+                      <strong>此任务需要网页登录授权</strong>
+                      <span>打开临时服务端浏览器，登录完成后继续解析此任务。</span>
+                    </div>
+                    <div className="panel-actions">
+                      <Button type="button" variant="secondary" disabled={busy} onClick={() => startJobBrowserLoginSession(selectedJob)}>
+                        <MonitorPlay size={16} /> 打开登录
+                      </Button>
+                      <Button type="button" disabled={busy} onClick={resumeSelectedJobWithProfile}>
+                        <RefreshCw size={16} /> 继续解析
+                      </Button>
+                    </div>
+                  </div>
+                  {activeLoginJobId === selectedJob.id && loginSnapshot && (
+                    <div className="remote-browser">
+                      <div className="remote-browser-meta">
+                        <span>{loginSnapshot.title || "未命名页面"}</span>
+                        <em>{loginSnapshot.url}</em>
+                      </div>
+                      <div className="remote-login-controls">
+                        <Input value={loginUrl} onChange={(event) => setLoginUrl(event.target.value)} />
+                        <Button type="button" variant="secondary" disabled={busy} onClick={navigateBrowserLoginSession}>跳转</Button>
+                        <Button type="button" variant="secondary" disabled={busy} onClick={refreshBrowserLoginSession}>
+                          <RefreshCw size={16} /> 刷新截图
+                        </Button>
+                        <Button type="button" variant="secondary" disabled={busy} onClick={closeBrowserLoginSession}>关闭</Button>
+                      </div>
+                      <div className="remote-browser-viewport">
+                        <button
+                          className="remote-browser-screen"
+                          type="button"
+                          onClick={clickBrowserLoginSession}
+                          onWheel={wheelBrowserLoginSession}
+                          onContextMenu={(event) => {
+                            event.preventDefault();
+                            void clickBrowserLoginSession(event, "right");
+                          }}
+                        >
+                          <img src={loginSnapshot.image} alt="任务网页登录截图" draggable={false} />
+                        </button>
+                      </div>
+                      <div className="remote-login-controls">
+                        <Input
+                          value={loginText}
+                          placeholder="输入要发送到当前焦点的文本"
+                          onChange={(event) => setLoginText(event.target.value)}
+                        />
+                        <Button type="button" variant="secondary" disabled={busy || !loginText} onClick={typeIntoBrowserLoginSession}>输入</Button>
+                        <Button type="button" variant="secondary" disabled={busy} onClick={() => pressBrowserLoginKey("Enter")}>Enter</Button>
+                        <Button type="button" variant="secondary" disabled={busy} onClick={() => pressBrowserLoginKey("Escape")}>Esc</Button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
               {selectedJob.media_url && <Player url={selectedJob.media_url} />}
@@ -1371,7 +1498,7 @@ function App() {
                 onChange={(event) => setSettingsForm({ ...settingsForm, public_base_url: event.target.value })}
               />
             </Field>
-            <Field label="视频最大下载大小 MB">
+            <Field label="单任务最大大小 MB">
               <Input
                 inputMode="numeric"
                 value={settingsForm.max_download_mb}
@@ -1406,6 +1533,27 @@ function App() {
                 onChange={(event) => setSettingsForm({ ...settingsForm, job_ttl_hours: event.target.value })}
               />
             </Field>
+            <Field label="网页资源数上限">
+              <Input
+                inputMode="numeric"
+                value={settingsForm.page_archive_max_resources}
+                onChange={(event) => setSettingsForm({ ...settingsForm, page_archive_max_resources: event.target.value })}
+              />
+            </Field>
+            <Field label="网页单资源上限 MB">
+              <Input
+                inputMode="numeric"
+                value={settingsForm.page_archive_max_resource_mb}
+                onChange={(event) => setSettingsForm({ ...settingsForm, page_archive_max_resource_mb: event.target.value })}
+              />
+            </Field>
+            <Field label="网页资源包总上限 MB">
+              <Input
+                inputMode="numeric"
+                value={settingsForm.page_archive_max_total_mb}
+                onChange={(event) => setSettingsForm({ ...settingsForm, page_archive_max_total_mb: event.target.value })}
+              />
+            </Field>
           </div>
           <div className="settings-readonly-grid">
             <MetaLine label="当前全局大小" value={formatBytes(runtimeSettings?.max_download_bytes ?? health?.max_download_bytes)} />
@@ -1420,6 +1568,9 @@ function App() {
             <MetaLine label="lux" value={runtimeSettings?.lux_path ?? capabilities?.lux_path ?? "-"} />
             <MetaLine label="Streamlink" value={runtimeSettings?.streamlink_path ?? capabilities?.streamlink_path ?? "-"} />
             <MetaLine label="外部工具" value={capabilities?.external_tools?.length ? capabilities.external_tools.join(", ") : "-"} />
+            <MetaLine label="网页资源数" value={runtimeSettings?.page_archive_max_resources ?? "-"} />
+            <MetaLine label="网页单资源" value={formatBytes(runtimeSettings?.page_archive_max_resource_bytes)} />
+            <MetaLine label="网页资源包" value={formatBytes(runtimeSettings?.page_archive_max_total_bytes)} />
           </div>
         </form>
       </Card>
@@ -2239,6 +2390,12 @@ function Player(props: { url: string }) {
   if (lower.endsWith(".mp4")) {
     return <video className="player" controls src={props.url} />;
   }
+  if (/\.(png|jpe?g|webp|gif|avif)(?:$|\?)/i.test(lower)) {
+    return <img className="player" src={props.url} alt="" />;
+  }
+  if (/\.(html?|json|txt|zip)(?:$|\?)/i.test(lower)) {
+    return null;
+  }
   return <audio className="player" controls src={props.url} />;
 }
 
@@ -2279,6 +2436,9 @@ function runtimeSettingsToForm(settings: RuntimeSettingsView): RuntimeSettingsFo
     yt_dlp_timeout_seconds: String(settings.yt_dlp_timeout_seconds),
     yt_dlp_max_json_mb: String(bytesToMib(settings.yt_dlp_max_json_bytes)),
     job_ttl_hours: String(settings.job_ttl_hours),
+    page_archive_max_resources: String(settings.page_archive_max_resources ?? 200),
+    page_archive_max_resource_mb: String(bytesToMib(settings.page_archive_max_resource_bytes ?? 16 * 1024 * 1024)),
+    page_archive_max_total_mb: String(bytesToMib(settings.page_archive_max_total_bytes ?? 200 * 1024 * 1024)),
   };
 }
 
@@ -2347,6 +2507,7 @@ function statusLabel(value: string): string {
     probing: "探测中",
     transcoding: "转码中",
     remuxing: "封装中",
+    needs_profile: "需授权",
     ready: "已完成",
     error: "失败",
   } as Record<string, string>)[value] ?? value;
@@ -2844,7 +3005,7 @@ function summarizeJobs(items: JobView[]): JobStats {
       stats.ready += 1;
     } else if (item.status === "candidates_ready") {
       stats.candidates += 1;
-    } else if (item.status === "error") {
+    } else if (item.status === "needs_profile" || item.status === "error") {
       stats.error += 1;
       const issue = jobIssue(item);
       if (issue?.kind === "cookie" || issue?.kind === "profile") stats.cookie += 1;
@@ -2858,6 +3019,18 @@ function summarizeJobs(items: JobView[]): JobStats {
 }
 
 function jobIssue(job: JobView | null): JobIssue | null {
+  if (job?.issue_kind && job.issue_kind !== "none") {
+    const map: Record<NonNullable<JobView["issue_kind"]>, JobIssue | null> = {
+      none: null,
+      failed: { kind: "error", label: "失败", tone: "error" },
+      needs_profile: { kind: "profile", label: "需授权", tone: "warn" },
+      unsupported: { kind: "unsupported", label: "待适配", tone: "info" },
+      too_large: { kind: "error", label: "过大", tone: "warn" },
+      timeout: { kind: "timeout", label: "超时", tone: "warn" },
+      policy_blocked: { kind: "error", label: "策略阻止", tone: "warn" },
+    };
+    return map[job.issue_kind];
+  }
   if (!job?.error) return null;
   const lower = `${job.source_url} ${job.error}`.toLowerCase();
   if (lower.includes("fresh cookies") || lower.includes("sign in") || lower.includes("login required")) {

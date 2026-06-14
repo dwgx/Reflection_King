@@ -67,6 +67,7 @@ impl SourceExtractor for BrowserExtractor {
             candidates: outcome.candidates,
             warnings: outcome.warnings,
             browser_session: Some(session),
+            page_snapshot: outcome.page_snapshot,
         })
     }
 }

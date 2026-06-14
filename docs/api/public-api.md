@@ -50,6 +50,30 @@ Returns job status and final media URL when ready.
 Browser jobs stop at `candidates_ready` until the client selects one or more
 candidate IDs.
 
+`outputs: ["page_html"]` requires browser discovery. A successful job emits
+page artifacts instead of only media: `page.html`, `page.txt`,
+`screenshot.png`, `resources.json`, and `archive.zip`. The archive contains
+`index.html`, downloaded `assets/`, and metadata. Remote assets are still
+validated by the server URL policy and byte limits before they are fetched.
+
+Jobs that need a login-capable browser profile return `status:
+needs_profile`, `issue_kind: needs_profile`, and `profile_action_url`.
+Clients with a key that has `allow_login_profile=true` can open a job-scoped
+browser login session, then resume the job:
+
+```text
+POST /api/jobs/{id}/browser-login-session
+GET  /api/jobs/{id}/browser-login-session/{session_id}/snapshot
+POST /api/jobs/{id}/browser-login-session/{session_id}/click
+POST /api/jobs/{id}/browser-login-session/{session_id}/type
+POST /api/jobs/{id}/browser-login-session/{session_id}/press
+POST /api/jobs/{id}/browser-login-session/{session_id}/navigate
+POST /api/jobs/{id}/browser-login-session/{session_id}/wheel
+POST /api/jobs/{id}/browser-login-session/{session_id}/resize
+POST /api/jobs/{id}/browser-login-session/{session_id}/close
+POST /api/jobs/{id}/resume-with-profile
+```
+
 ## `GET /api/jobs/{id}/candidates`
 
 Returns browser-discovered candidate URLs and metadata. Sensitive Cookie/Auth

@@ -10,6 +10,7 @@ pub enum JobStatus {
     Queued,
     Resolving,
     CandidatesReady,
+    NeedsProfile,
     CandidateSelected,
     Downloading,
     Capturing,
@@ -123,6 +124,9 @@ pub struct RuntimeSettingsView {
     pub yt_dlp_timeout_seconds: u64,
     pub yt_dlp_max_json_bytes: usize,
     pub job_ttl_hours: u64,
+    pub page_archive_max_resources: usize,
+    pub page_archive_max_resource_bytes: u64,
+    pub page_archive_max_total_bytes: u64,
     pub ffmpeg_path: String,
     pub browser_probe_url: Option<String>,
     pub yt_dlp_path: Option<String>,
@@ -140,6 +144,9 @@ pub struct UpdateRuntimeSettingsRequest {
     pub yt_dlp_timeout_seconds: Option<u64>,
     pub yt_dlp_max_json_mb: Option<usize>,
     pub job_ttl_hours: Option<u64>,
+    pub page_archive_max_resources: Option<usize>,
+    pub page_archive_max_resource_mb: Option<u64>,
+    pub page_archive_max_total_mb: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -167,6 +174,32 @@ pub struct RestoreJobsResponse {
     pub batch_id: Option<Uuid>,
     pub restored: u64,
     pub history_deleted: bool,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum JobIssueKind {
+    None,
+    Failed,
+    NeedsProfile,
+    Unsupported,
+    TooLarge,
+    Timeout,
+    PolicyBlocked,
+}
+
+impl JobIssueKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Failed => "failed",
+            Self::NeedsProfile => "needs_profile",
+            Self::Unsupported => "unsupported",
+            Self::TooLarge => "too_large",
+            Self::Timeout => "timeout",
+            Self::PolicyBlocked => "policy_blocked",
+        }
+    }
 }
 
 impl From<ApiKeyRecord> for ApiKeyView {
@@ -214,6 +247,10 @@ pub struct JobView {
     pub requester_key_id: Option<Uuid>,
     pub resolved_extractor: Option<String>,
     pub error_class: ErrorClass,
+    pub issue_kind: JobIssueKind,
+    pub issue_label: String,
+    pub issue_detail: Option<String>,
+    pub profile_action_url: Option<String>,
     pub attempt_count: i64,
     #[serde(with = "time::serde::rfc3339::option")]
     pub started_at: Option<OffsetDateTime>,
@@ -359,6 +396,7 @@ impl JobStatus {
             Self::Queued => "queued",
             Self::Resolving => "resolving",
             Self::CandidatesReady => "candidates_ready",
+            Self::NeedsProfile => "needs_profile",
             Self::CandidateSelected => "candidate_selected",
             Self::Downloading => "downloading",
             Self::Capturing => "capturing",
@@ -375,6 +413,7 @@ impl JobStatus {
             "queued" => Some(Self::Queued),
             "resolving" => Some(Self::Resolving),
             "candidates_ready" => Some(Self::CandidatesReady),
+            "needs_profile" => Some(Self::NeedsProfile),
             "candidate_selected" => Some(Self::CandidateSelected),
             "downloading" => Some(Self::Downloading),
             "capturing" => Some(Self::Capturing),
@@ -390,6 +429,8 @@ impl JobStatus {
 
 impl From<JobRecord> for JobView {
     fn from(value: JobRecord) -> Self {
+        let issue_kind = job_issue_kind(&value);
+        let issue_detail = value.error.clone();
         Self {
             id: value.id,
             status: value.status,
@@ -414,10 +455,61 @@ impl From<JobRecord> for JobView {
             requester_key_id: value.requester_key_id,
             resolved_extractor: value.resolved_extractor,
             error_class: value.error_class,
+            issue_kind,
+            issue_label: issue_kind.label().to_string(),
+            issue_detail,
+            profile_action_url: if issue_kind == JobIssueKind::NeedsProfile {
+                Some(format!("/api/jobs/{}/browser-login-session", value.id))
+            } else {
+                None
+            },
             attempt_count: value.attempt_count,
             started_at: value.started_at,
             completed_at: value.completed_at,
         }
+    }
+}
+
+fn job_issue_kind(job: &JobRecord) -> JobIssueKind {
+    if job.status == JobStatus::NeedsProfile {
+        return JobIssueKind::NeedsProfile;
+    }
+    if job.status != JobStatus::Error {
+        return JobIssueKind::None;
+    }
+    match job.error_class {
+        ErrorClass::TooLarge => return JobIssueKind::TooLarge,
+        ErrorClass::Timeout => return JobIssueKind::Timeout,
+        ErrorClass::DrmBlocked => return JobIssueKind::Unsupported,
+        _ => {}
+    }
+    let lowered = job
+        .error
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if lowered.contains("fresh cookies")
+        || lowered.contains("sign in")
+        || lowered.contains("login required")
+        || lowered.contains("requires authorization")
+        || lowered.contains("requires headers")
+        || lowered.contains("profile")
+    {
+        JobIssueKind::NeedsProfile
+    } else if lowered.contains("unsupported")
+        || lowered.contains("not supported")
+        || lowered.contains("no media candidates")
+        || lowered.contains("did not find media candidates")
+        || lowered.contains("no extractor matched")
+        || lowered.contains("dash")
+        || lowered.contains("mpd")
+        || lowered.contains("blob")
+    {
+        JobIssueKind::Unsupported
+    } else if matches!(job.error_class, ErrorClass::Blocked) {
+        JobIssueKind::PolicyBlocked
+    } else {
+        JobIssueKind::Failed
     }
 }
 

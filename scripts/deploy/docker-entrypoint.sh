@@ -19,6 +19,10 @@ if [[ -z "${RK_API_KEY:-}" ]]; then
     chmod 600 "${ADMIN_KEY_FILE}" || true
   fi
 fi
+if [[ -z "${RK_BROWSER_INTERNAL_TOKEN:-}" ]]; then
+  export RK_BROWSER_INTERNAL_TOKEN
+  RK_BROWSER_INTERNAL_TOKEN="$(openssl rand -hex 32)"
+fi
 
 export RK_BIND_ADDRESS="${RK_BIND_ADDRESS:-0.0.0.0:${PUBLIC_PORT}}"
 export RK_PUBLIC_BASE_URL="${RK_PUBLIC_BASE_URL:-http://localhost:${PUBLIC_PORT}}"
@@ -43,8 +47,12 @@ export RK_EXTERNAL_PROBE_TIMEOUT_SECONDS="${RK_EXTERNAL_PROBE_TIMEOUT_SECONDS:-4
 
 echo "Reflection King starting."
 echo "Dashboard: ${RK_PUBLIC_BASE_URL}"
-echo "Admin key: ${RK_API_KEY}"
 echo "Admin key file: ${ADMIN_KEY_FILE}"
+if [[ "${RK_PRINT_BOOTSTRAP_KEY:-0}" == "1" ]]; then
+  echo "Admin key: ${RK_API_KEY}"
+else
+  echo "Admin key: [hidden; read ${ADMIN_KEY_FILE} inside the container or set RK_PRINT_BOOTSTRAP_KEY=1]"
+fi
 
 cd "${APP_DIR}/services/reflection-browser"
 node dist/server.js &

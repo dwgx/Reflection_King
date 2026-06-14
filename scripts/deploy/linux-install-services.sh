@@ -53,6 +53,7 @@ set_env_var() {
 if [[ ! -f "${ENV_FILE}" ]]; then
   PUBLIC_BASE_URL="${RK_PUBLIC_BASE_URL:-http://localhost:${PUBLIC_PORT}}"
   API_KEY="${RK_API_KEY:-$(openssl rand -hex 32)}"
+  BROWSER_INTERNAL_TOKEN="${RK_BROWSER_INTERNAL_TOKEN:-$(openssl rand -hex 32)}"
   cat > "${ENV_FILE}" <<EOF
 RK_BIND_ADDRESS=127.0.0.1:8787
 RK_PUBLIC_BASE_URL=${PUBLIC_BASE_URL}
@@ -62,6 +63,7 @@ RK_JOB_TTL_HOURS=24
 RK_MAX_CONCURRENT_JOBS=2
 RK_FFMPEG_PATH=ffmpeg
 RK_BROWSER_PROBE_URL=http://127.0.0.1:8791
+RK_BROWSER_INTERNAL_TOKEN=${BROWSER_INTERNAL_TOKEN}
 RK_BROWSER_PROBE_TIMEOUT_SECONDS=90
 RK_BROWSER_HOST=127.0.0.1
 RK_BROWSER_PORT=8791
@@ -80,6 +82,7 @@ EOF
   chmod 600 "${ENV_FILE}"
 else
   API_KEY="$(grep -E '^RK_API_KEY=' "${ENV_FILE}" | tail -n 1 | cut -d= -f2- || true)"
+  BROWSER_INTERNAL_TOKEN="$(grep -E '^RK_BROWSER_INTERNAL_TOKEN=' "${ENV_FILE}" | tail -n 1 | cut -d= -f2- || true)"
   PUBLIC_BASE_URL="$(grep -E '^RK_PUBLIC_BASE_URL=' "${ENV_FILE}" | tail -n 1 | cut -d= -f2- || true)"
   PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-${RK_PUBLIC_BASE_URL:-http://localhost:${PUBLIC_PORT}}}"
 fi
@@ -90,9 +93,13 @@ fi
 if [[ -z "${API_KEY:-}" ]]; then
   API_KEY="${RK_API_KEY:-$(openssl rand -hex 32)}"
 fi
+if [[ -z "${BROWSER_INTERNAL_TOKEN:-}" ]]; then
+  BROWSER_INTERNAL_TOKEN="${RK_BROWSER_INTERNAL_TOKEN:-$(openssl rand -hex 32)}"
+fi
 set_env_var "RK_PUBLIC_BASE_URL" "${PUBLIC_BASE_URL}"
 set_env_var "RK_STORAGE_DIR" "${APP_DIR}/storage"
 set_env_var "RK_BROWSER_PROFILE_ROOT" "${APP_DIR}/storage/browser-profiles"
+set_env_var "RK_BROWSER_INTERNAL_TOKEN" "${BROWSER_INTERNAL_TOKEN}"
 set_env_var "RK_API_KEY" "${API_KEY}"
 chmod 600 "${ENV_FILE}"
 
@@ -291,8 +298,12 @@ ensure_admin_key_usable
 echo
 echo "Reflection King installed."
 echo "Dashboard: ${PUBLIC_BASE_URL}"
-echo "Admin key: ${API_KEY}"
 echo "Admin key file: ${ADMIN_KEY_FILE}"
+if [[ "${RK_PRINT_BOOTSTRAP_KEY:-0}" == "1" ]]; then
+  echo "Admin key: ${API_KEY}"
+else
+  echo "Admin key: [hidden; read ${ADMIN_KEY_FILE} on the server or rerun with RK_PRINT_BOOTSTRAP_KEY=1]"
+fi
 echo
 echo "Check services:"
 echo "  systemctl status nginx reflection-browser reflection-api"

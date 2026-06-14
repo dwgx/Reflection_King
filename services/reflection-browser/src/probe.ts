@@ -9,6 +9,8 @@ import type {
   HeadersForUrlResponse,
   LoginSessionSnapshot,
   LoginSessionView,
+  PageResource,
+  PageSnapshot,
   ProbeRequest,
   ProbeResponse,
 } from "./types.js";
@@ -86,7 +88,9 @@ export class BrowserProbeService {
     const context = await this.context(profileId, request.headed ?? this.config.headed);
     const page = await context.newPage();
     const candidates = new Map<string, BrowserCandidate>();
+    const pageResources = new Map<string, PageResource>();
     const acceptedKinds = requestedCandidateKinds(request.outputs);
+    const capturePageSnapshot = request.outputs?.includes("page_html") ?? false;
     const warnings: string[] = [];
     const consoleErrors: string[] = [];
     let eventCount = 0;
@@ -127,6 +131,7 @@ export class BrowserProbeService {
       }
       eventCount += 1;
       const candidate = await candidateFromResponse(response);
+      addPageResource(pageResources, pageResourceFromResponse(response));
       if (candidate) {
         addCandidate(candidate);
       }
@@ -178,6 +183,17 @@ export class BrowserProbeService {
     }
 
     const title = await page.title().catch(() => undefined);
+    if (capturePageSnapshot) {
+      for (const resource of await genericPageResourcesFromPage(page, finalUrl).catch((error) => {
+        warnings.push(`page resource scan failed: ${error instanceof Error ? error.message : String(error)}`);
+        return [];
+      })) {
+        addPageResource(pageResources, resource);
+      }
+    }
+    const pageSnapshot = capturePageSnapshot
+      ? await captureSnapshot(page, finalUrl, title, [...pageResources.values()], warnings)
+      : undefined;
     const userAgent = await contextUserAgent(context).catch(() => undefined);
     await page.close().catch(() => undefined);
 
@@ -252,6 +268,7 @@ export class BrowserProbeService {
       title,
       platformHint: request.platformHint,
       candidates: filtered.sort((a, b) => b.score - a.score),
+      pageSnapshot,
       warnings,
       eventCount,
       timedOut,
@@ -1046,6 +1063,144 @@ function candidateFromDiscoveredUrl(discovered: DiscoveredUrl, pageUrl: string):
   };
 }
 
+function pageResourceFromResponse(response: Response): PageResource | undefined {
+  const request = response.request();
+  const method = request.method();
+  if (method !== "GET" && method !== "HEAD") {
+    return undefined;
+  }
+  const url = response.url();
+  if (!isHttpUrl(url)) {
+    return undefined;
+  }
+  const headers = response.headers();
+  return {
+    url,
+    method,
+    status: response.status(),
+    contentType: headers["content-type"],
+    contentLength: parseContentLength(headers["content-length"]),
+    resourceType: request.resourceType(),
+    initiatorUrl: safeRequestFrameUrl(request),
+    source: "network",
+  };
+}
+
+function safeRequestFrameUrl(request: Request): string | undefined {
+  try {
+    return request.frame().url();
+  } catch {
+    return undefined;
+  }
+}
+
+function addPageResource(resources: Map<string, PageResource>, resource: PageResource | undefined) {
+  if (!resource || !isHttpUrl(resource.url)) {
+    return;
+  }
+  const existing = resources.get(resource.url);
+  if (!existing) {
+    resources.set(resource.url, resource);
+    return;
+  }
+  resources.set(resource.url, {
+    ...existing,
+    ...Object.fromEntries(
+      Object.entries(resource).filter(([, value]) => value !== undefined && value !== ""),
+    ),
+    source: existing.source === resource.source ? existing.source : `${existing.source},${resource.source}`,
+  });
+}
+
+function parseContentLength(value: string | undefined): number | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
+async function genericPageResourcesFromPage(page: Page, pageUrl: string): Promise<PageResource[]> {
+  return page.evaluate((baseUrl) => {
+    const out = new Map<string, PageResource>();
+    const add = (raw: string | null | undefined, source: string) => {
+      if (!raw || raw.startsWith("blob:") || raw.startsWith("data:") || raw.startsWith("javascript:")) {
+        return;
+      }
+      try {
+        const url = new URL(raw, baseUrl).toString();
+        if (!url.startsWith("http://") && !url.startsWith("https://")) {
+          return;
+        }
+        const existing = out.get(url);
+        out.set(url, {
+          url,
+          method: existing?.method ?? "GET",
+          contentType: existing?.contentType,
+          contentLength: existing?.contentLength,
+          resourceType: existing?.resourceType,
+          initiatorUrl: existing?.initiatorUrl,
+          status: existing?.status,
+          source: existing ? `${existing.source},${source}` : source,
+        });
+      } catch {
+        // Ignore malformed DOM URLs.
+      }
+    };
+
+    document.querySelectorAll<HTMLLinkElement>("link[href]").forEach((node) => add(node.href, `dom_link:${node.rel || "link"}`));
+    document.querySelectorAll<HTMLScriptElement>("script[src]").forEach((node) => add(node.src, "dom_script"));
+    document.querySelectorAll<HTMLImageElement>("img[src]").forEach((node) => add(node.currentSrc || node.src, "dom_image"));
+    document.querySelectorAll<HTMLSourceElement>("source[src]").forEach((node) => add(node.src, "dom_source"));
+    document.querySelectorAll<HTMLVideoElement | HTMLAudioElement>("video[src],audio[src]").forEach((node) => add(node.currentSrc || node.src, "dom_media"));
+
+    for (const entry of performance.getEntriesByType("resource") as PerformanceResourceTiming[]) {
+      add(entry.name, `performance:${entry.initiatorType || "resource"}`);
+      const current = out.get(entry.name);
+      if (current) {
+        current.contentLength = entry.transferSize || entry.encodedBodySize || current.contentLength;
+        current.resourceType = current.resourceType ?? entry.initiatorType;
+      }
+    }
+
+    return [...out.values()].slice(0, 2_000);
+  }, pageUrl);
+}
+
+async function captureSnapshot(
+  page: Page,
+  finalUrl: string,
+  title: string | undefined,
+  resources: PageResource[],
+  warnings: string[],
+): Promise<PageSnapshot> {
+  const html = await page
+    .evaluate(() => document.documentElement.outerHTML)
+    .catch((error) => {
+      warnings.push(`page html capture failed: ${error instanceof Error ? error.message : String(error)}`);
+      return "";
+    });
+  const text = await page
+    .evaluate(() => document.body?.innerText?.slice(0, 200_000) ?? "")
+    .catch(() => "");
+  const screenshotBuffer = await page
+    .screenshot({ type: "png", fullPage: false })
+    .catch((error) => {
+      warnings.push(`page screenshot capture failed: ${error instanceof Error ? error.message : String(error)}`);
+      return undefined;
+    });
+
+  return {
+    finalUrl,
+    title,
+    html: html.slice(0, 5_000_000),
+    text,
+    screenshot: screenshotBuffer ? `data:image/png;base64,${screenshotBuffer.toString("base64")}` : undefined,
+    resources,
+    capturedAt: new Date().toISOString(),
+  };
+}
+
 async function adultVideoCandidatesFromPage(page: Page, pageUrl: string): Promise<BrowserCandidate[]> {
   if (!isAdultVideoPage(pageUrl)) {
     return [];
@@ -1176,6 +1331,10 @@ function requestedCandidateKinds(outputs: string[] | undefined): ReadonlySet<Can
       case "html":
       case "markdown":
         kinds.add("html");
+        kinds.add("audio");
+        kinds.add("video");
+        kinds.add("manifest");
+        kinds.add("image");
         break;
       default:
         break;

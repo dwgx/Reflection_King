@@ -84,7 +84,7 @@ sudo systemctl restart reflection-browser reflection-api nginx
 ```bash
 cd /opt/reflection-king
 sudo git fetch origin master
-sudo git reset --hard origin/master
+sudo git pull --ff-only origin master
 sudo RK_PUBLIC_BASE_URL=http://你的服务器IP:8780 \
   APP_DIR=/opt/reflection-king \
   bash scripts/deploy/linux-install-services.sh
@@ -111,6 +111,10 @@ cp .env.docker.example .env.docker
 docker compose --env-file .env.docker up -d --build
 docker compose logs -f reflection-king
 ```
+
+默认启动日志不会打印管理员密钥。需要查看初始密钥时读取服务器/容器内的
+`admin-key.txt`；仅在一次性受控环境中可设置 `RK_PRINT_BOOTSTRAP_KEY=1`
+让脚本把密钥打印到 stdout。
 
 如果只是本机快速试跑，也可以不复制 `.env.docker`，直接运行：
 

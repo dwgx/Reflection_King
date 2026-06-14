@@ -28,11 +28,33 @@ export interface BrowserCandidate {
   metadata?: Record<string, unknown>;
 }
 
+export interface PageResource {
+  url: string;
+  method?: string;
+  status?: number;
+  contentType?: string;
+  contentLength?: number;
+  resourceType?: string;
+  initiatorUrl?: string;
+  source: string;
+}
+
+export interface PageSnapshot {
+  finalUrl: string;
+  title?: string;
+  html: string;
+  text: string;
+  screenshot?: string;
+  resources: PageResource[];
+  capturedAt: string;
+}
+
 export interface ProbeResponse {
   finalUrl: string;
   title?: string;
   platformHint?: string;
   candidates: BrowserCandidate[];
+  pageSnapshot?: PageSnapshot;
   warnings: string[];
   eventCount: number;
   timedOut: boolean;

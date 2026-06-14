@@ -61,6 +61,9 @@ const headersSchema = z.object({
 });
 
 const config = loadConfig();
+if (!config.internalToken && !isLoopbackHost(config.host)) {
+  throw new Error("RK_BROWSER_INTERNAL_TOKEN is required when RK_BROWSER_HOST is not loopback");
+}
 const probeService = new BrowserProbeService(config);
 const app = Fastify({
   logger: true,
@@ -68,6 +71,16 @@ const app = Fastify({
 
 await app.register(cors, {
   origin: true,
+});
+
+app.addHook("preHandler", async (request, reply) => {
+  if (!config.internalToken || request.url === "/health") {
+    return;
+  }
+  const supplied = request.headers["x-reflection-browser-token"];
+  if (supplied !== config.internalToken) {
+    return reply.status(401).send({ error: "unauthorized browser sidecar request" });
+  }
 });
 
 app.get("/health", async () => ({
@@ -206,3 +219,8 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
 }
 
 await app.listen({ host: config.host, port: config.port });
+
+function isLoopbackHost(host: string): boolean {
+  const normalized = host.trim().toLowerCase();
+  return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1";
+}

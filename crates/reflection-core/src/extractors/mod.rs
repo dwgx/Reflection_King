@@ -77,6 +77,7 @@ pub struct ExtractResult {
     pub candidates: Vec<MediaCandidate>,
     pub warnings: Vec<String>,
     pub browser_session: Option<BrowserSession>,
+    pub page_snapshot: Option<crate::browser_probe::PageSnapshot>,
 }
 
 impl ExtractResult {
@@ -85,6 +86,7 @@ impl ExtractResult {
             candidates,
             warnings: Vec::new(),
             browser_session: None,
+            page_snapshot: None,
         }
     }
 }
@@ -127,6 +129,7 @@ pub struct ResolveOutcome {
     pub candidates: Vec<MediaCandidate>,
     pub warnings: Vec<String>,
     pub browser_sessions: Vec<BrowserSession>,
+    pub page_snapshots: Vec<crate::browser_probe::PageSnapshot>,
 }
 
 impl ResolveOutcome {
@@ -197,6 +200,9 @@ impl SourceResolver {
                     let candidate_count = result.candidates.len();
                     if let Some(session) = result.browser_session.take() {
                         outcome.browser_sessions.push(session);
+                    }
+                    if let Some(snapshot) = result.page_snapshot.take() {
+                        outcome.page_snapshots.push(snapshot);
                     }
                     outcome.attempts.push(AttemptLog {
                         extractor: name.clone(),

@@ -76,6 +76,46 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/jobs/{id}/artifacts", get(list_artifacts))
         .route("/api/jobs/{id}/trace", get(get_trace))
         .route(
+            "/api/jobs/{id}/browser-login-session",
+            post(start_job_browser_login_session),
+        )
+        .route(
+            "/api/jobs/{id}/browser-login-session/{session_id}/snapshot",
+            get(job_browser_login_session_snapshot),
+        )
+        .route(
+            "/api/jobs/{id}/browser-login-session/{session_id}/click",
+            post(job_browser_login_session_click),
+        )
+        .route(
+            "/api/jobs/{id}/browser-login-session/{session_id}/type",
+            post(job_browser_login_session_type),
+        )
+        .route(
+            "/api/jobs/{id}/browser-login-session/{session_id}/press",
+            post(job_browser_login_session_press),
+        )
+        .route(
+            "/api/jobs/{id}/browser-login-session/{session_id}/navigate",
+            post(job_browser_login_session_navigate),
+        )
+        .route(
+            "/api/jobs/{id}/browser-login-session/{session_id}/wheel",
+            post(job_browser_login_session_wheel),
+        )
+        .route(
+            "/api/jobs/{id}/browser-login-session/{session_id}/resize",
+            post(job_browser_login_session_resize),
+        )
+        .route(
+            "/api/jobs/{id}/browser-login-session/{session_id}/close",
+            post(job_close_browser_login_session),
+        )
+        .route(
+            "/api/jobs/{id}/resume-with-profile",
+            post(resume_job_with_profile),
+        )
+        .route(
             "/api/admin/user-keys",
             get(list_user_keys).post(create_user_key),
         )
@@ -337,12 +377,18 @@ async fn create_job(
     let requester_user_agent = header_str(&headers, header::USER_AGENT.as_str());
 
     let bitrate = normalize_bitrate(request.bitrate.as_deref());
-    let requested_discovery = request.discovery.unwrap_or(DiscoveryMode::Direct);
-    let discovery = authorized_discovery(requested_discovery, &principal)?;
+    let outputs = normalize_outputs(request.outputs);
+    let requested_discovery = request.discovery.unwrap_or_else(|| {
+        if outputs.contains(&reflection_core::models::OutputKind::PageHtml) {
+            DiscoveryMode::Browser
+        } else {
+            DiscoveryMode::Direct
+        }
+    });
+    let discovery = authorized_discovery(requested_discovery, &outputs, &principal)?;
     let platform_hint = request
         .platform_hint
         .unwrap_or_else(|| infer_platform(source_url));
-    let outputs = normalize_outputs(request.outputs);
     let profile_id = normalize_profile_id(request.profile_id);
     let auth_mode = request.auth_mode.unwrap_or(AuthMode::Auto);
     let settings = state.runtime_settings_view().await?;
@@ -430,6 +476,168 @@ async fn get_trace(
         .await
         .and_then(|job| job.ok_or_else(|| RkError::NotFound(format!("job {id}"))))?;
     Ok(Json(state.get_trace(id).await?))
+}
+
+async fn start_job_browser_login_session(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<reflection_core::browser_probe::LoginSessionSnapshot>, ApiError> {
+    let principal = authorize(&state, &headers).await?;
+    ensure_login_profile(&principal)?;
+    ensure_job_access(&state, &principal, id).await?;
+    let job = state
+        .get_job(id)
+        .await?
+        .ok_or_else(|| RkError::NotFound(format!("job {id}")))?;
+    Ok(Json(
+        state
+            .start_job_browser_login_session(&job, principal.key_id)
+            .await?,
+    ))
+}
+
+async fn job_browser_login_session_snapshot(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((id, session_id)): Path<(Uuid, String)>,
+) -> Result<Json<reflection_core::browser_probe::LoginSessionSnapshot>, ApiError> {
+    let principal = authorize(&state, &headers).await?;
+    ensure_login_profile(&principal)?;
+    ensure_job_access(&state, &principal, id).await?;
+    Ok(Json(
+        state.browser_login_session_snapshot(&session_id).await?,
+    ))
+}
+
+async fn job_browser_login_session_click(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((id, session_id)): Path<(Uuid, String)>,
+    Json(request): Json<BrowserLoginClickRequest>,
+) -> Result<Json<reflection_core::browser_probe::LoginSessionSnapshot>, ApiError> {
+    let principal = authorize(&state, &headers).await?;
+    ensure_login_profile(&principal)?;
+    ensure_job_access(&state, &principal, id).await?;
+    Ok(Json(
+        state
+            .browser_login_session_click(
+                &session_id,
+                request.x,
+                request.y,
+                request.button.as_deref(),
+                request.click_count,
+            )
+            .await?,
+    ))
+}
+
+async fn job_browser_login_session_type(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((id, session_id)): Path<(Uuid, String)>,
+    Json(request): Json<BrowserLoginTypeRequest>,
+) -> Result<Json<reflection_core::browser_probe::LoginSessionSnapshot>, ApiError> {
+    let principal = authorize(&state, &headers).await?;
+    ensure_login_profile(&principal)?;
+    ensure_job_access(&state, &principal, id).await?;
+    Ok(Json(
+        state
+            .browser_login_session_type(&session_id, &request.text)
+            .await?,
+    ))
+}
+
+async fn job_browser_login_session_press(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((id, session_id)): Path<(Uuid, String)>,
+    Json(request): Json<BrowserLoginPressRequest>,
+) -> Result<Json<reflection_core::browser_probe::LoginSessionSnapshot>, ApiError> {
+    let principal = authorize(&state, &headers).await?;
+    ensure_login_profile(&principal)?;
+    ensure_job_access(&state, &principal, id).await?;
+    Ok(Json(
+        state
+            .browser_login_session_press(&session_id, &request.key)
+            .await?,
+    ))
+}
+
+async fn job_browser_login_session_navigate(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((id, session_id)): Path<(Uuid, String)>,
+    Json(request): Json<BrowserLoginNavigateRequest>,
+) -> Result<Json<reflection_core::browser_probe::LoginSessionSnapshot>, ApiError> {
+    let principal = authorize(&state, &headers).await?;
+    ensure_login_profile(&principal)?;
+    ensure_job_access(&state, &principal, id).await?;
+    Ok(Json(
+        state
+            .browser_login_session_navigate(&session_id, request.url.trim())
+            .await?,
+    ))
+}
+
+async fn job_browser_login_session_wheel(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((id, session_id)): Path<(Uuid, String)>,
+    Json(request): Json<BrowserLoginWheelRequest>,
+) -> Result<Json<reflection_core::browser_probe::LoginSessionSnapshot>, ApiError> {
+    let principal = authorize(&state, &headers).await?;
+    ensure_login_profile(&principal)?;
+    ensure_job_access(&state, &principal, id).await?;
+    Ok(Json(
+        state
+            .browser_login_session_wheel(
+                &session_id,
+                request.delta_x.unwrap_or_default(),
+                request.delta_y.unwrap_or_default(),
+                request.x,
+                request.y,
+            )
+            .await?,
+    ))
+}
+
+async fn job_browser_login_session_resize(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((id, session_id)): Path<(Uuid, String)>,
+    Json(request): Json<BrowserLoginResizeRequest>,
+) -> Result<Json<reflection_core::browser_probe::LoginSessionSnapshot>, ApiError> {
+    let principal = authorize(&state, &headers).await?;
+    ensure_login_profile(&principal)?;
+    ensure_job_access(&state, &principal, id).await?;
+    Ok(Json(
+        state
+            .browser_login_session_resize(&session_id, request.width, request.height)
+            .await?,
+    ))
+}
+
+async fn job_close_browser_login_session(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((id, session_id)): Path<(Uuid, String)>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let principal = authorize(&state, &headers).await?;
+    ensure_login_profile(&principal)?;
+    ensure_job_access(&state, &principal, id).await?;
+    Ok(Json(state.close_browser_login_session(&session_id).await?))
+}
+
+async fn resume_job_with_profile(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<JobView>, ApiError> {
+    let principal = authorize(&state, &headers).await?;
+    ensure_login_profile(&principal)?;
+    ensure_job_access(&state, &principal, id).await?;
+    Ok(Json(state.resume_job_with_profile(id).await?))
 }
 
 async fn list_user_keys(
@@ -874,8 +1082,24 @@ async fn ensure_job_access(
 
 fn authorized_discovery(
     requested: DiscoveryMode,
+    outputs: &[reflection_core::models::OutputKind],
     principal: &AuthPrincipal,
 ) -> Result<DiscoveryMode, RkError> {
+    if outputs.contains(&reflection_core::models::OutputKind::PageHtml) {
+        return match requested {
+            DiscoveryMode::Browser | DiscoveryMode::Auto | DiscoveryMode::Direct
+                if principal.allow_browser_probe =>
+            {
+                Ok(DiscoveryMode::Browser)
+            }
+            DiscoveryMode::Browser | DiscoveryMode::Auto | DiscoveryMode::Direct => {
+                Err(RkError::Unauthorized)
+            }
+            DiscoveryMode::External => Err(RkError::BadRequest(
+                "page_html requires browser discovery".to_string(),
+            )),
+        };
+    }
     match requested {
         DiscoveryMode::Direct => Ok(DiscoveryMode::Direct),
         DiscoveryMode::External if principal.allow_ytdlp || principal.allow_external_adapters => {
@@ -1025,6 +1249,16 @@ fn content_type_for(filename: &str) -> &'static str {
         "image/webp"
     } else if filename.ends_with(".html") {
         "text/html; charset=utf-8"
+    } else if filename.ends_with(".txt") {
+        "text/plain; charset=utf-8"
+    } else if filename.ends_with(".json") {
+        "application/json"
+    } else if filename.ends_with(".zip") {
+        "application/zip"
+    } else if filename.ends_with(".woff2") {
+        "font/woff2"
+    } else if filename.ends_with(".woff") {
+        "font/woff"
     } else {
         "application/octet-stream"
     }

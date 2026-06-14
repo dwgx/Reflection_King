@@ -4,6 +4,7 @@ export interface RuntimeConfig {
   host: string;
   port: number;
   profileRoot: string;
+  internalToken?: string;
   defaultProfileId: string;
   defaultTimeoutMs: number;
   maxTimeoutMs: number;
@@ -31,6 +32,7 @@ export function loadConfig(): RuntimeConfig {
     host: process.env.RK_BROWSER_HOST ?? "127.0.0.1",
     port: numberEnv("RK_BROWSER_PORT", 8791),
     profileRoot,
+    internalToken: process.env.RK_BROWSER_INTERNAL_TOKEN || undefined,
     defaultProfileId: process.env.RK_BROWSER_DEFAULT_PROFILE ?? "admin_default",
     defaultTimeoutMs: numberEnv("RK_BROWSER_TIMEOUT_MS", 45_000),
     maxTimeoutMs: numberEnv("RK_BROWSER_MAX_TIMEOUT_MS", 120_000),

@@ -9,6 +9,7 @@ authors.workspace = true
 [dependencies]
 anyhow.workspace = true
 axum.workspace = true
+base64.workspace = true
 dotenvy.workspace = true
 reflection-core = { path = "../reflection-core" }
 reqwest.workspace = true

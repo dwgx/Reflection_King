@@ -111,7 +111,7 @@ curl -fsSL https://raw.githubusercontent.com/dwgx/Reflection_King/master/install
 ```bash
 cd /opt/reflection-king
 sudo git fetch origin master
-sudo git reset --hard origin/master
+sudo git pull --ff-only origin master
 sudo RK_PUBLIC_BASE_URL=http://你的服务器IP:8780 \
   APP_DIR=/opt/reflection-king \
   bash scripts/deploy/linux-install-services.sh

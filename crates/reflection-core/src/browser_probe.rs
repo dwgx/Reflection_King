@@ -17,6 +17,7 @@ use crate::{
 pub struct BrowserProbeClient {
     client: reqwest::Client,
     base_url: String,
+    internal_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -35,6 +36,8 @@ pub struct ProbeResponse {
     pub final_url: String,
     pub title: Option<String>,
     pub candidates: Vec<BrowserCandidate>,
+    #[serde(rename = "pageSnapshot", default)]
+    pub page_snapshot: Option<PageSnapshot>,
     pub warnings: Vec<String>,
     #[serde(rename = "eventCount")]
     pub event_count: usize,
@@ -54,6 +57,7 @@ pub struct ProbeResponse {
 #[derive(Debug, Clone)]
 pub struct BrowserProbeOutcome {
     pub candidates: Vec<MediaCandidate>,
+    pub page_snapshot: Option<PageSnapshot>,
     pub final_url: String,
     pub title: Option<String>,
     pub warnings: Vec<String>,
@@ -62,6 +66,35 @@ pub struct BrowserProbeOutcome {
     pub user_agent: Option<String>,
     pub playback_triggered: bool,
     pub console_errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PageSnapshot {
+    #[serde(rename = "finalUrl")]
+    pub final_url: String,
+    pub title: Option<String>,
+    pub html: String,
+    pub text: String,
+    pub screenshot: Option<String>,
+    pub resources: Vec<PageResource>,
+    #[serde(rename = "capturedAt")]
+    pub captured_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PageResource {
+    pub url: String,
+    pub method: Option<String>,
+    pub status: Option<u16>,
+    #[serde(rename = "contentType")]
+    pub content_type: Option<String>,
+    #[serde(rename = "contentLength")]
+    pub content_length: Option<i64>,
+    #[serde(rename = "resourceType")]
+    pub resource_type: Option<String>,
+    #[serde(rename = "initiatorUrl")]
+    pub initiator_url: Option<String>,
+    pub source: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -191,12 +224,26 @@ pub struct LoginSessionSnapshot {
 }
 
 impl BrowserProbeClient {
-    pub fn new(base_url: impl Into<String>, timeout: Duration) -> Result<Self> {
+    pub fn new(
+        base_url: impl Into<String>,
+        timeout: Duration,
+        internal_token: Option<String>,
+    ) -> Result<Self> {
         let client = reqwest::Client::builder().timeout(timeout).build()?;
         Ok(Self {
             client,
             base_url: base_url.into().trim_end_matches('/').to_string(),
+            internal_token,
         })
+    }
+
+    fn request(&self, method: reqwest::Method, url: String) -> reqwest::RequestBuilder {
+        let request = self.client.request(method, url);
+        if let Some(token) = &self.internal_token {
+            request.header("x-reflection-browser-token", token)
+        } else {
+            request
+        }
     }
 
     pub async fn probe(
@@ -231,8 +278,7 @@ impl BrowserProbeClient {
             outputs: outputs.to_vec(),
         };
         let response = self
-            .client
-            .post(format!("{}/probe", self.base_url))
+            .request(reqwest::Method::POST, format!("{}/probe", self.base_url))
             .json(&request)
             .send()
             .await?;
@@ -256,6 +302,7 @@ impl BrowserProbeClient {
 
         Ok(BrowserProbeOutcome {
             candidates,
+            page_snapshot: response.page_snapshot,
             final_url: response.final_url,
             title: response.title,
             warnings: response.warnings,
@@ -274,11 +321,10 @@ impl BrowserProbeClient {
         referer: Option<&str>,
     ) -> Result<HeaderMap> {
         let response = self
-            .client
-            .post(format!(
-                "{}/profiles/{}/headers-for-url",
-                self.base_url, profile_id
-            ))
+            .request(
+                reqwest::Method::POST,
+                format!("{}/profiles/{}/headers-for-url", self.base_url, profile_id),
+            )
             .json(&serde_json::json!({
                 "url": url,
                 "referer": referer,
@@ -309,11 +355,10 @@ impl BrowserProbeClient {
 
     pub async fn cookies_for_url(&self, profile_id: &str, url: &str) -> Result<Vec<BrowserCookie>> {
         let response = self
-            .client
-            .post(format!(
-                "{}/profiles/{}/cookies-for-url",
-                self.base_url, profile_id
-            ))
+            .request(
+                reqwest::Method::POST,
+                format!("{}/profiles/{}/cookies-for-url", self.base_url, profile_id),
+            )
             .json(&serde_json::json!({ "url": url }))
             .send()
             .await?;
@@ -335,11 +380,10 @@ impl BrowserProbeClient {
         cookies: Vec<serde_json::Value>,
     ) -> Result<serde_json::Value> {
         let response = self
-            .client
-            .post(format!(
-                "{}/profiles/{}/cookies/import",
-                self.base_url, profile_id
-            ))
+            .request(
+                reqwest::Method::POST,
+                format!("{}/profiles/{}/cookies/import", self.base_url, profile_id),
+            )
             .json(&ImportCookiesRequest { cookies })
             .send()
             .await?;
@@ -360,11 +404,10 @@ impl BrowserProbeClient {
         url: &str,
     ) -> Result<LoginSessionSnapshot> {
         let response = self
-            .client
-            .post(format!(
-                "{}/profiles/{}/login-sessions",
-                self.base_url, profile_id
-            ))
+            .request(
+                reqwest::Method::POST,
+                format!("{}/profiles/{}/login-sessions", self.base_url, profile_id),
+            )
             .json(&LoginSessionStartRequest { url })
             .send()
             .await?;
@@ -373,11 +416,10 @@ impl BrowserProbeClient {
 
     pub async fn login_session_snapshot(&self, session_id: &str) -> Result<LoginSessionSnapshot> {
         let response = self
-            .client
-            .get(format!(
-                "{}/login-sessions/{}/snapshot",
-                self.base_url, session_id
-            ))
+            .request(
+                reqwest::Method::GET,
+                format!("{}/login-sessions/{}/snapshot", self.base_url, session_id),
+            )
             .send()
             .await?;
         self.login_response(response, "login-session snapshot")
@@ -393,11 +435,10 @@ impl BrowserProbeClient {
         click_count: Option<u8>,
     ) -> Result<LoginSessionSnapshot> {
         let response = self
-            .client
-            .post(format!(
-                "{}/login-sessions/{}/click",
-                self.base_url, session_id
-            ))
+            .request(
+                reqwest::Method::POST,
+                format!("{}/login-sessions/{}/click", self.base_url, session_id),
+            )
             .json(&LoginClickRequest {
                 x,
                 y,
@@ -415,11 +456,10 @@ impl BrowserProbeClient {
         text: &str,
     ) -> Result<LoginSessionSnapshot> {
         let response = self
-            .client
-            .post(format!(
-                "{}/login-sessions/{}/type",
-                self.base_url, session_id
-            ))
+            .request(
+                reqwest::Method::POST,
+                format!("{}/login-sessions/{}/type", self.base_url, session_id),
+            )
             .json(&LoginTypeRequest { text })
             .send()
             .await?;
@@ -432,11 +472,10 @@ impl BrowserProbeClient {
         key: &str,
     ) -> Result<LoginSessionSnapshot> {
         let response = self
-            .client
-            .post(format!(
-                "{}/login-sessions/{}/press",
-                self.base_url, session_id
-            ))
+            .request(
+                reqwest::Method::POST,
+                format!("{}/login-sessions/{}/press", self.base_url, session_id),
+            )
             .json(&LoginPressRequest { key })
             .send()
             .await?;
@@ -449,11 +488,10 @@ impl BrowserProbeClient {
         url: &str,
     ) -> Result<LoginSessionSnapshot> {
         let response = self
-            .client
-            .post(format!(
-                "{}/login-sessions/{}/navigate",
-                self.base_url, session_id
-            ))
+            .request(
+                reqwest::Method::POST,
+                format!("{}/login-sessions/{}/navigate", self.base_url, session_id),
+            )
             .json(&LoginNavigateRequest { url })
             .send()
             .await?;
@@ -470,11 +508,10 @@ impl BrowserProbeClient {
         y: Option<f64>,
     ) -> Result<LoginSessionSnapshot> {
         let response = self
-            .client
-            .post(format!(
-                "{}/login-sessions/{}/wheel",
-                self.base_url, session_id
-            ))
+            .request(
+                reqwest::Method::POST,
+                format!("{}/login-sessions/{}/wheel", self.base_url, session_id),
+            )
             .json(&LoginWheelRequest {
                 delta_x,
                 delta_y,
@@ -493,11 +530,10 @@ impl BrowserProbeClient {
         height: u32,
     ) -> Result<LoginSessionSnapshot> {
         let response = self
-            .client
-            .post(format!(
-                "{}/login-sessions/{}/resize",
-                self.base_url, session_id
-            ))
+            .request(
+                reqwest::Method::POST,
+                format!("{}/login-sessions/{}/resize", self.base_url, session_id),
+            )
             .json(&LoginResizeRequest { width, height })
             .send()
             .await?;
@@ -506,11 +542,10 @@ impl BrowserProbeClient {
 
     pub async fn close_login_session(&self, session_id: &str) -> Result<serde_json::Value> {
         let response = self
-            .client
-            .post(format!(
-                "{}/login-sessions/{}/close",
-                self.base_url, session_id
-            ))
+            .request(
+                reqwest::Method::POST,
+                format!("{}/login-sessions/{}/close", self.base_url, session_id),
+            )
             .send()
             .await?;
 

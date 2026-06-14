@@ -42,8 +42,14 @@ if [[ -z "${PUBLIC_BASE_URL}" ]]; then
 fi
 
 if [[ -d "${APP_DIR}/.git" ]]; then
-  git -C "${APP_DIR}" fetch origin "${BRANCH}"
-  git -C "${APP_DIR}" reset --hard "origin/${BRANCH}"
+  if [[ -n "$(git -C "${APP_DIR}" status --porcelain)" ]]; then
+    echo "Existing APP_DIR has local changes; refusing to overwrite with installer." >&2
+    echo "Commit, stash, or move ${APP_DIR}, then rerun." >&2
+    exit 1
+  fi
+  git -C "${APP_DIR}" fetch --prune origin "${BRANCH}"
+  git -C "${APP_DIR}" checkout "${BRANCH}"
+  git -C "${APP_DIR}" pull --ff-only origin "${BRANCH}"
 else
   rm -rf "${APP_DIR}"
   git clone --branch "${BRANCH}" "${REPO_URL}" "${APP_DIR}"

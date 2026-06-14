@@ -927,6 +927,21 @@ impl JobStore {
             validate_range("job_ttl_hours", value, 1, 8_760)?;
             upsert_runtime_setting(&mut tx, "job_ttl_hours", &value.to_string()).await?;
         }
+        if let Some(value) = request.page_archive_max_resources {
+            validate_range("page_archive_max_resources", value as u64, 1, 2_000)?;
+            upsert_runtime_setting(&mut tx, "page_archive_max_resources", &value.to_string())
+                .await?;
+        }
+        if let Some(value) = request.page_archive_max_resource_mb {
+            validate_range("page_archive_max_resource_mb", value, 1, 1_024)?;
+            upsert_runtime_setting(&mut tx, "page_archive_max_resource_mb", &value.to_string())
+                .await?;
+        }
+        if let Some(value) = request.page_archive_max_total_mb {
+            validate_range("page_archive_max_total_mb", value, 1, 4_000)?;
+            upsert_runtime_setting(&mut tx, "page_archive_max_total_mb", &value.to_string())
+                .await?;
+        }
         tx.commit().await?;
         Ok(())
     }
@@ -945,6 +960,61 @@ impl JobStore {
             "#,
         )
         .bind(serde_json::to_string(&values)?)
+        .bind(format_time(OffsetDateTime::now_utc())?)
+        .bind(id.to_string())
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn reset_for_profile_resume(&self, id: Uuid, profile_id: &str) -> Result<()> {
+        sqlx::query(
+            r#"
+            UPDATE jobs
+            SET status = ?,
+                media_url = NULL,
+                error = NULL,
+                error_class = 'none',
+                discovery = ?,
+                auth_mode = ?,
+                profile_id = ?,
+                selected_candidate_ids_json = '[]',
+                updated_at = ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(JobStatus::Queued.as_str())
+        .bind(DiscoveryMode::Browser.as_str())
+        .bind(AuthMode::Profile.as_str())
+        .bind(profile_id)
+        .bind(format_time(OffsetDateTime::now_utc())?)
+        .bind(id.to_string())
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query("DELETE FROM source_candidates WHERE job_id = ?")
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
+
+    pub async fn attach_profile_for_job(&self, id: Uuid, profile_id: &str) -> Result<()> {
+        sqlx::query(
+            r#"
+            UPDATE jobs
+            SET profile_id = ?,
+                auth_mode = ?,
+                discovery = ?,
+                updated_at = ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(profile_id)
+        .bind(AuthMode::Profile.as_str())
+        .bind(DiscoveryMode::Browser.as_str())
         .bind(format_time(OffsetDateTime::now_utc())?)
         .bind(id.to_string())
         .execute(&self.pool)
@@ -1271,6 +1341,34 @@ impl JobStore {
         .bind(error)
         .bind(error_class.as_str())
         .bind(&now)
+        .bind(&now)
+        .bind(id.to_string())
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn mark_needs_profile(
+        &self,
+        id: Uuid,
+        error: &str,
+        error_class: ErrorClass,
+    ) -> Result<()> {
+        let now = format_time(OffsetDateTime::now_utc())?;
+        sqlx::query(
+            r#"
+            UPDATE jobs
+            SET status = ?,
+                error = ?,
+                error_class = ?,
+                updated_at = ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(JobStatus::NeedsProfile.as_str())
+        .bind(error)
+        .bind(error_class.as_str())
         .bind(&now)
         .bind(id.to_string())
         .execute(&self.pool)
@@ -1665,7 +1763,7 @@ impl JobStore {
             UPDATE jobs
             SET status = ?,
                 updated_at = ?
-            WHERE status IN (?, ?, ?, ?, ?, ?, ?)
+            WHERE status IN (?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(JobStatus::Queued.as_str())
@@ -1700,6 +1798,59 @@ impl JobStore {
                     .map_err(|error| RkError::BadRequest(format!("invalid stored job id: {error}")))
             })
             .collect()
+    }
+
+    pub async fn expired_job_ids(&self, ttl_hours: u64) -> Result<Vec<Uuid>> {
+        let cutoff = OffsetDateTime::now_utc() - time::Duration::hours(ttl_hours.max(1) as i64);
+        let rows = sqlx::query(
+            r#"
+            SELECT id
+            FROM jobs
+            WHERE hidden_at IS NULL
+              AND created_at < ?
+              AND status IN (?, ?, ?, ?)
+            "#,
+        )
+        .bind(format_time(cutoff)?)
+        .bind(JobStatus::Ready.as_str())
+        .bind(JobStatus::Error.as_str())
+        .bind(JobStatus::CandidatesReady.as_str())
+        .bind(JobStatus::NeedsProfile.as_str())
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter()
+            .map(|row| {
+                let id: String = row.get("id");
+                Uuid::parse_str(&id)
+                    .map_err(|error| RkError::BadRequest(format!("invalid stored job id: {error}")))
+            })
+            .collect()
+    }
+
+    pub async fn hide_expired_jobs(&self, ids: &[Uuid]) -> Result<u64> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let now = format_time(OffsetDateTime::now_utc())?;
+        let mut hidden = 0u64;
+        for id in ids {
+            let result = sqlx::query(
+                r#"
+                UPDATE jobs
+                SET hidden_at = COALESCE(hidden_at, ?),
+                    updated_at = ?
+                WHERE id = ?
+                "#,
+            )
+            .bind(&now)
+            .bind(&now)
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+            hidden = hidden.saturating_add(result.rows_affected());
+        }
+        Ok(hidden)
     }
 
     async fn migrate(&self) -> Result<()> {
@@ -2875,6 +3026,9 @@ mod tests {
                 yt_dlp_timeout_seconds: Some(120),
                 yt_dlp_max_json_mb: Some(16),
                 job_ttl_hours: Some(72),
+                page_archive_max_resources: Some(75),
+                page_archive_max_resource_mb: Some(8),
+                page_archive_max_total_mb: Some(64),
             })
             .await
             .unwrap();
@@ -2901,6 +3055,20 @@ mod tests {
             Some("16")
         );
         assert_eq!(values.get("job_ttl_hours").map(String::as_str), Some("72"));
+        assert_eq!(
+            values.get("page_archive_max_resources").map(String::as_str),
+            Some("75")
+        );
+        assert_eq!(
+            values
+                .get("page_archive_max_resource_mb")
+                .map(String::as_str),
+            Some("8")
+        );
+        assert_eq!(
+            values.get("page_archive_max_total_mb").map(String::as_str),
+            Some("64")
+        );
 
         drop(store);
         std::fs::remove_file(&path).ok();

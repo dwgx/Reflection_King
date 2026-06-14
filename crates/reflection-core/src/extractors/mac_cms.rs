@@ -88,6 +88,7 @@ impl SourceExtractor for MacCmsEpisodeExtractor {
                 candidates: Vec::new(),
                 warnings: vec!["mac_cms player_aaaa not found".to_string()],
                 browser_session: None,
+                page_snapshot: None,
             });
         };
 
@@ -135,6 +136,7 @@ impl SourceExtractor for MacCmsEpisodeExtractor {
             candidates,
             warnings,
             browser_session: None,
+            page_snapshot: None,
         })
     }
 }

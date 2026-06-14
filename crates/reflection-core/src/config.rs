@@ -13,6 +13,7 @@ pub struct AppConfig {
     pub max_concurrent_jobs: usize,
     pub ffmpeg_path: PathBuf,
     pub browser_probe_url: Option<String>,
+    pub browser_internal_token: Option<String>,
     pub browser_probe_timeout: Duration,
     pub yt_dlp_path: Option<PathBuf>,
     pub yt_dlp_timeout: Duration,
@@ -57,6 +58,9 @@ impl AppConfig {
             .ok()
             .filter(|value| !value.is_empty())
             .map(|value| value.trim_end_matches('/').to_string());
+        let browser_internal_token = env::var("RK_BROWSER_INTERNAL_TOKEN")
+            .ok()
+            .filter(|value| !value.is_empty());
         let browser_probe_timeout_secs = env_value("RK_BROWSER_PROBE_TIMEOUT_SECONDS", "90")
             .parse::<u64>()
             .map_err(|error| {
@@ -109,6 +113,7 @@ impl AppConfig {
             max_concurrent_jobs,
             ffmpeg_path,
             browser_probe_url,
+            browser_internal_token,
             browser_probe_timeout: Duration::from_secs(browser_probe_timeout_secs),
             yt_dlp_path,
             yt_dlp_timeout: Duration::from_secs(yt_dlp_timeout_secs),

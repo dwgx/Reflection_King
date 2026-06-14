@@ -58,6 +58,10 @@ impl Transcoder {
             .await
     }
 
+    pub async fn probe_media(&self, input: &Path) -> Result<MediaStreamInfo> {
+        self.probe_input(input.as_os_str(), &[]).await
+    }
+
     pub async fn media_url_to_mp4(&self, input_url: &str, output: &Path) -> Result<()> {
         self.media_url_to_mp4_with_headers(input_url, output, &HeaderMap::new())
             .await

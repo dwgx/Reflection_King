@@ -52,6 +52,7 @@ impl SourceExtractor for HanimeExtractor {
                 candidates: Vec::new(),
                 warnings: vec!["hanime1 cloudflare_blocked: HTTP 403".to_string()],
                 browser_session: None,
+                page_snapshot: None,
             });
         }
         if !status.is_success() {
@@ -59,6 +60,7 @@ impl SourceExtractor for HanimeExtractor {
                 candidates: Vec::new(),
                 warnings: vec![format!("hanime1 returned HTTP {status}")],
                 browser_session: None,
+                page_snapshot: None,
             });
         }
 
@@ -67,6 +69,7 @@ impl SourceExtractor for HanimeExtractor {
                 candidates: Vec::new(),
                 warnings: vec!["hanime1 page returned Cloudflare challenge".to_string()],
                 browser_session: None,
+                page_snapshot: None,
             });
         }
 

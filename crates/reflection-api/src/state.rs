@@ -1,11 +1,14 @@
 use std::{
+    collections::{HashMap, HashSet},
+    io::{Seek, Write},
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
 };
 
+use base64::Engine;
 use reflection_core::{
-    browser_probe::{BrowserCookie, BrowserProbeClient, LoginSessionSnapshot},
+    browser_probe::{BrowserCookie, BrowserProbeClient, LoginSessionSnapshot, PageSnapshot},
     download::Downloader,
     external_probe::YtDlpProbe,
     external_tools::{ExternalToolKind, ExternalToolProbe},
@@ -65,6 +68,8 @@ pub fn classify_error(error: &RkError) -> ErrorClass {
                 ErrorClass::Timeout
             } else if lowered.contains("drm") {
                 ErrorClass::DrmBlocked
+            } else if lowered.contains("too large") {
+                ErrorClass::TooLarge
             } else if lowered.contains("did not find") || lowered.contains("no ") {
                 ErrorClass::Blocked
             } else {
@@ -98,7 +103,13 @@ impl AppState {
         let browser_probe = config
             .browser_probe_url
             .as_ref()
-            .map(|url| BrowserProbeClient::new(url, config.browser_probe_timeout))
+            .map(|url| {
+                BrowserProbeClient::new(
+                    url,
+                    config.browser_probe_timeout,
+                    config.browser_internal_token.clone(),
+                )
+            })
             .transpose()?;
         let yt_dlp_probe = config
             .yt_dlp_path
@@ -158,6 +169,10 @@ impl AppState {
         let state = self.clone();
         tokio::spawn(async move {
             state.worker_loop().await;
+        });
+        let state = self.clone();
+        tokio::spawn(async move {
+            state.retention_loop().await;
         });
     }
 
@@ -396,6 +411,44 @@ impl AppState {
         browser_probe.start_login_session(profile_id, url).await
     }
 
+    pub async fn start_job_browser_login_session(
+        &self,
+        job: &JobRecord,
+        requester_key_id: Option<Uuid>,
+    ) -> Result<LoginSessionSnapshot> {
+        let profile_id = job_scoped_profile_id(job.id, requester_key_id);
+        self.job_store
+            .attach_profile_for_job(job.id, &profile_id)
+            .await?;
+        self.start_browser_login_session(&profile_id, &job.source_url)
+            .await
+    }
+
+    pub async fn resume_job_with_profile(&self, job_id: Uuid) -> Result<JobView> {
+        let job = self
+            .job_store
+            .get(job_id)
+            .await?
+            .ok_or_else(|| RkError::NotFound(format!("job {job_id}")))?;
+        let profile_id = job.profile_id.clone();
+        self.job_store
+            .reset_for_profile_resume(job_id, &profile_id)
+            .await?;
+        self.record_event(PipelineEvent::new(
+            job_id,
+            "profile_resume",
+            "api",
+            PipelineEventType::Note,
+            serde_json::json!({ "profile_id": profile_id }),
+        ))
+        .await;
+        self.enqueue(job_id).await?;
+        self.get_job(job_id)
+            .await?
+            .map(JobView::from)
+            .ok_or_else(|| RkError::NotFound(format!("job {job_id}")))
+    }
+
     pub async fn browser_login_session_snapshot(
         &self,
         session_id: &str,
@@ -588,10 +641,46 @@ impl AppState {
                 if let Err(error) = state.process_job(job_id).await {
                     error!(%job_id, "job failed: {error}");
                     let class = classify_error(&error);
-                    state.mark_error(job_id, error.to_string(), class).await;
+                    if is_profile_required_error(&error) {
+                        state
+                            .mark_needs_profile(job_id, error.to_string(), class)
+                            .await;
+                    } else {
+                        state.mark_error(job_id, error.to_string(), class).await;
+                    }
                 }
             });
         }
+    }
+
+    async fn retention_loop(self: Arc<Self>) {
+        loop {
+            if let Err(error) = self.prune_expired_jobs().await {
+                warn!("job retention cleanup failed: {error}");
+            }
+            tokio_time::sleep(Duration::from_secs(3600)).await;
+        }
+    }
+
+    async fn prune_expired_jobs(&self) -> Result<()> {
+        let settings = self.runtime_settings().await?;
+        let ids = self
+            .job_store
+            .expired_job_ids(settings.job_ttl_hours)
+            .await?;
+        for id in &ids {
+            tokio::fs::remove_dir_all(self.paths.public_job_dir(*id))
+                .await
+                .ok();
+            tokio::fs::remove_dir_all(self.paths.tmp_dir().join(id.to_string()))
+                .await
+                .ok();
+        }
+        let hidden = self.job_store.hide_expired_jobs(&ids).await?;
+        if hidden > 0 {
+            info!(hidden, "expired jobs pruned by retention worker");
+        }
+        Ok(())
     }
 
     async fn process_job(&self, job_id: Uuid) -> Result<()> {
@@ -686,7 +775,28 @@ impl AppState {
             .await;
         }
 
+        let snapshot_count = outcome.page_snapshots.len();
+        if job.outputs.contains(&OutputKind::PageHtml) {
+            for snapshot in &outcome.page_snapshots {
+                self.persist_page_snapshot(&job, snapshot, &settings)
+                    .await?;
+            }
+        }
+
         if outcome.candidates.is_empty() {
+            if job.outputs.contains(&OutputKind::PageHtml) && snapshot_count > 0 {
+                let artifacts = self.job_store.list_artifacts(job.id).await?;
+                let media_url = artifacts
+                    .iter()
+                    .find(|artifact| artifact.media_url.ends_with("/archive.zip"))
+                    .or_else(|| artifacts.first())
+                    .map(|artifact| artifact.media_url.clone())
+                    .unwrap_or_else(|| {
+                        format!("{}/api/jobs/{}/artifacts", settings.public_base_url, job.id)
+                    });
+                self.mark_ready(job.id, media_url).await?;
+                return Ok(());
+            }
             let detail = if outcome.chain.is_empty() {
                 "no extractor matched this source".to_string()
             } else if let Some(errors) = resolver_error_summary(&outcome.attempts) {
@@ -709,13 +819,15 @@ impl AppState {
             .await
             .ok();
         let winner = outcome.winner.clone().unwrap_or(chain_label);
-        self.record_candidate_summary(job.id, &winner, &outcome.candidates)
-            .await;
-        self.job_store
-            .replace_candidates(job.id, &outcome.candidates)
-            .await?;
-        self.update_status(job.id, JobStatus::CandidatesReady)
-            .await?;
+        if !outcome.candidates.is_empty() {
+            self.record_candidate_summary(job.id, &winner, &outcome.candidates)
+                .await;
+            self.job_store
+                .replace_candidates(job.id, &outcome.candidates)
+                .await?;
+            self.update_status(job.id, JobStatus::CandidatesReady)
+                .await?;
+        }
         Ok(())
     }
 
@@ -941,7 +1053,7 @@ impl AppState {
             OutputKind::Video,
             output_path,
             "video/mp4",
-            &settings.public_base_url,
+            settings,
         )
         .await?;
 
@@ -993,12 +1105,20 @@ impl AppState {
                     OutputKind::Audio,
                     output_path,
                     "audio/mpeg",
-                    &settings.public_base_url,
+                    settings,
                 )
                 .await?;
             }
             CandidateKind::Video | CandidateKind::Manifest => {
                 let headers = self.download_headers(job, candidate).await?;
+                if candidate.kind == CandidateKind::Manifest
+                    && is_dash_manifest_candidate(candidate)
+                {
+                    return Err(RkError::Source(
+                        "DASH/MPD manifest is not supported yet; queued for adapter work"
+                            .to_string(),
+                    ));
+                }
                 if candidate.kind == CandidateKind::Manifest
                     && !is_yt_dlp_inline_manifest_candidate(candidate)
                 {
@@ -1019,7 +1139,7 @@ impl AppState {
                             settings,
                         )
                         .await?;
-                    } else {
+                    } else if candidate.kind == CandidateKind::Manifest {
                         let raw_result = async {
                             let transcoder = self.transcoder(settings);
                             let stream_info = transcoder
@@ -1061,13 +1181,30 @@ impl AppState {
                                 return Err(raw_error);
                             }
                         }
+                    } else {
+                        self.update_status(job.id, JobStatus::Downloading).await?;
+                        let input_path = temp_dir.join(format!("{}.input", candidate.id));
+                        Downloader::new(settings.download_timeout, settings.max_download_bytes)?
+                            .download_to_file_with_headers(&candidate.url, &input_path, headers)
+                            .await?;
+                        let stream_info =
+                            self.transcoder(settings).probe_media(&input_path).await?;
+                        if !stream_info.has_audio {
+                            return Err(RkError::Source(
+                                "candidate has no audio stream".to_string(),
+                            ));
+                        }
+                        self.update_status(job.id, JobStatus::Transcoding).await?;
+                        self.transcoder(settings)
+                            .audio_to_mp3(&input_path, &output_path, &job.bitrate)
+                            .await?;
                     }
                     self.insert_artifact(
                         job.id,
                         OutputKind::Audio,
                         output_path,
                         "audio/mpeg",
-                        &settings.public_base_url,
+                        settings,
                     )
                     .await?;
                 } else {
@@ -1082,7 +1219,7 @@ impl AppState {
                             settings,
                         )
                         .await?;
-                    } else {
+                    } else if candidate.kind == CandidateKind::Manifest {
                         let raw_result = async {
                             let transcoder = self.transcoder(settings);
                             let stream_info = transcoder
@@ -1148,13 +1285,30 @@ impl AppState {
                                 return Err(raw_error);
                             }
                         }
+                    } else {
+                        self.update_status(job.id, JobStatus::Downloading).await?;
+                        let input_path = temp_dir.join(format!("{}.input", candidate.id));
+                        Downloader::new(settings.download_timeout, settings.max_download_bytes)?
+                            .download_to_file_with_headers(&candidate.url, &input_path, headers)
+                            .await?;
+                        let stream_info =
+                            self.transcoder(settings).probe_media(&input_path).await?;
+                        if !stream_info.has_video {
+                            return Err(RkError::Source(
+                                "candidate has no video stream".to_string(),
+                            ));
+                        }
+                        self.update_status(job.id, JobStatus::Remuxing).await?;
+                        self.transcoder(settings)
+                            .media_to_mp4(&input_path, &output_path)
+                            .await?;
                     }
                     self.insert_artifact(
                         job.id,
                         OutputKind::Video,
                         output_path,
                         "video/mp4",
-                        &settings.public_base_url,
+                        settings,
                     )
                     .await?;
                 }
@@ -1174,11 +1328,22 @@ impl AppState {
                         .content_type
                         .as_deref()
                         .unwrap_or("application/octet-stream"),
-                    &settings.public_base_url,
+                    settings,
                 )
                 .await?;
             }
-            CandidateKind::Html | CandidateKind::Unknown => {}
+            CandidateKind::Html => {
+                let artifacts = self.job_store.list_artifacts(job.id).await?;
+                if !artifacts
+                    .iter()
+                    .any(|artifact| artifact.kind == OutputKind::PageHtml)
+                {
+                    return Err(RkError::Source(
+                        "HTML candidate requires page_html browser snapshot output".to_string(),
+                    ));
+                }
+            }
+            CandidateKind::Unknown => {}
         }
 
         tokio::fs::remove_dir_all(&temp_dir).await.ok();
@@ -1406,9 +1571,16 @@ impl AppState {
         kind: OutputKind,
         path: std::path::PathBuf,
         content_type: &str,
-        public_base_url: &str,
+        settings: &EffectiveRuntimeSettings,
     ) -> Result<()> {
-        let bytes = tokio::fs::metadata(&path).await?.len() as i64;
+        let raw_bytes = tokio::fs::metadata(&path).await?.len();
+        if raw_bytes > settings.max_download_bytes {
+            tokio::fs::remove_file(&path).await.ok();
+            return Err(RkError::DownloadTooLarge {
+                max_bytes: settings.max_download_bytes,
+            });
+        }
+        let bytes = raw_bytes as i64;
         let filename = path
             .file_name()
             .and_then(|value| value.to_str())
@@ -1418,12 +1590,186 @@ impl AppState {
             job_id,
             kind,
             path: path.display().to_string(),
-            media_url: format!("{public_base_url}/media/{job_id}/{filename}"),
+            media_url: format!("{}/media/{job_id}/{filename}", settings.public_base_url),
             content_type: content_type.to_string(),
             bytes,
             created_at: OffsetDateTime::now_utc(),
         };
         self.job_store.insert_artifact(&artifact).await
+    }
+
+    async fn persist_page_snapshot(
+        &self,
+        job: &JobRecord,
+        snapshot: &PageSnapshot,
+        settings: &EffectiveRuntimeSettings,
+    ) -> Result<()> {
+        let job_dir = self.paths.public_job_dir(job.id);
+        let page_dir = job_dir.join("page");
+        let assets_dir = page_dir.join("assets");
+        let metadata_dir = page_dir.join("metadata");
+        let preview_dir = page_dir.join("preview");
+        tokio::fs::create_dir_all(&assets_dir).await?;
+        tokio::fs::create_dir_all(&metadata_dir).await?;
+        tokio::fs::create_dir_all(&preview_dir).await?;
+
+        let downloader = Downloader::new(
+            settings.download_timeout,
+            settings
+                .page_archive_max_resource_bytes
+                .min(settings.max_download_bytes),
+        )?;
+        let mut used_asset_paths = HashSet::new();
+        let mut rewrites = HashMap::new();
+        let mut resource_records = Vec::new();
+        let mut total_bytes = snapshot.html.len() as u64;
+
+        for resource in snapshot
+            .resources
+            .iter()
+            .filter(|resource| page_resource_is_archivable(resource))
+            .take(settings.page_archive_max_resources)
+        {
+            if total_bytes >= settings.page_archive_max_total_bytes {
+                resource_records.push(serde_json::json!({
+                    "url": &resource.url,
+                    "source": &resource.source,
+                    "skipped": true,
+                    "reason": "archive_total_limit_reached",
+                }));
+                continue;
+            }
+            let remaining = settings
+                .page_archive_max_total_bytes
+                .saturating_sub(total_bytes);
+            if let Some(length) = resource
+                .content_length
+                .and_then(|value| u64::try_from(value).ok())
+            {
+                if length > settings.page_archive_max_resource_bytes || length > remaining {
+                    resource_records.push(page_resource_record(
+                        resource,
+                        None,
+                        0,
+                        Some("too_large"),
+                    ));
+                    continue;
+                }
+            }
+
+            let asset_name = unique_asset_name(resource, &mut used_asset_paths);
+            let asset_path = assets_dir.join(&asset_name);
+            let download_result = async {
+                validate_candidate_url(&resource.url)?;
+                downloader
+                    .download_to_file_with_headers(&resource.url, &asset_path, HeaderMap::new())
+                    .await?;
+                let bytes = tokio::fs::metadata(&asset_path).await?.len();
+                if bytes > remaining {
+                    tokio::fs::remove_file(&asset_path).await.ok();
+                    return Err(RkError::DownloadTooLarge {
+                        max_bytes: remaining,
+                    });
+                }
+                Ok::<u64, RkError>(bytes)
+            }
+            .await;
+
+            match download_result {
+                Ok(bytes) => {
+                    total_bytes = total_bytes.saturating_add(bytes);
+                    let relative_path = format!("assets/{asset_name}");
+                    rewrites.insert(resource.url.clone(), relative_path.clone());
+                    resource_records.push(page_resource_record(
+                        resource,
+                        Some(&relative_path),
+                        bytes,
+                        None,
+                    ));
+                }
+                Err(error) => {
+                    tokio::fs::remove_file(&asset_path).await.ok();
+                    resource_records.push(page_resource_record(
+                        resource,
+                        None,
+                        0,
+                        Some(&friendly_candidate_failure(&error)),
+                    ));
+                }
+            }
+        }
+
+        let html = rewrite_page_html(&snapshot.html, &rewrites);
+        let html_path = job_dir.join("page.html");
+        tokio::fs::write(&html_path, html).await?;
+        tokio::fs::copy(&html_path, page_dir.join("index.html")).await?;
+        self.insert_artifact(
+            job.id,
+            OutputKind::PageHtml,
+            html_path.clone(),
+            "text/html; charset=utf-8",
+            settings,
+        )
+        .await?;
+
+        let text_path = job_dir.join("page.txt");
+        tokio::fs::write(&text_path, &snapshot.text).await?;
+        tokio::fs::copy(&text_path, page_dir.join("page.txt")).await?;
+        self.insert_artifact(
+            job.id,
+            OutputKind::PageHtml,
+            text_path.clone(),
+            "text/plain; charset=utf-8",
+            settings,
+        )
+        .await?;
+
+        if let Some(bytes) = decode_data_url(&snapshot.screenshot)? {
+            let screenshot_path = job_dir.join("screenshot.png");
+            tokio::fs::write(&screenshot_path, bytes).await?;
+            tokio::fs::copy(&screenshot_path, preview_dir.join("screenshot.png")).await?;
+            self.insert_artifact(
+                job.id,
+                OutputKind::PageHtml,
+                screenshot_path,
+                "image/png",
+                settings,
+            )
+            .await?;
+        }
+
+        let metadata_path = job_dir.join("resources.json");
+        tokio::fs::write(
+            &metadata_path,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "final_url": &snapshot.final_url,
+                "title": &snapshot.title,
+                "captured_at": &snapshot.captured_at,
+                "resources": resource_records,
+            }))?,
+        )
+        .await?;
+        tokio::fs::copy(&metadata_path, metadata_dir.join("resources.json")).await?;
+        self.insert_artifact(
+            job.id,
+            OutputKind::PageHtml,
+            metadata_path.clone(),
+            "application/json",
+            settings,
+        )
+        .await?;
+
+        let archive_path = job_dir.join("archive.zip");
+        write_zip_archive(&page_dir, &archive_path).await?;
+        self.insert_artifact(
+            job.id,
+            OutputKind::PageHtml,
+            archive_path,
+            "application/zip",
+            settings,
+        )
+        .await?;
+        Ok(())
     }
 
     async fn enqueue(&self, job_id: Uuid) -> Result<()> {
@@ -1473,6 +1819,24 @@ impl AppState {
         .await;
     }
 
+    async fn mark_needs_profile(&self, job_id: Uuid, error: String, class: ErrorClass) {
+        if let Err(store_error) = self
+            .job_store
+            .mark_needs_profile(job_id, &error, class)
+            .await
+        {
+            error!(%job_id, "failed to persist needs-profile state: {store_error}");
+        }
+        self.record_event(PipelineEvent::new(
+            job_id,
+            "needs_profile",
+            "worker",
+            PipelineEventType::StatusChange,
+            serde_json::json!({ "error": error, "error_class": class.as_str() }),
+        ))
+        .await;
+    }
+
     /// Best-effort pipeline event recording: a logging failure must never fail
     /// the job it is describing.
     pub async fn record_event(&self, event: PipelineEvent) {
@@ -1507,14 +1871,359 @@ fn resolver_error_summary(attempts: &[reflection_core::extractors::AttemptLog]) 
     }
 }
 
+fn is_profile_required_error(error: &RkError) -> bool {
+    let message = error.to_string().to_ascii_lowercase();
+    message.contains("fresh cookies")
+        || message.contains("sign in")
+        || message.contains("login required")
+        || message.contains("requires authorization")
+        || message.contains("requires headers")
+        || message.contains("needs profile")
+        || message.contains("profile required")
+        || message.contains("401")
+        || message.contains("403")
+}
+
 fn validate_candidate_url(url: &str) -> Result<()> {
     reflection_core::url_policy::parse_and_validate_url(url).map(|_| ())
+}
+
+fn page_resource_is_archivable(resource: &reflection_core::browser_probe::PageResource) -> bool {
+    let method = resource.method.as_deref().unwrap_or("GET");
+    if method != "GET" && method != "HEAD" {
+        return false;
+    }
+    if resource.url.starts_with("blob:") || resource.url.starts_with("data:") {
+        return false;
+    }
+    let content_type = resource
+        .content_type
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let kind = resource
+        .resource_type
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    matches!(
+        kind.as_str(),
+        "stylesheet" | "script" | "image" | "font" | "media" | "video" | "audio" | "manifest"
+    ) || content_type.starts_with("text/css")
+        || content_type.contains("javascript")
+        || content_type.starts_with("image/")
+        || content_type.starts_with("font/")
+        || content_type.starts_with("audio/")
+        || content_type.starts_with("video/")
+}
+
+fn unique_asset_name(
+    resource: &reflection_core::browser_probe::PageResource,
+    used: &mut HashSet<String>,
+) -> String {
+    let parsed = url::Url::parse(&resource.url).ok();
+    let host = parsed
+        .as_ref()
+        .and_then(|url| url.host_str())
+        .unwrap_or("resource");
+    let path_name = parsed
+        .as_ref()
+        .and_then(|url| {
+            url.path_segments()
+                .and_then(|mut segments| segments.next_back())
+        })
+        .filter(|name| !name.is_empty())
+        .unwrap_or("index");
+    let mut base = sanitize_filename(&format!("{host}-{path_name}"));
+    if !base.contains('.') {
+        base.push_str(extension_for_resource(resource));
+    }
+    if base.len() > 120 {
+        base.truncate(120);
+    }
+    let original = base.clone();
+    let mut index = 1usize;
+    while !used.insert(base.clone()) {
+        base = format!("{index}-{original}");
+        index += 1;
+    }
+    base
+}
+
+fn sanitize_filename(value: &str) -> String {
+    let out = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .trim_matches(['.', '_'])
+        .to_string();
+    if out.is_empty() {
+        "resource".to_string()
+    } else {
+        out
+    }
+}
+
+fn extension_for_resource(resource: &reflection_core::browser_probe::PageResource) -> &'static str {
+    let content_type = resource
+        .content_type
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if content_type.starts_with("text/css") {
+        ".css"
+    } else if content_type.contains("javascript") {
+        ".js"
+    } else if content_type.contains("png") {
+        ".png"
+    } else if content_type.contains("jpeg") || content_type.contains("jpg") {
+        ".jpg"
+    } else if content_type.contains("webp") {
+        ".webp"
+    } else if content_type.contains("gif") {
+        ".gif"
+    } else if content_type.contains("woff2") {
+        ".woff2"
+    } else if content_type.starts_with("font/") {
+        ".font"
+    } else if content_type.contains("mp4") {
+        ".mp4"
+    } else if content_type.contains("mpegurl") {
+        ".m3u8"
+    } else {
+        ".bin"
+    }
+}
+
+fn rewrite_page_html(html: &str, rewrites: &HashMap<String, String>) -> String {
+    let mut out = html.to_string();
+    for (url, relative) in rewrites {
+        out = out.replace(url, relative);
+        out = out.replace(&html_escape_attribute(url), relative);
+    }
+    out
+}
+
+fn html_escape_attribute(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+fn page_resource_record(
+    resource: &reflection_core::browser_probe::PageResource,
+    local_path: Option<&str>,
+    bytes: u64,
+    skipped_reason: Option<&str>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "url": &resource.url,
+        "method": &resource.method,
+        "status": resource.status,
+        "content_type": &resource.content_type,
+        "content_length": resource.content_length,
+        "resource_type": &resource.resource_type,
+        "initiator_url": &resource.initiator_url,
+        "source": &resource.source,
+        "local_path": local_path,
+        "bytes": bytes,
+        "skipped": skipped_reason.is_some(),
+        "reason": skipped_reason,
+    })
+}
+
+fn decode_data_url(value: &Option<String>) -> Result<Option<Vec<u8>>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let Some((meta, payload)) = value.split_once(',') else {
+        return Ok(None);
+    };
+    if !meta.starts_with("data:image/png;base64") {
+        return Ok(None);
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(payload)
+        .map_err(|error| RkError::Source(format!("invalid screenshot data url: {error}")))?;
+    Ok(Some(bytes))
+}
+
+async fn write_zip_archive(source_dir: &Path, archive_path: &Path) -> Result<()> {
+    let source_dir = source_dir.to_path_buf();
+    let archive_path = archive_path.to_path_buf();
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        let file = std::fs::File::create(&archive_path)?;
+        let mut writer = std::io::BufWriter::new(file);
+        let files = collect_zip_files(&source_dir, &source_dir)?;
+        let mut entries = Vec::with_capacity(files.len());
+        for (name, path) in files {
+            let bytes = std::fs::read(path)?;
+            let offset = writer.stream_position()?;
+            write_zip_local_file(&mut writer, &name, &bytes)?;
+            entries.push(ZipEntryRecord {
+                name,
+                crc32: crc32(&bytes),
+                size: bytes.len() as u32,
+                offset: offset as u32,
+            });
+        }
+        let central_offset = writer.stream_position()?;
+        for entry in &entries {
+            write_zip_central_directory(&mut writer, entry)?;
+        }
+        let central_size = writer.stream_position()? - central_offset;
+        write_zip_end(
+            &mut writer,
+            entries.len() as u16,
+            central_size as u32,
+            central_offset as u32,
+        )?;
+        writer.flush()?;
+        Ok(())
+    })
+    .await
+    .map_err(|error| RkError::Source(format!("zip task failed: {error}")))??;
+    Ok(())
+}
+
+fn collect_zip_files(root: &Path, dir: &Path) -> Result<Vec<(String, PathBuf)>> {
+    let mut out = Vec::new();
+    collect_zip_files_inner(root, dir, &mut out)?;
+    out.sort_by(|left, right| left.0.cmp(&right.0));
+    Ok(out)
+}
+
+fn collect_zip_files_inner(
+    root: &Path,
+    dir: &Path,
+    out: &mut Vec<(String, PathBuf)>,
+) -> Result<()> {
+    let mut entries = std::fs::read_dir(dir)?
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .collect::<Vec<_>>();
+    entries.sort();
+    for path in entries {
+        if path.is_dir() {
+            collect_zip_files_inner(root, &path, out)?;
+            continue;
+        }
+        let relative = path
+            .strip_prefix(root)
+            .map_err(|error| RkError::Source(format!("zip path error: {error}")))?;
+        let name = relative.to_string_lossy().replace('\\', "/");
+        out.push((name, path));
+    }
+    Ok(())
+}
+
+struct ZipEntryRecord {
+    name: String,
+    crc32: u32,
+    size: u32,
+    offset: u32,
+}
+
+fn write_zip_local_file<W: Write>(writer: &mut W, name: &str, bytes: &[u8]) -> Result<()> {
+    let name_bytes = name.as_bytes();
+    let crc = crc32(bytes);
+    writer.write_all(&0x0403_4b50u32.to_le_bytes())?;
+    writer.write_all(&20u16.to_le_bytes())?;
+    writer.write_all(&0u16.to_le_bytes())?;
+    writer.write_all(&0u16.to_le_bytes())?;
+    writer.write_all(&0u16.to_le_bytes())?;
+    writer.write_all(&0u16.to_le_bytes())?;
+    writer.write_all(&crc.to_le_bytes())?;
+    writer.write_all(&(bytes.len() as u32).to_le_bytes())?;
+    writer.write_all(&(bytes.len() as u32).to_le_bytes())?;
+    writer.write_all(&(name_bytes.len() as u16).to_le_bytes())?;
+    writer.write_all(&0u16.to_le_bytes())?;
+    writer.write_all(name_bytes)?;
+    writer.write_all(bytes)?;
+    Ok(())
+}
+
+fn write_zip_central_directory<W: Write>(writer: &mut W, entry: &ZipEntryRecord) -> Result<()> {
+    let name_bytes = entry.name.as_bytes();
+    writer.write_all(&0x0201_4b50u32.to_le_bytes())?;
+    writer.write_all(&20u16.to_le_bytes())?;
+    writer.write_all(&20u16.to_le_bytes())?;
+    writer.write_all(&0u16.to_le_bytes())?;
+    writer.write_all(&0u16.to_le_bytes())?;
+    writer.write_all(&0u16.to_le_bytes())?;
+    writer.write_all(&0u16.to_le_bytes())?;
+    writer.write_all(&entry.crc32.to_le_bytes())?;
+    writer.write_all(&entry.size.to_le_bytes())?;
+    writer.write_all(&entry.size.to_le_bytes())?;
+    writer.write_all(&(name_bytes.len() as u16).to_le_bytes())?;
+    writer.write_all(&0u16.to_le_bytes())?;
+    writer.write_all(&0u16.to_le_bytes())?;
+    writer.write_all(&0u16.to_le_bytes())?;
+    writer.write_all(&0u16.to_le_bytes())?;
+    writer.write_all(&0u32.to_le_bytes())?;
+    writer.write_all(&entry.offset.to_le_bytes())?;
+    writer.write_all(name_bytes)?;
+    Ok(())
+}
+
+fn write_zip_end<W: Write>(
+    writer: &mut W,
+    entry_count: u16,
+    central_size: u32,
+    central_offset: u32,
+) -> Result<()> {
+    writer.write_all(&0x0605_4b50u32.to_le_bytes())?;
+    writer.write_all(&0u16.to_le_bytes())?;
+    writer.write_all(&0u16.to_le_bytes())?;
+    writer.write_all(&entry_count.to_le_bytes())?;
+    writer.write_all(&entry_count.to_le_bytes())?;
+    writer.write_all(&central_size.to_le_bytes())?;
+    writer.write_all(&central_offset.to_le_bytes())?;
+    writer.write_all(&0u16.to_le_bytes())?;
+    Ok(())
+}
+
+fn crc32(bytes: &[u8]) -> u32 {
+    let mut crc = 0xffff_ffffu32;
+    for byte in bytes {
+        crc ^= u32::from(*byte);
+        for _ in 0..8 {
+            let mask = (crc & 1).wrapping_neg();
+            crc = (crc >> 1) ^ (0xedb8_8320 & mask);
+        }
+    }
+    !crc
+}
+
+fn job_scoped_profile_id(job_id: Uuid, requester_key_id: Option<Uuid>) -> String {
+    let job = job_id.simple().to_string();
+    let actor = requester_key_id
+        .map(|id| id.simple().to_string()[..12].to_string())
+        .unwrap_or_else(|| "admin".to_string());
+    format!("job_{job}_{actor}")
 }
 
 fn is_yt_dlp_inline_manifest_candidate(candidate: &MediaCandidate) -> bool {
     candidate.extractor == "yt_dlp"
         && candidate.kind == CandidateKind::Manifest
         && candidate.url.starts_with("data:application/x-mpegurl")
+}
+
+fn is_dash_manifest_candidate(candidate: &MediaCandidate) -> bool {
+    let url = candidate.url.to_ascii_lowercase();
+    let content_type = candidate
+        .content_type
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    url.contains(".mpd") || content_type.contains("dash+xml")
 }
 
 fn safe_candidate_download_headers(candidate: &MediaCandidate) -> HeaderMap {
@@ -1649,6 +2358,9 @@ struct EffectiveRuntimeSettings {
     yt_dlp_timeout: Duration,
     yt_dlp_max_json_bytes: usize,
     job_ttl_hours: u64,
+    page_archive_max_resources: usize,
+    page_archive_max_resource_bytes: u64,
+    page_archive_max_total_bytes: u64,
 }
 
 impl EffectiveRuntimeSettings {
@@ -1673,6 +2385,8 @@ impl EffectiveRuntimeSettings {
             "yt_dlp_max_json_mb",
             config.yt_dlp_max_json_bytes / 1024 / 1024,
         );
+        let page_archive_max_resource_mb = setting_u64(values, "page_archive_max_resource_mb", 16);
+        let page_archive_max_total_mb = setting_u64(values, "page_archive_max_total_mb", 200);
         Self {
             public_base_url: values
                 .get("public_base_url")
@@ -1683,6 +2397,13 @@ impl EffectiveRuntimeSettings {
             yt_dlp_timeout: Duration::from_secs(yt_dlp_timeout_seconds),
             yt_dlp_max_json_bytes: yt_dlp_max_json_mb.saturating_mul(1024).saturating_mul(1024),
             job_ttl_hours: setting_u64(values, "job_ttl_hours", config.job_ttl_hours),
+            page_archive_max_resources: setting_usize(values, "page_archive_max_resources", 200),
+            page_archive_max_resource_bytes: page_archive_max_resource_mb
+                .saturating_mul(1024)
+                .saturating_mul(1024),
+            page_archive_max_total_bytes: page_archive_max_total_mb
+                .saturating_mul(1024)
+                .saturating_mul(1024),
         }
     }
 
@@ -1696,6 +2417,9 @@ impl EffectiveRuntimeSettings {
             yt_dlp_timeout_seconds: self.yt_dlp_timeout.as_secs(),
             yt_dlp_max_json_bytes: self.yt_dlp_max_json_bytes,
             job_ttl_hours: self.job_ttl_hours,
+            page_archive_max_resources: self.page_archive_max_resources,
+            page_archive_max_resource_bytes: self.page_archive_max_resource_bytes,
+            page_archive_max_total_bytes: self.page_archive_max_total_bytes,
             ffmpeg_path: config.ffmpeg_path.display().to_string(),
             browser_probe_url: config.browser_probe_url.clone(),
             yt_dlp_path: config
