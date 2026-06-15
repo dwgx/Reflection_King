@@ -19,6 +19,8 @@ import type { RuntimeConfig } from "./config.js";
 const MANIFEST_EXTENSIONS = [".m3u8", ".mpd"];
 const MEDIA_EXTENSIONS = [".mp4", ".m4s", ".m4a", ".mp3", ".aac", ".wav", ".webm", ".flv", ".mov", ".mkv"];
 const IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif"];
+const ARCHIVE_RESPONSE_BODY_MAX_BYTES = 2 * 1024 * 1024;
+const ARCHIVE_RESPONSE_BODY_TOTAL_MAX_BYTES = 24 * 1024 * 1024;
 const BILIBILI_AUDIO_QUALITY_IDS = new Set(["30216", "30232", "30280"]);
 const URL_PATTERN = /https?:\/\/[^\s"'<>\\]+|(?:\/|\.\.?\/)[^\s"'<>\\]+\.(?:m3u8|mpd|mp4|m4s|m4a|mp3|aac|wav|webm|flv|mov|mkv)(?:\?[^\s"'<>\\]*)?/gi;
 const AD_HOST_PARTS = [
@@ -89,6 +91,8 @@ export class BrowserProbeService {
     const page = await context.newPage();
     const candidates = new Map<string, BrowserCandidate>();
     const pageResources = new Map<string, PageResource>();
+    const pendingPageResourceTasks = new Set<Promise<void>>();
+    let archivedResponseBodyBytes = 0;
     const acceptedKinds = requestedCandidateKinds(request.outputs);
     const capturePageSnapshot = request.outputs?.includes("page_html") ?? false;
     const warnings: string[] = [];
@@ -125,16 +129,33 @@ export class BrowserProbeService {
       }
     };
 
-    page.on("response", async (response) => {
+    page.on("response", (response) => {
       if (eventCount >= maxEvents) {
         return;
       }
       eventCount += 1;
-      const candidate = await candidateFromResponse(response);
-      addPageResource(pageResources, pageResourceFromResponse(response));
-      if (candidate) {
-        addCandidate(candidate);
-      }
+      const task = (async () => {
+        const candidate = await candidateFromResponse(response);
+        const resource = await pageResourceFromResponse(
+          response,
+          capturePageSnapshot,
+          ARCHIVE_RESPONSE_BODY_TOTAL_MAX_BYTES - archivedResponseBodyBytes,
+        );
+        if (resource?.bodyBase64) {
+          const bytes = Buffer.byteLength(resource.bodyBase64, "base64");
+          if (archivedResponseBodyBytes + bytes <= ARCHIVE_RESPONSE_BODY_TOTAL_MAX_BYTES) {
+            archivedResponseBodyBytes += bytes;
+          } else {
+            delete resource.bodyBase64;
+          }
+        }
+        addPageResource(pageResources, resource);
+        if (candidate) {
+          addCandidate(candidate);
+        }
+      })();
+      pendingPageResourceTasks.add(task);
+      task.finally(() => pendingPageResourceTasks.delete(task)).catch(() => undefined);
     });
 
     try {
@@ -186,6 +207,9 @@ export class BrowserProbeService {
     }
 
     const title = await page.title().catch(() => undefined);
+    await withTimeout(Promise.allSettled([...pendingPageResourceTasks]), 3_000).catch(() => {
+      warnings.push("page resource body capture timeout");
+    });
     if (capturePageSnapshot) {
       for (const resource of await genericPageResourcesFromPage(page, finalUrl).catch((error) => {
         warnings.push(`page resource scan failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -1132,7 +1156,11 @@ function candidateFromDiscoveredUrl(discovered: DiscoveredUrl, pageUrl: string):
   };
 }
 
-function pageResourceFromResponse(response: Response): PageResource | undefined {
+async function pageResourceFromResponse(
+  response: Response,
+  includeBody: boolean,
+  remainingBodyBudget: number,
+): Promise<PageResource | undefined> {
   const request = response.request();
   const method = request.method();
   if (method !== "GET" && method !== "HEAD") {
@@ -1143,17 +1171,93 @@ function pageResourceFromResponse(response: Response): PageResource | undefined 
     return undefined;
   }
   const headers = response.headers();
+  const contentType = headers["content-type"];
+  const contentLength = parseContentLength(headers["content-length"]);
+  const resourceType = request.resourceType();
+  const bodyBase64 = includeBody
+    ? await safeArchiveResponseBodyBase64(response, resourceType, contentType, contentLength, remainingBodyBudget)
+    : undefined;
   return {
     url,
     method,
     status: response.status(),
-    contentType: headers["content-type"],
-    contentLength: parseContentLength(headers["content-length"]),
-    resourceType: request.resourceType(),
+    contentType,
+    contentLength,
+    resourceType,
     initiatorUrl: safeRequestFrameUrl(request),
     requestHeaders: safeArchiveRequestHeaders(request),
+    bodyBase64,
     source: "network",
   };
+}
+
+async function safeArchiveResponseBodyBase64(
+  response: Response,
+  resourceType: string,
+  contentType: string | undefined,
+  contentLength: number | undefined,
+  remainingBudget: number,
+): Promise<string | undefined> {
+  if (
+    remainingBudget <= 0 ||
+    !archiveResponseBodyAllowed(response, resourceType, contentType, contentLength, remainingBudget)
+  ) {
+    return undefined;
+  }
+  const buffer = await withTimeout(response.body(), 2_000).catch(() => undefined);
+  if (!buffer || buffer.length > ARCHIVE_RESPONSE_BODY_MAX_BYTES || buffer.length > remainingBudget) {
+    return undefined;
+  }
+  return buffer.toString("base64");
+}
+
+function archiveResponseBodyAllowed(
+  response: Response,
+  resourceType: string,
+  contentType: string | undefined,
+  contentLength: number | undefined,
+  remainingBudget: number,
+): boolean {
+  if (!response.ok()) {
+    return false;
+  }
+  if (contentLength !== undefined && (contentLength > ARCHIVE_RESPONSE_BODY_MAX_BYTES || contentLength > remainingBudget)) {
+    return false;
+  }
+  const loweredType = (contentType ?? "").toLowerCase();
+  const maybeLargeBinary =
+    loweredType.startsWith("image/") ||
+    loweredType.startsWith("font/") ||
+    loweredType === "application/font-woff" ||
+    loweredType === "application/wasm";
+  if (contentLength === undefined && maybeLargeBinary) {
+    return false;
+  }
+  if (
+    loweredType.startsWith("text/css") ||
+    loweredType.includes("javascript") ||
+    loweredType.startsWith("image/") ||
+    loweredType.startsWith("font/") ||
+    loweredType === "application/font-woff" ||
+    loweredType === "application/manifest+json" ||
+    loweredType === "application/wasm" ||
+    loweredType === "image/svg+xml"
+  ) {
+    return true;
+  }
+  return ["stylesheet", "script", "image", "font", "manifest"].includes(resourceType);
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`timeout after ${timeoutMs}ms`)), timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  });
 }
 
 function safeArchiveRequestHeaders(request: Request): Record<string, string> | undefined {
@@ -1202,6 +1306,7 @@ function addPageResource(resources: Map<string, PageResource>, resource: PageRes
     ...Object.fromEntries(
       Object.entries(resource).filter(([, value]) => value !== undefined && value !== ""),
     ),
+    bodyBase64: existing.bodyBase64 ?? resource.bodyBase64,
     source: existing.source === resource.source ? existing.source : `${existing.source},${resource.source}`,
   });
 }
@@ -1261,6 +1366,7 @@ async function genericPageResourcesFromPage(page: Page, pageUrl: string): Promis
           resourceType: existing?.resourceType,
           initiatorUrl: existing?.initiatorUrl,
           requestHeaders: existing?.requestHeaders,
+          bodyBase64: existing?.bodyBase64,
           status: existing?.status,
           source: existing ? `${existing.source},${source}` : source,
         });
@@ -1360,7 +1466,7 @@ async function captureSnapshot(
     .catch(() => "");
   const screenshotBuffer = options.includeScreenshot
     ? await page
-        .screenshot({ type: "png", fullPage: false })
+        .screenshot({ type: "png", fullPage: false, timeout: 5_000 })
         .catch((error) => {
           warnings.push(`page screenshot capture failed: ${error instanceof Error ? error.message : String(error)}`);
           return undefined;

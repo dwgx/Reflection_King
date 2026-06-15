@@ -1830,11 +1830,9 @@ impl AppState {
             let asset_path = assets_dir.join(&asset_name);
             let download_result = async {
                 validate_candidate_url(&resource.url)?;
-                let headers = page_resource_download_headers(resource, &snapshot.final_url);
-                downloader
-                    .download_to_file_with_headers(&resource.url, &asset_path, headers)
-                    .await?;
-                let bytes = tokio::fs::metadata(&asset_path).await?.len();
+                let bytes =
+                    write_or_download_page_resource(resource, &asset_path, &downloader, &snapshot.final_url)
+                        .await?;
                 if bytes > remaining {
                     tokio::fs::remove_file(&asset_path).await.ok();
                     return Err(RkError::DownloadTooLarge {
@@ -2178,6 +2176,35 @@ fn page_resource_is_archivable(resource: &reflection_core::browser_probe::PageRe
         || content_type.starts_with("font/")
         || content_type.starts_with("audio/")
         || content_type.starts_with("video/")
+}
+
+async fn write_or_download_page_resource(
+    resource: &reflection_core::browser_probe::PageResource,
+    asset_path: &Path,
+    downloader: &Downloader,
+    final_url: &str,
+) -> Result<u64> {
+    if let Some(bytes) = decode_page_resource_body(resource)? {
+        tokio::fs::write(asset_path, &bytes).await?;
+        return Ok(bytes.len() as u64);
+    }
+    let headers = page_resource_download_headers(resource, final_url);
+    downloader
+        .download_to_file_with_headers(&resource.url, asset_path, headers)
+        .await?;
+    Ok(tokio::fs::metadata(asset_path).await?.len())
+}
+
+fn decode_page_resource_body(
+    resource: &reflection_core::browser_probe::PageResource,
+) -> Result<Option<Vec<u8>>> {
+    let Some(value) = &resource.body_base64 else {
+        return Ok(None);
+    };
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(value)
+        .map_err(|error| RkError::Source(format!("invalid page resource body data: {error}")))?;
+    Ok(Some(bytes))
 }
 
 fn unique_asset_name(
@@ -2716,6 +2743,7 @@ fn css_dependency_resource(
         resource_type: Some(resource_type_hint_for_url(url).to_string()),
         initiator_url: Some(initiator_url.to_string()),
         request_headers: initiator_headers.clone(),
+        body_base64: None,
         source: "css".to_string(),
     }
 }
@@ -2735,6 +2763,7 @@ fn text_dependency_resource(
         resource_type: Some(resource_type_hint_for_url(url).to_string()),
         initiator_url: Some(initiator_url.to_string()),
         request_headers: initiator_headers.clone(),
+        body_base64: None,
         source: source.to_string(),
     }
 }
@@ -4074,6 +4103,7 @@ fn page_resource_record(
         "initiator_url": &resource.initiator_url,
         "source": &resource.source,
         "request_headers": &resource.request_headers,
+        "body_cached": resource.body_base64.is_some(),
         "local_path": local_path,
         "bytes": bytes,
         "skipped": skipped_reason.is_some(),
@@ -5184,6 +5214,7 @@ mod tests {
             resource_type: Some("stylesheet".to_string()),
             initiator_url: Some("https://neverlose.cc/".to_string()),
             request_headers: HashMap::new(),
+            body_base64: None,
             source: "network".to_string(),
         };
         insert_page_rewrites(
@@ -5479,6 +5510,7 @@ mod tests {
                 ("authorization".to_string(), "Bearer secret".to_string()),
                 ("referer".to_string(), "https://example.com/".to_string()),
             ]),
+            body_base64: None,
             source: "network".to_string(),
         };
 
