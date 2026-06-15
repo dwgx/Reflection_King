@@ -1288,7 +1288,22 @@ function App() {
           </div>
         </Card>
 
-        <Card title="任务详情" icon={<Settings size={16} />} className="dashboard-panel" bodyClassName="dashboard-panel-body">
+        <Card
+          title="任务详情"
+          icon={<Settings size={16} />}
+          className="dashboard-panel"
+          bodyClassName="dashboard-panel-body"
+          action={selectedJob && jobIssue(selectedJob)?.kind === "profile" ? (
+            <div className="profile-card-actions">
+              <Button type="button" variant="secondary" disabled={busy} onClick={() => startJobBrowserLoginSession(selectedJob)}>
+                <MonitorPlay size={16} /> 打开验证
+              </Button>
+              <Button type="button" disabled={busy} onClick={resumeSelectedJobWithProfile}>
+                <RefreshCw size={16} /> 继续
+              </Button>
+            </div>
+          ) : undefined}
+        >
           {selectedJob ? (
             <div className="detail-layout">
               <div className="detail-title-row">

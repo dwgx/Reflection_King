@@ -235,6 +235,18 @@
     gap: 8px;
   }
 
+  .profile-card-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 8px;
+  }
+
+  .profile-card-actions .button {
+    min-height: 34px;
+    padding-inline: 10px;
+  }
+
   .composer-panel {
     max-width: none;
   }
