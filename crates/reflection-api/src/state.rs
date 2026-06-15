@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
+    ffi::OsStr,
     io::{Seek, Write},
     path::{Path, PathBuf},
     sync::Arc,
@@ -1878,6 +1879,10 @@ impl AppState {
         let html_path = job_dir.join("page.html");
         tokio::fs::write(&html_path, html).await?;
         tokio::fs::copy(&html_path, page_dir.join("index.html")).await?;
+        let inline_html =
+            inline_page_html_assets(&page_dir.join("index.html"), &page_dir, &snapshot.final_url)
+                .await?;
+        tokio::fs::write(page_dir.join("index.inline.html"), inline_html).await?;
         self.insert_artifact(
             job.id,
             OutputKind::PageHtml,
@@ -2568,6 +2573,11 @@ async fn rewrite_archived_text_files(
             ""
         };
         let rewritten = rewrite_archive_text_references(&rewritten, rewrite_base_path, rewrites);
+        let rewritten = if page_resource_is_javascript(&archived.resource) {
+            rewrite_offline_javascript_behaviors(&rewritten)
+        } else {
+            rewritten
+        };
         if rewritten != text {
             tokio::fs::write(&archived.asset_path, rewritten).await?;
         }
@@ -2593,6 +2603,26 @@ fn page_resource_is_css(resource: &PageResource) -> bool {
             .next()
             .unwrap_or_default()
             .ends_with(".css")
+}
+
+fn page_resource_is_javascript(resource: &PageResource) -> bool {
+    resource
+        .content_type
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .contains("javascript")
+        || resource
+            .resource_type
+            .as_deref()
+            .unwrap_or_default()
+            .eq_ignore_ascii_case("script")
+        || resource
+            .url
+            .split('?')
+            .next()
+            .unwrap_or_default()
+            .ends_with(".js")
 }
 
 fn page_resource_is_textual(resource: &PageResource) -> bool {
@@ -3237,7 +3267,593 @@ fn rewrite_page_html(html: &str, rewrites: &HashMap<String, String>) -> String {
     let mut out = rewrite_archive_text_references(html, "", rewrites);
     out = remove_local_archive_attribute(&out, "integrity", rewrites);
     out = remove_local_archive_attribute(&out, "crossorigin", rewrites);
+    out = disable_offline_html_analytics(&out);
     out
+}
+
+async fn inline_page_html_assets(
+    html_path: &Path,
+    page_dir: &Path,
+    final_url: &str,
+) -> Result<String> {
+    let html = tokio::fs::read_to_string(html_path).await?;
+    let page_dir = page_dir.to_path_buf();
+    let final_url = final_url.to_string();
+    tokio::task::spawn_blocking(move || {
+        inline_page_html_assets_blocking(&html, &page_dir, &final_url)
+    })
+    .await
+    .map_err(|error| RkError::Source(format!("inline page archive task failed: {error}")))?
+}
+
+fn inline_page_html_assets_blocking(
+    html: &str,
+    page_dir: &Path,
+    final_url: &str,
+) -> Result<String> {
+    let mut cache = HashMap::new();
+    let mut out = html.to_string();
+    for attribute in ["href", "src", "poster", "manifest"] {
+        out = inline_html_asset_attribute(&out, page_dir, final_url, &mut cache, attribute)?;
+    }
+    out = inline_html_srcset_attributes(&out, page_dir, final_url, &mut cache)?;
+    Ok(out)
+}
+
+fn inline_html_asset_attribute(
+    html: &str,
+    page_dir: &Path,
+    final_url: &str,
+    cache: &mut HashMap<String, InlineAssetState>,
+    attribute: &str,
+) -> Result<String> {
+    let mut out = String::with_capacity(html.len());
+    let mut index = 0usize;
+    while let Some(offset) = find_ascii_case_insensitive(&html[index..], attribute) {
+        let attr_start = index + offset;
+        let before = html[..attr_start].chars().next_back();
+        let after = html[attr_start + attribute.len()..].chars().next();
+        if before.is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+            || after.is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+        {
+            out.push_str(&html[index..attr_start + attribute.len()]);
+            index = attr_start + attribute.len();
+            continue;
+        }
+
+        let mut cursor = attr_start + attribute.len();
+        cursor = skip_html_whitespace(html, cursor);
+        if !html[cursor..].starts_with('=') {
+            out.push_str(&html[index..cursor]);
+            index = cursor;
+            continue;
+        }
+        cursor += 1;
+        cursor = skip_html_whitespace(html, cursor);
+        let Some(quote) = html[cursor..]
+            .chars()
+            .next()
+            .filter(|ch| *ch == '\'' || *ch == '"')
+        else {
+            out.push_str(&html[index..cursor]);
+            index = cursor;
+            continue;
+        };
+        let value_start = cursor + quote.len_utf8();
+        let Some(value_end) = find_css_quote_end(html, value_start, quote) else {
+            break;
+        };
+        out.push_str(&html[index..value_start]);
+        let value = &html[value_start..value_end];
+        if let Some(data_url) = inline_asset_value(value, page_dir, final_url, cache)? {
+            out.push_str(&data_url);
+        } else {
+            out.push_str(value);
+        }
+        index = value_end;
+    }
+    out.push_str(&html[index..]);
+    Ok(out)
+}
+
+fn inline_html_srcset_attributes(
+    html: &str,
+    page_dir: &Path,
+    final_url: &str,
+    cache: &mut HashMap<String, InlineAssetState>,
+) -> Result<String> {
+    let mut out = String::with_capacity(html.len());
+    let mut index = 0usize;
+    while let Some(offset) = find_ascii_case_insensitive(&html[index..], "srcset") {
+        let attr_start = index + offset;
+        let before = html[..attr_start].chars().next_back();
+        let after = html[attr_start + "srcset".len()..].chars().next();
+        if before.is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+            || after.is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+        {
+            out.push_str(&html[index..attr_start + "srcset".len()]);
+            index = attr_start + "srcset".len();
+            continue;
+        }
+        let mut cursor = attr_start + "srcset".len();
+        cursor = skip_html_whitespace(html, cursor);
+        if !html[cursor..].starts_with('=') {
+            out.push_str(&html[index..cursor]);
+            index = cursor;
+            continue;
+        }
+        cursor += 1;
+        cursor = skip_html_whitespace(html, cursor);
+        let Some(quote) = html[cursor..]
+            .chars()
+            .next()
+            .filter(|ch| *ch == '\'' || *ch == '"')
+        else {
+            out.push_str(&html[index..cursor]);
+            index = cursor;
+            continue;
+        };
+        let value_start = cursor + quote.len_utf8();
+        let Some(value_end) = find_css_quote_end(html, value_start, quote) else {
+            break;
+        };
+        out.push_str(&html[index..value_start]);
+        out.push_str(&inline_srcset_value(
+            &html[value_start..value_end],
+            page_dir,
+            final_url,
+            cache,
+        )?);
+        index = value_end;
+    }
+    out.push_str(&html[index..]);
+    Ok(out)
+}
+
+fn inline_srcset_value(
+    value: &str,
+    page_dir: &Path,
+    final_url: &str,
+    cache: &mut HashMap<String, InlineAssetState>,
+) -> Result<String> {
+    let mut parts = Vec::new();
+    for candidate in value.split(',') {
+        let trimmed = candidate.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let mut tokens = trimmed.split_whitespace();
+        let Some(url) = tokens.next() else {
+            continue;
+        };
+        let descriptor = tokens.collect::<Vec<_>>().join(" ");
+        let rewritten =
+            inline_asset_value(url, page_dir, final_url, cache)?.unwrap_or_else(|| url.to_string());
+        if descriptor.is_empty() {
+            parts.push(rewritten);
+        } else {
+            parts.push(format!("{rewritten} {descriptor}"));
+        }
+    }
+    Ok(parts.join(", "))
+}
+
+fn inline_asset_value(
+    value: &str,
+    page_dir: &Path,
+    final_url: &str,
+    cache: &mut HashMap<String, InlineAssetState>,
+) -> Result<Option<String>> {
+    let trimmed = value.trim();
+    if trimmed.is_empty()
+        || trimmed.starts_with('#')
+        || trimmed.starts_with("data:")
+        || trimmed.starts_with("blob:")
+        || trimmed.starts_with("javascript:")
+        || trimmed.starts_with("mailto:")
+        || trimmed.starts_with("tel:")
+    {
+        return Ok(None);
+    }
+    if trimmed.starts_with("http://")
+        || trimmed.starts_with("https://")
+        || trimmed.starts_with("//")
+    {
+        return Ok(None);
+    }
+    let Some(asset_path) = local_archive_asset_path(page_dir, trimmed, final_url) else {
+        return Ok(None);
+    };
+    let key = asset_path.to_string_lossy().to_string();
+    match cache.get(&key) {
+        Some(InlineAssetState::Ready(data_url)) => return Ok(Some(data_url.clone())),
+        Some(InlineAssetState::InProgress) => return Ok(None),
+        None => {}
+    }
+    let Some(mime) = inline_mime_for_path(&asset_path) else {
+        return Ok(None);
+    };
+    cache.insert(key.clone(), InlineAssetState::InProgress);
+    let bytes = std::fs::read(&asset_path)?;
+    let data_url = if inline_mime_is_text(mime) {
+        let mut text = String::from_utf8_lossy(&bytes).into_owned();
+        if path_extension_is(&asset_path, "css") {
+            text = inline_css_asset_urls(&text, &asset_path, page_dir, final_url, cache)?;
+        } else {
+            text = inline_text_asset_references(&text, page_dir, final_url, cache)?;
+        }
+        if path_extension_is(&asset_path, "js") {
+            text = rewrite_offline_javascript_behaviors(&text);
+        }
+        let encoded = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
+        format!("data:{mime};charset=utf-8;base64,{encoded}")
+    } else {
+        let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+        format!("data:{mime};base64,{encoded}")
+    };
+    cache.insert(key, InlineAssetState::Ready(data_url.clone()));
+    Ok(Some(data_url))
+}
+
+#[derive(Debug, Clone)]
+enum InlineAssetState {
+    InProgress,
+    Ready(String),
+}
+
+fn path_extension_is(path: &Path, expected: &str) -> bool {
+    path.extension()
+        .and_then(OsStr::to_str)
+        .is_some_and(|extension| extension.eq_ignore_ascii_case(expected))
+}
+
+fn local_archive_asset_path(page_dir: &Path, value: &str, final_url: &str) -> Option<PathBuf> {
+    let without_fragment = value.split('#').next().unwrap_or(value);
+    let without_query = without_fragment
+        .split('?')
+        .next()
+        .unwrap_or(without_fragment);
+    let relative = if without_query.starts_with("assets/") {
+        without_query.to_string()
+    } else if let Ok(url) = url::Url::parse(without_query) {
+        let base = url::Url::parse(final_url).ok()?;
+        if url.scheme() != base.scheme()
+            || url.domain() != base.domain()
+            || url.port_or_known_default() != base.port_or_known_default()
+        {
+            return None;
+        }
+        url.path().trim_start_matches('/').to_string()
+    } else {
+        without_query.trim_start_matches("./").to_string()
+    };
+    let normalized = relative.replace('\\', "/");
+    if normalized.starts_with('/')
+        || normalized.contains("../")
+        || normalized == ".."
+        || normalized.contains('\0')
+    {
+        return None;
+    }
+    let path = page_dir.join(normalized);
+    if path.is_file() {
+        Some(path)
+    } else {
+        None
+    }
+}
+
+fn inline_css_asset_urls(
+    css: &str,
+    css_path: &Path,
+    page_dir: &Path,
+    final_url: &str,
+    cache: &mut HashMap<String, InlineAssetState>,
+) -> Result<String> {
+    let mut out = String::with_capacity(css.len());
+    let mut index = 0usize;
+    while let Some(offset) = find_ascii_case_insensitive(&css[index..], "url(") {
+        let absolute_start = index + offset;
+        let value_start = absolute_start + 4;
+        let Some(value_end) = find_css_closing_paren(css, value_start) else {
+            break;
+        };
+        out.push_str(&css[index..absolute_start]);
+        let original = &css[value_start..value_end];
+        if let Some(raw) = normalize_css_reference(original) {
+            if let Some(asset_path) = local_css_asset_path(css_path, page_dir, &raw, final_url) {
+                if asset_path == css_path {
+                    out.push_str(&css[absolute_start..=value_end]);
+                    index = value_end.saturating_add(1);
+                    continue;
+                }
+                if let Some(mime) = inline_mime_for_path(&asset_path) {
+                    let key = asset_path.to_string_lossy().to_string();
+                    let data_url = match cache.get(&key) {
+                        Some(InlineAssetState::Ready(cached)) => Some(cached.clone()),
+                        Some(InlineAssetState::InProgress) => None,
+                        None => {
+                            let bytes = std::fs::read(&asset_path)?;
+                            let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+                            let data_url = format!("data:{mime};base64,{encoded}");
+                            cache.insert(key, InlineAssetState::Ready(data_url.clone()));
+                            Some(data_url)
+                        }
+                    };
+                    let Some(data_url) = data_url else {
+                        out.push_str(&css[absolute_start..=value_end]);
+                        index = value_end.saturating_add(1);
+                        continue;
+                    };
+                    out.push_str("url(\"");
+                    out.push_str(&data_url);
+                    out.push_str("\")");
+                } else {
+                    out.push_str(&css[absolute_start..=value_end]);
+                }
+            } else {
+                out.push_str(&css[absolute_start..=value_end]);
+            }
+        } else {
+            out.push_str(&css[absolute_start..=value_end]);
+        }
+        index = value_end.saturating_add(1);
+    }
+    out.push_str(&css[index..]);
+
+    let mut imported = String::with_capacity(out.len());
+    let mut index = 0usize;
+    while let Some(offset) = find_ascii_case_insensitive(&out[index..], "@import") {
+        let import_start = index + offset;
+        let mut cursor = import_start + "@import".len();
+        cursor = skip_css_whitespace(&out, cursor);
+        if out[cursor..].starts_with("url(") {
+            imported.push_str(&out[index..cursor]);
+            index = cursor;
+            continue;
+        }
+        let Some(quote) = out[cursor..].chars().next() else {
+            break;
+        };
+        if quote != '\'' && quote != '"' {
+            imported.push_str(&out[index..=cursor.min(out.len().saturating_sub(1))]);
+            index = cursor.saturating_add(1);
+            continue;
+        }
+        let value_start = cursor + quote.len_utf8();
+        let Some(value_end) = find_css_quote_end(&out, value_start, quote) else {
+            break;
+        };
+        imported.push_str(&out[index..value_start]);
+        let raw = &out[value_start..value_end];
+        if let Some(data_url) = inline_asset_value(raw, page_dir, final_url, cache)? {
+            imported.push_str(&data_url);
+        } else {
+            imported.push_str(raw);
+        }
+        index = value_end;
+    }
+    imported.push_str(&out[index..]);
+    Ok(imported)
+}
+
+fn inline_text_asset_references(
+    text: &str,
+    page_dir: &Path,
+    final_url: &str,
+    cache: &mut HashMap<String, InlineAssetState>,
+) -> Result<String> {
+    let mut out = String::with_capacity(text.len());
+    let mut index = 0usize;
+    while index < text.len() {
+        let Some((quote_offset, quote)) = next_quote(&text[index..]) else {
+            break;
+        };
+        let start = index + quote_offset;
+        let value_start = start + quote.len_utf8();
+        let Some(value_end) = find_quoted_value_end(text, value_start, quote) else {
+            break;
+        };
+        out.push_str(&text[index..value_start]);
+        let value = &text[value_start..value_end];
+        let unescaped = value.replace("\\/", "/");
+        if value_end.saturating_sub(value_start) <= 2048 {
+            if let Some(data_url) = inline_asset_value(&unescaped, page_dir, final_url, cache)? {
+                out.push_str(&data_url);
+            } else {
+                out.push_str(value);
+            }
+        } else {
+            out.push_str(value);
+        }
+        index = value_end;
+    }
+    out.push_str(&text[index..]);
+    Ok(out)
+}
+
+fn local_css_asset_path(
+    css_path: &Path,
+    page_dir: &Path,
+    raw: &str,
+    final_url: &str,
+) -> Option<PathBuf> {
+    if raw.starts_with("http://") || raw.starts_with("https://") || raw.starts_with("//") {
+        return local_archive_asset_path(page_dir, raw, final_url);
+    }
+    let without_fragment = raw.split('#').next().unwrap_or(raw);
+    let without_query = without_fragment
+        .split('?')
+        .next()
+        .unwrap_or(without_fragment);
+    if without_query.starts_with('/') {
+        return local_archive_asset_path(page_dir, without_query, final_url);
+    }
+    let parent = css_path.parent()?;
+    let path = parent.join(without_query);
+    if path.is_file() {
+        Some(path)
+    } else {
+        local_archive_asset_path(page_dir, without_query, final_url)
+    }
+}
+
+fn inline_mime_for_path(path: &Path) -> Option<&'static str> {
+    let extension = path.extension()?.to_str()?.to_ascii_lowercase();
+    match extension.as_str() {
+        "css" => Some("text/css"),
+        "js" => Some("text/javascript"),
+        "json" | "webmanifest" => Some("application/json"),
+        "svg" => Some("image/svg+xml"),
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "webp" => Some("image/webp"),
+        "gif" => Some("image/gif"),
+        "avif" => Some("image/avif"),
+        "ico" => Some("image/x-icon"),
+        "woff2" => Some("font/woff2"),
+        "woff" => Some("font/woff"),
+        "ttf" => Some("font/ttf"),
+        "otf" => Some("font/otf"),
+        "eot" => Some("application/vnd.ms-fontobject"),
+        _ => None,
+    }
+}
+
+fn inline_mime_is_text(mime: &str) -> bool {
+    mime.starts_with("text/")
+        || mime == "application/json"
+        || mime == "image/svg+xml"
+        || mime == "text/javascript"
+}
+
+fn rewrite_offline_javascript_behaviors(js: &str) -> String {
+    let out = rewrite_js_string_property_assignments(js, "crossOrigin", "void 0");
+    let out = rewrite_js_string_property_assignments(&out, "integrity", "\"\"");
+    disable_offline_analytics_beacons(&out)
+}
+
+fn disable_offline_analytics_beacons(js: &str) -> String {
+    let mut out = js.to_string();
+    for (needle, replacement) in ["/cdn-cgi/rum?", "\\/cdn-cgi\\/rum?"]
+        .into_iter()
+        .map(|needle| (needle, "data:text/plain,reflection-king-disabled-beacon"))
+        .chain(
+            [
+                "https://static.cloudflareinsights.com/",
+                "https:\\/\\/static.cloudflareinsights.com\\/",
+            ]
+            .into_iter()
+            .map(|needle| (needle, "data:application/javascript,void%200//")),
+        )
+        .chain(["/getnotifs", "\\/getnotifs"].into_iter().map(|needle| {
+            (
+                needle,
+                "data:application/json,%7B%22notifications%22%3A%5B%5D%2C%22data%22%3A%5B%5D%7D",
+            )
+        }))
+    {
+        out = out.replace(needle, replacement);
+    }
+    out
+}
+
+fn disable_offline_html_analytics(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut index = 0usize;
+    while let Some(offset) = find_ascii_case_insensitive(&html[index..], "<script") {
+        let script_start = index + offset;
+        let Some(open_end_offset) = html[script_start..].find('>') else {
+            break;
+        };
+        let open_end = script_start + open_end_offset + 1;
+        let close_end = find_ascii_case_insensitive(&html[open_end..], "</script>")
+            .map(|close_offset| open_end + close_offset + "</script>".len())
+            .unwrap_or(open_end);
+        let script = &html[script_start..close_end];
+        if html_script_is_offline_analytics(script) {
+            out.push_str(&html[index..script_start]);
+        } else {
+            out.push_str(&html[index..close_end]);
+        }
+        index = close_end;
+    }
+    out.push_str(&html[index..]);
+    out
+}
+
+fn html_script_is_offline_analytics(script: &str) -> bool {
+    let lower = script.to_ascii_lowercase();
+    lower.contains("static.cloudflareinsights.com")
+        || lower.contains("/cdn-cgi/rum")
+        || lower.contains("data-cf-beacon")
+}
+
+fn rewrite_js_string_property_assignments(js: &str, property: &str, replacement: &str) -> String {
+    let mut out = String::with_capacity(js.len());
+    let mut index = 0usize;
+    while let Some(offset) = js[index..].find(property) {
+        let property_start = index + offset;
+        let after = js[property_start + property.len()..].chars().next();
+        if !js_assignment_property_prefix_allowed(js, property_start)
+            || after.is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+        {
+            out.push_str(&js[index..property_start + property.len()]);
+            index = property_start + property.len();
+            continue;
+        }
+        let mut cursor = property_start + property.len();
+        while let Some(ch) = js[cursor..].chars().next() {
+            if !ch.is_whitespace() {
+                break;
+            }
+            cursor += ch.len_utf8();
+        }
+        if !js[cursor..].starts_with('=') && !js[cursor..].starts_with(':') {
+            out.push_str(&js[index..cursor]);
+            index = cursor;
+            continue;
+        }
+        cursor += 1;
+        while let Some(ch) = js[cursor..].chars().next() {
+            if !ch.is_whitespace() {
+                break;
+            }
+            cursor += ch.len_utf8();
+        }
+        let Some(quote) = js[cursor..]
+            .chars()
+            .next()
+            .filter(|ch| *ch == '\'' || *ch == '"')
+        else {
+            out.push_str(&js[index..cursor]);
+            index = cursor;
+            continue;
+        };
+        let value_start = cursor + quote.len_utf8();
+        let Some(value_end) = find_css_quote_end(js, value_start, quote) else {
+            break;
+        };
+        out.push_str(&js[index..cursor]);
+        out.push_str(replacement);
+        index = value_end + quote.len_utf8();
+    }
+    out.push_str(&js[index..]);
+    out
+}
+
+fn js_assignment_property_prefix_allowed(js: &str, property_start: usize) -> bool {
+    let mut cursor = property_start;
+    while cursor > 0 {
+        let Some((offset, ch)) = js[..cursor].char_indices().next_back() else {
+            break;
+        };
+        if !ch.is_whitespace() {
+            return matches!(ch, '.' | '{' | ',' | '(' | '[');
+        }
+        cursor = offset;
+    }
+    true
 }
 
 fn rewrite_archive_text_references(
@@ -4667,6 +5283,127 @@ mod tests {
             rewritten,
             r#"<link rel="manifest" href="https://neverlose.cc/static/assets/favicon/site.webmanifest">"#
         );
+    }
+
+    #[test]
+    fn page_archive_js_removes_cors_attributes_for_file_preview() {
+        let js = r#"loader.crossOrigin="anonymous"; other.crossOrigin=''; script.integrity="sha384-x"; const attrs={crossOrigin:"anonymous",integrity:'sha384-y'}; navigator.sendBeacon("/cdn-cgi/rum?");"#;
+
+        let rewritten = rewrite_offline_javascript_behaviors(js);
+
+        assert!(rewritten.contains("loader.crossOrigin=void 0"));
+        assert!(rewritten.contains("other.crossOrigin=void 0"));
+        assert!(rewritten.contains("script.integrity=\"\""));
+        assert!(rewritten.contains("crossOrigin:void 0"));
+        assert!(rewritten.contains("integrity:\"\"") || rewritten.contains("integrity:''"));
+        assert!(!rewritten.contains("sha384-x"));
+        assert!(!rewritten.contains("sha384-y"));
+        assert!(!rewritten.contains("/cdn-cgi/rum?"));
+        assert!(rewritten.contains("data:text/plain,reflection-king-disabled-beacon"));
+    }
+
+    #[test]
+    fn page_archive_html_removes_offline_analytics_scripts() {
+        let html = r#"<html><head><script src="assets/app.js"></script><script defer src="assets/static.cloudflareinsights.com-v1" data-cf-beacon="{}"></script></head><body>ok<script>console.log("keep")</script></body></html>"#;
+
+        let rewritten = disable_offline_html_analytics(html);
+
+        assert!(rewritten.contains(r#"<script src="assets/app.js"></script>"#));
+        assert!(rewritten.contains(r#"<script>console.log("keep")</script>"#));
+        assert!(!rewritten.contains("static.cloudflareinsights.com"));
+        assert!(!rewritten.contains("data-cf-beacon"));
+    }
+
+    #[test]
+    fn page_archive_inline_preview_embeds_local_assets() {
+        let root = std::env::temp_dir().join(format!("rk-page-inline-{}", Uuid::new_v4()));
+        let assets = root.join("assets");
+        std::fs::create_dir_all(&assets).unwrap();
+        std::fs::write(assets.join("logo.png"), b"png").unwrap();
+        std::fs::write(
+            assets.join("app.css"),
+            r#"body{background:url("logo.png")}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            assets.join("app.js"),
+            r#"loader.crossOrigin="anonymous"; const logo="assets/logo.png";"#,
+        )
+        .unwrap();
+
+        let html = r#"<link href="assets/app.css" rel="stylesheet"><script src="assets/app.js"></script><img src="assets/logo.png">"#;
+        let inline = inline_page_html_assets_blocking(html, &root, "https://example.com/").unwrap();
+
+        assert!(inline.contains("data:text/css;charset=utf-8;base64,"));
+        assert!(inline.contains("data:text/javascript;charset=utf-8;base64,"));
+        assert!(inline.contains("data:image/png;base64,"));
+        assert!(!inline.contains("href=\"assets/app.css\""));
+        assert!(!inline.contains("src=\"assets/app.js\""));
+        assert!(!inline.contains("src=\"assets/logo.png\""));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn page_archive_inline_css_embeds_nested_assets() {
+        let root = std::env::temp_dir().join(format!("rk-page-inline-css-{}", Uuid::new_v4()));
+        let assets = root.join("assets");
+        std::fs::create_dir_all(&assets).unwrap();
+        std::fs::write(assets.join("logo.png"), b"png").unwrap();
+        let css_path = assets.join("app.css");
+        std::fs::write(&css_path, r#"body{background:url("logo.png")}"#).unwrap();
+        let mut cache = HashMap::new();
+
+        let css = inline_css_asset_urls(
+            r#"body{background:url("logo.png")}"#,
+            &css_path,
+            &root,
+            "https://example.com/",
+            &mut cache,
+        )
+        .unwrap();
+
+        assert!(css.contains("data:image/png;base64,"));
+        assert!(!css.contains("logo.png"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn page_archive_inline_preview_skips_recursive_assets() {
+        let root = std::env::temp_dir().join(format!("rk-page-inline-loop-{}", Uuid::new_v4()));
+        let assets = root.join("assets");
+        std::fs::create_dir_all(&assets).unwrap();
+        std::fs::write(
+            assets.join("app.js"),
+            r#"const css="assets/style.css"; const logo="assets/logo.png";"#,
+        )
+        .unwrap();
+        std::fs::write(assets.join("style.css"), r#"@import "app.js";"#).unwrap();
+        std::fs::write(assets.join("logo.png"), b"png").unwrap();
+
+        let html = r#"<script src="assets/app.js"></script>"#;
+        let inline = inline_page_html_assets_blocking(html, &root, "https://example.com/").unwrap();
+
+        assert!(inline.contains("data:text/javascript;charset=utf-8;base64,"));
+        let js =
+            decode_first_inline_data_url(&inline, "data:text/javascript;charset=utf-8;base64,");
+        assert!(js.contains("data:text/css;charset=utf-8;base64,"));
+        assert!(js.contains("data:image/png;base64,"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn decode_first_inline_data_url(html: &str, prefix: &str) -> String {
+        let start = html.find(prefix).expect("missing data url") + prefix.len();
+        let end = html[start..]
+            .find('"')
+            .map(|offset| start + offset)
+            .unwrap_or(html.len());
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&html[start..end])
+            .expect("invalid data url");
+        String::from_utf8(bytes).expect("invalid utf8 data url")
     }
 
     #[test]
