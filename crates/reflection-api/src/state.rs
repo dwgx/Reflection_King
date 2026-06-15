@@ -1767,7 +1767,7 @@ impl AppState {
         tokio::fs::create_dir_all(&preview_dir).await?;
 
         let downloader = Downloader::new(
-            settings.download_timeout,
+            page_archive_resource_timeout(settings.download_timeout),
             settings
                 .page_archive_max_resource_bytes
                 .min(settings.max_download_bytes),
@@ -2071,6 +2071,10 @@ fn should_block_for_browser_interaction(
     } else {
         browser_interaction_reason(outcome)
     }
+}
+
+fn page_archive_resource_timeout(download_timeout: Duration) -> Duration {
+    download_timeout.min(Duration::from_secs(15))
 }
 
 fn resolver_error_summary(attempts: &[reflection_core::extractors::AttemptLog]) -> Option<String> {
@@ -5484,6 +5488,18 @@ mod tests {
             Some("page requires a human verification interaction")
         );
         assert_eq!(should_block_for_browser_interaction(&outcome, true), None);
+    }
+
+    #[test]
+    fn page_archive_resource_timeout_is_short_but_respects_lower_setting() {
+        assert_eq!(
+            page_archive_resource_timeout(Duration::from_secs(300)),
+            Duration::from_secs(15)
+        );
+        assert_eq!(
+            page_archive_resource_timeout(Duration::from_secs(7)),
+            Duration::from_secs(7)
+        );
     }
 
     #[test]
