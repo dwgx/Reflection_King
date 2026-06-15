@@ -319,7 +319,7 @@ export class BrowserProbeService {
     const normalizedProfileId = sanitizeProfileId(profileId || this.config.defaultProfileId);
     const context = await this.context(normalizedProfileId, this.config.headed);
     const page = await context.newPage();
-    await page.setViewportSize({ width: 1280, height: 720 });
+    await page.setViewportSize(this.config.loginViewport);
     const now = Date.now();
     const entry: LoginSessionEntry = {
       id: crypto.randomUUID(),
@@ -537,12 +537,12 @@ export class BrowserProbeService {
     const profileDir = path.join(this.config.profileRoot, profileId);
     await fs.mkdir(profileDir, { recursive: true });
     const context = await chromium.launchPersistentContext(profileDir, {
+      channel: this.config.browserChannel,
       headless: !headed,
-      viewport: { width: 1366, height: 768 },
-      locale: "zh-CN",
-      timezoneId: "Asia/Shanghai",
-      userAgent:
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+      viewport: this.config.viewport,
+      locale: this.config.locale,
+      timezoneId: this.config.timezoneId,
+      userAgent: this.config.userAgent,
     });
     // Make the headless context behave like the user's real browser by
     // normalizing the most obvious automation tells. This is not aimed at any

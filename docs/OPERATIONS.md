@@ -18,6 +18,12 @@ RK_MAX_CONCURRENT_JOBS             并发任务数。
 RK_BROWSER_PROBE_URL               浏览器 sidecar 地址，默认 http://127.0.0.1:8791。
 RK_BROWSER_PROFILE_ROOT            Playwright Profile 和 Cookie 存储目录。
 RK_BROWSER_DEFAULT_PROFILE         任务登录验证使用的共享默认 Profile，默认 admin_default。
+RK_BROWSER_CHANNEL                 Playwright 浏览器 channel，默认 chromium；可设 chrome/msedge 等已安装 channel。
+RK_BROWSER_LOCALE                  浏览器 locale，默认 zh-CN。
+RK_BROWSER_TIMEZONE                浏览器时区，默认 Asia/Shanghai。
+RK_BROWSER_VIEWPORT                普通探测窗口尺寸，默认 1366x768。
+RK_BROWSER_LOGIN_VIEWPORT          登录验证窗口尺寸，默认 1280x720。
+RK_BROWSER_USER_AGENT              可选覆盖 UA；默认留空，使用浏览器真实 UA。
 RK_YTDLP_PATH                      yt-dlp 可执行文件。
 RK_YOU_GET_PATH                    you-get 可执行文件。
 RK_STREAMLINK_PATH                 streamlink 可执行文件。
@@ -148,6 +154,11 @@ Profile 或来自旧版本的 `job_<id>_<actor>` Profile 会归并到 `RK_BROWSE
 截图控制器只适合普通登录、扫码和 Cookie 保存；它不是高保真的远程桌面。需要操作者直接操作
 真实浏览器窗口时，把 `RK_BROWSER_HEADED=1` 配合受信任的显示或远程桌面通道使用。不要把
 CDP、VNC、noVNC、Playwright sidecar 或浏览器调试端口直接暴露到公网。
+
+`RK_BROWSER_CHANNEL` 默认使用 Playwright bundled `chromium`，便于 Docker 和 CI 稳定运行。
+如果 VPS 已安装 Google Chrome 或 Edge，可以设为 `chrome` 或 `msedge`，但要先确认服务用户
+能启动该浏览器。`RK_BROWSER_USER_AGENT` 默认留空；除非要复现兼容性问题，不要手写固定 UA，
+避免浏览器版本、系统和 UA 不一致导致站点误判或渲染异常。
 
 如果 Windows 本机已经登录 Edge、Chrome 或 Firefox，可以用本地 Python 导入器只抽取指定站点
 Cookie 并上传到服务器 Profile：
