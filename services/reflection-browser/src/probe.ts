@@ -1324,7 +1324,7 @@ async function enrichPageResourcesFromBrowser(
 ): Promise<void> {
   const candidates = [...resources.values()]
     .filter((resource) => !resource.bodyBase64 && browserFetchResourceAllowed(resource))
-    .slice(0, 80);
+    .slice(0, 36);
   if (!candidates.length) {
     return;
   }
@@ -1332,7 +1332,7 @@ async function enrichPageResourcesFromBrowser(
   let cachedBytes = [...resources.values()].reduce((total, resource) => {
     return total + (resource.bodyBase64 ? Buffer.byteLength(resource.bodyBase64, "base64") : 0);
   }, 0);
-  for (const batch of chunk(candidates, 6)) {
+  for (const batch of chunk(candidates, 4)) {
     if (cachedBytes >= ARCHIVE_RESPONSE_BODY_TOTAL_MAX_BYTES) {
       break;
     }
@@ -1423,7 +1423,7 @@ async function enrichPageResourcesFromBrowser(
           totalBudget: remainingBudget,
         },
       ),
-      8_000,
+      3_500,
     ).catch((error) => {
       warnings.push(`browser resource fetch failed: ${error instanceof Error ? error.message : String(error)}`);
       return [];
