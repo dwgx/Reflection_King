@@ -14,6 +14,7 @@ pub struct AppConfig {
     pub ffmpeg_path: PathBuf,
     pub browser_probe_url: Option<String>,
     pub browser_internal_token: Option<String>,
+    pub browser_default_profile_id: String,
     pub browser_probe_timeout: Duration,
     pub yt_dlp_path: Option<PathBuf>,
     pub yt_dlp_timeout: Duration,
@@ -61,6 +62,8 @@ impl AppConfig {
         let browser_internal_token = env::var("RK_BROWSER_INTERNAL_TOKEN")
             .ok()
             .filter(|value| !value.is_empty());
+        let browser_default_profile_id =
+            sanitize_profile_id(&env_value("RK_BROWSER_DEFAULT_PROFILE", "admin_default"));
         let browser_probe_timeout_secs = env_value("RK_BROWSER_PROBE_TIMEOUT_SECONDS", "90")
             .parse::<u64>()
             .map_err(|error| {
@@ -114,6 +117,7 @@ impl AppConfig {
             ffmpeg_path,
             browser_probe_url,
             browser_internal_token,
+            browser_default_profile_id,
             browser_probe_timeout: Duration::from_secs(browser_probe_timeout_secs),
             yt_dlp_path,
             yt_dlp_timeout: Duration::from_secs(yt_dlp_timeout_secs),
@@ -129,4 +133,17 @@ impl AppConfig {
 
 fn env_value(key: &str, default_value: &str) -> String {
     env::var(key).unwrap_or_else(|_| default_value.to_string())
+}
+
+fn sanitize_profile_id(value: &str) -> String {
+    let sanitized: String = value
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '_' || *ch == '-')
+        .take(64)
+        .collect();
+    if sanitized.is_empty() {
+        "admin_default".to_string()
+    } else {
+        sanitized
+    }
 }

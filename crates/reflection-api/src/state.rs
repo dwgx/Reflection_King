@@ -416,7 +416,7 @@ impl AppState {
         job: &JobRecord,
         _requester_key_id: Option<Uuid>,
     ) -> Result<LoginSessionSnapshot> {
-        let profile_id = shared_job_profile_id(job);
+        let profile_id = shared_job_profile_id(job, &self.config.browser_default_profile_id);
         self.job_store
             .attach_profile_for_job(job.id, &profile_id)
             .await?;
@@ -2285,10 +2285,10 @@ fn crc32(bytes: &[u8]) -> u32 {
     !crc
 }
 
-fn shared_job_profile_id(job: &JobRecord) -> String {
+fn shared_job_profile_id(job: &JobRecord, default_profile_id: &str) -> String {
     let profile_id = job.profile_id.trim();
     if profile_id.is_empty() || is_legacy_job_scoped_profile_id(profile_id) {
-        "admin_default".to_string()
+        default_profile_id.to_string()
     } else {
         profile_id.to_string()
     }
@@ -3024,13 +3024,13 @@ mod tests {
             "http://127.0.0.1:8787",
             JobCreateOptions::default(),
         );
-        assert_eq!(shared_job_profile_id(&job), "admin_default");
+        assert_eq!(shared_job_profile_id(&job, "admin_default"), "admin_default");
 
         job.profile_id = format!("job_{}_admin", Uuid::new_v4().simple());
-        assert_eq!(shared_job_profile_id(&job), "admin_default");
+        assert_eq!(shared_job_profile_id(&job, "shared_default"), "shared_default");
 
         job.profile_id = "custom_profile".to_string();
-        assert_eq!(shared_job_profile_id(&job), "custom_profile");
+        assert_eq!(shared_job_profile_id(&job, "shared_default"), "custom_profile");
     }
 
     #[test]
