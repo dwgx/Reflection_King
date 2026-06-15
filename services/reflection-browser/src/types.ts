@@ -36,6 +36,7 @@ export interface PageResource {
   contentLength?: number;
   resourceType?: string;
   initiatorUrl?: string;
+  requestHeaders?: Record<string, string>;
   source: string;
 }
 

@@ -104,6 +104,8 @@ pub struct PageResource {
     pub resource_type: Option<String>,
     #[serde(rename = "initiatorUrl")]
     pub initiator_url: Option<String>,
+    #[serde(rename = "requestHeaders", default)]
+    pub request_headers: HashMap<String, String>,
     pub source: String,
 }
 

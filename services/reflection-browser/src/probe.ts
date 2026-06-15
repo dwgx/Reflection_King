@@ -1148,8 +1148,33 @@ function pageResourceFromResponse(response: Response): PageResource | undefined 
     contentLength: parseContentLength(headers["content-length"]),
     resourceType: request.resourceType(),
     initiatorUrl: safeRequestFrameUrl(request),
+    requestHeaders: safeArchiveRequestHeaders(request),
     source: "network",
   };
+}
+
+function safeArchiveRequestHeaders(request: Request): Record<string, string> | undefined {
+  const headers = request.headers();
+  const out: Record<string, string> = {};
+  for (const [name, value] of Object.entries(headers)) {
+    const lowered = name.toLowerCase();
+    if (
+      lowered === "user-agent" ||
+      lowered === "accept" ||
+      lowered === "accept-language" ||
+      lowered === "referer" ||
+      lowered === "origin" ||
+      lowered === "sec-fetch-dest" ||
+      lowered === "sec-fetch-mode" ||
+      lowered === "sec-fetch-site" ||
+      lowered === "sec-ch-ua" ||
+      lowered === "sec-ch-ua-mobile" ||
+      lowered === "sec-ch-ua-platform"
+    ) {
+      out[lowered] = value;
+    }
+  }
+  return Object.keys(out).length ? out : undefined;
 }
 
 function safeRequestFrameUrl(request: Request): string | undefined {
@@ -1206,6 +1231,7 @@ async function genericPageResourcesFromPage(page: Page, pageUrl: string): Promis
           contentLength: existing?.contentLength,
           resourceType: existing?.resourceType,
           initiatorUrl: existing?.initiatorUrl,
+          requestHeaders: existing?.requestHeaders,
           status: existing?.status,
           source: existing ? `${existing.source},${source}` : source,
         });

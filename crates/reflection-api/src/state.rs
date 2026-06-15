@@ -1784,8 +1784,9 @@ impl AppState {
             let asset_path = assets_dir.join(&asset_name);
             let download_result = async {
                 validate_candidate_url(&resource.url)?;
+                let headers = page_resource_download_headers(resource, &snapshot.final_url);
                 downloader
-                    .download_to_file_with_headers(&resource.url, &asset_path, HeaderMap::new())
+                    .download_to_file_with_headers(&resource.url, &asset_path, headers)
                     .await?;
                 let bytes = tokio::fs::metadata(&asset_path).await?.len();
                 if bytes > remaining {
@@ -1802,7 +1803,12 @@ impl AppState {
                 Ok(bytes) => {
                     total_bytes = total_bytes.saturating_add(bytes);
                     let relative_path = format!("assets/{asset_name}");
-                    rewrites.insert(resource.url.clone(), relative_path.clone());
+                    insert_page_rewrites(
+                        &mut rewrites,
+                        &snapshot.final_url,
+                        resource,
+                        &relative_path,
+                    );
                     resource_records.push(page_resource_record(
                         resource,
                         Some(&relative_path),
@@ -2174,11 +2180,94 @@ fn extension_for_resource(resource: &reflection_core::browser_probe::PageResourc
     }
 }
 
+fn page_resource_download_headers(
+    resource: &reflection_core::browser_probe::PageResource,
+    final_url: &str,
+) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    for (name, value) in &resource.request_headers {
+        let lowered = name.to_ascii_lowercase();
+        if !page_archive_header_allowed(&lowered) {
+            continue;
+        }
+        let Ok(header_name) = HeaderName::from_bytes(lowered.as_bytes()) else {
+            continue;
+        };
+        let Ok(header_value) = HeaderValue::from_str(value) else {
+            continue;
+        };
+        headers.insert(header_name, header_value);
+    }
+    if !headers.contains_key(reqwest::header::REFERER) {
+        if let Ok(value) = HeaderValue::from_str(
+            resource
+                .initiator_url
+                .as_deref()
+                .filter(|value| value.starts_with("http://") || value.starts_with("https://"))
+                .unwrap_or(final_url),
+        ) {
+            headers.insert(reqwest::header::REFERER, value);
+        }
+    }
+    if !headers.contains_key(reqwest::header::ACCEPT) {
+        headers.insert(reqwest::header::ACCEPT, HeaderValue::from_static("*/*"));
+    }
+    headers
+}
+
+fn page_archive_header_allowed(name: &str) -> bool {
+    matches!(
+        name,
+        "user-agent"
+            | "accept"
+            | "accept-language"
+            | "referer"
+            | "origin"
+            | "sec-fetch-dest"
+            | "sec-fetch-mode"
+            | "sec-fetch-site"
+            | "sec-ch-ua"
+            | "sec-ch-ua-mobile"
+            | "sec-ch-ua-platform"
+    )
+}
+
+fn insert_page_rewrites(
+    rewrites: &mut HashMap<String, String>,
+    final_url: &str,
+    resource: &reflection_core::browser_probe::PageResource,
+    relative_path: &str,
+) {
+    rewrites.insert(resource.url.clone(), relative_path.to_string());
+    if let Ok(base) = url::Url::parse(final_url) {
+        if let Ok(resource_url) = url::Url::parse(&resource.url) {
+            if resource_url.scheme() == base.scheme()
+                && resource_url.domain() == base.domain()
+                && resource_url.port_or_known_default() == base.port_or_known_default()
+            {
+                rewrites.insert(
+                    resource_url[url::Position::BeforePath..].to_string(),
+                    relative_path.to_string(),
+                );
+                if let Some(query) = resource_url.query() {
+                    rewrites.insert(
+                        format!("{}?{}", resource_url.path(), query),
+                        relative_path.to_string(),
+                    );
+                } else {
+                    rewrites.insert(resource_url.path().to_string(), relative_path.to_string());
+                }
+            }
+        }
+    }
+}
+
 fn rewrite_page_html(html: &str, rewrites: &HashMap<String, String>) -> String {
     let mut out = html.to_string();
     for (url, relative) in rewrites {
         out = out.replace(url, relative);
         out = out.replace(&html_escape_attribute(url), relative);
+        out = out.replace(&url.replace('/', "\\/"), relative);
     }
     out
 }
@@ -2206,6 +2295,7 @@ fn page_resource_record(
         "resource_type": &resource.resource_type,
         "initiator_url": &resource.initiator_url,
         "source": &resource.source,
+        "request_headers": &resource.request_headers,
         "local_path": local_path,
         "bytes": bytes,
         "skipped": skipped_reason.is_some(),
@@ -3302,6 +3392,73 @@ mod tests {
         assert!(!headers.contains_key(reqwest::header::COOKIE));
         assert!(!headers.contains_key(reqwest::header::AUTHORIZATION));
         assert!(!headers.contains_key("x-test"));
+    }
+
+    #[test]
+    fn page_archive_rewrites_same_origin_root_paths() {
+        let mut rewrites = HashMap::new();
+        let resource = reflection_core::browser_probe::PageResource {
+            url: "https://neverlose.cc/static/assets/css/app.css?hash=abc".to_string(),
+            method: Some("GET".to_string()),
+            status: Some(200),
+            content_type: Some("text/css".to_string()),
+            content_length: Some(128),
+            resource_type: Some("stylesheet".to_string()),
+            initiator_url: Some("https://neverlose.cc/".to_string()),
+            request_headers: HashMap::new(),
+            source: "network".to_string(),
+        };
+        insert_page_rewrites(
+            &mut rewrites,
+            "https://neverlose.cc/",
+            &resource,
+            "assets/neverlose.cc-app.css",
+        );
+
+        let html = r#"<link href="/static/assets/css/app.css?hash=abc" rel="stylesheet">"#;
+        assert_eq!(
+            rewrite_page_html(html, &rewrites),
+            r#"<link href="assets/neverlose.cc-app.css" rel="stylesheet">"#
+        );
+    }
+
+    #[test]
+    fn page_resource_download_headers_drop_sensitive_values() {
+        let resource = reflection_core::browser_probe::PageResource {
+            url: "https://example.com/app.css".to_string(),
+            method: Some("GET".to_string()),
+            status: Some(200),
+            content_type: Some("text/css".to_string()),
+            content_length: Some(128),
+            resource_type: Some("stylesheet".to_string()),
+            initiator_url: Some("https://example.com/".to_string()),
+            request_headers: HashMap::from([
+                ("user-agent".to_string(), "Mozilla/5.0".to_string()),
+                ("accept-encoding".to_string(), "gzip, br, zstd".to_string()),
+                ("cookie".to_string(), "secret=1".to_string()),
+                ("authorization".to_string(), "Bearer secret".to_string()),
+                ("referer".to_string(), "https://example.com/".to_string()),
+            ]),
+            source: "network".to_string(),
+        };
+
+        let headers = page_resource_download_headers(&resource, "https://example.com/");
+
+        assert_eq!(
+            headers
+                .get(reqwest::header::USER_AGENT)
+                .and_then(|value| value.to_str().ok()),
+            Some("Mozilla/5.0")
+        );
+        assert_eq!(
+            headers
+                .get(reqwest::header::REFERER)
+                .and_then(|value| value.to_str().ok()),
+            Some("https://example.com/")
+        );
+        assert!(!headers.contains_key(reqwest::header::ACCEPT_ENCODING));
+        assert!(!headers.contains_key(reqwest::header::COOKIE));
+        assert!(!headers.contains_key(reqwest::header::AUTHORIZATION));
     }
 
     #[test]
