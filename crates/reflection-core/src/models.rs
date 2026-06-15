@@ -422,6 +422,9 @@ impl JobStatus {
             "remuxing" => Some(Self::Remuxing),
             "ready" => Some(Self::Ready),
             "error" => Some(Self::Error),
+            // Legacy databases may contain `failed` from older API builds or
+            // manual incident mitigation. Treat it as the terminal error state.
+            "failed" => Some(Self::Error),
             _ => None,
         }
     }
@@ -885,5 +888,15 @@ pub fn normalize_bitrate(value: Option<&str>) -> String {
             | "128k" | "160k" | "192k" | "256k" | "320k"),
         ) => value.to_string(),
         _ => "192k".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn job_status_parse_accepts_legacy_failed_as_error() {
+        assert_eq!(JobStatus::parse("failed"), Some(JobStatus::Error));
     }
 }

@@ -2013,6 +2013,8 @@ impl JobStore {
         self.add_column_if_missing("jobs", "hidden_at", "TEXT")
             .await?;
 
+        self.normalize_legacy_job_statuses().await?;
+
         sqlx::query(
             "CREATE INDEX IF NOT EXISTS idx_jobs_status_created_at ON jobs(status, created_at)",
         )
@@ -2362,6 +2364,16 @@ impl JobStore {
         )
         .execute(&self.pool)
         .await?;
+
+        Ok(())
+    }
+
+    async fn normalize_legacy_job_statuses(&self) -> Result<()> {
+        sqlx::query("UPDATE jobs SET status = ? WHERE status = ?")
+            .bind(JobStatus::Error.as_str())
+            .bind("failed")
+            .execute(&self.pool)
+            .await?;
 
         Ok(())
     }
