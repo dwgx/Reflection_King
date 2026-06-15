@@ -473,6 +473,12 @@
     font-weight: 750;
   }
 
+  .field-hint {
+    color: #7e8998;
+    font-size: 11px;
+    line-height: 16px;
+  }
+
   .segmented {
     display: grid;
     gap: 3px;

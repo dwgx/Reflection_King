@@ -50,11 +50,12 @@ Returns job status and final media URL when ready.
 Browser jobs stop at `candidates_ready` until the client selects one or more
 candidate IDs.
 
-`outputs: ["page_html"]` requires browser discovery. A successful job emits
-page artifacts instead of only media: `page.html`, `page.txt`,
-`screenshot.png`, `resources.json`, and `archive.zip`. The archive contains
-`index.html`, downloaded `assets/`, and metadata. Remote assets are still
-validated by the server URL policy and byte limits before they are fetched.
+`outputs: ["page_html"]` requires browser discovery and produces a webpage
+frontend package, not only a single HTML file. A successful job emits
+`page.html`, `page.txt`, `screenshot.png`, `resources.json`, and `archive.zip`.
+The archive contains `index.html`, downloaded CSS/JS/images/fonts/media under
+`assets/`, and metadata. Remote assets are still validated by the server URL
+policy and byte limits before they are fetched.
 
 Jobs that need a login-capable browser profile return `status:
 needs_profile`, `issue_kind: needs_profile`, and `profile_action_url`.

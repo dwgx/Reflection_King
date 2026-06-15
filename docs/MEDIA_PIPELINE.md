@@ -34,7 +34,7 @@ Reflection King 的媒体管线分为“发现候选资源”和“捕获转码�
 - `audio_aac`：AAC，适合浏览器和视频容器。
 - `video_mp4_faststart`：H.264/AAC MP4，`moov` 前置，适合大多数网页和 VRChat PC 播放。
 - `image`：图片抓取。
-- `html`：页面快照和调试类输出，默认不作为播放器产物。
+- `page_html`：网页前端包，包含入口 HTML、页面文本、截图、资源清单和 `archive.zip`；zip 内保存已通过 URL 策略与大小限制校验的 CSS、JS、图片、字体和媒体资源。
 
 ## 候选资源状态
 

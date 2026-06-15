@@ -1328,6 +1328,9 @@ function App() {
                 labelFor={outputModeLabel}
                 onChange={(value) => setOutputModeAndPayload(value as OutputMode)}
               />
+              {outputMode === "page_html" && (
+                <span className="field-hint">保存入口 HTML、CSS、JS、图片和资源清单，并生成 archive.zip。</span>
+              )}
             </ControlGroup>
             <ControlGroup label="授权">
               <Dropdown
@@ -1562,7 +1565,7 @@ function App() {
                 <div key={artifact.id} className="artifact-item">
                   <div className="artifact-head">
                     <div>
-                      <strong>{outputLabel(artifact.kind)}</strong>
+                      <strong>{artifactLabel(artifact)}</strong>
                       <span>{artifact.content_type} / {formatBytes(artifact.bytes)}</span>
                     </div>
                     <div className="panel-actions">
@@ -2786,7 +2789,7 @@ function outputLabel(value: string): string {
     audio: "音频",
     video: "视频",
     image: "图片",
-    page_html: "页面 HTML",
+    page_html: "网页包",
   } as Record<string, string>)[value] ?? value;
 }
 
@@ -2796,8 +2799,21 @@ function outputModeLabel(value: string): string {
     video: "视频",
     audio: "音频",
     image: "图片",
-    page_html: "页面 HTML",
+    page_html: "HTML/CSS/JS",
   } as Record<string, string>)[value] ?? value;
+}
+
+function artifactLabel(artifact: Artifact): string {
+  const url = artifact.media_url.toLowerCase();
+  const contentType = artifact.content_type.toLowerCase();
+  if (artifact.kind === "page_html") {
+    if (url.endsWith("/archive.zip") || contentType.includes("zip")) return "网页前端包";
+    if (url.endsWith("/page.html") || contentType.includes("html")) return "入口 HTML";
+    if (url.endsWith("/resources.json") || contentType.includes("json")) return "资源清单";
+    if (url.endsWith("/page.txt") || contentType.includes("text/plain")) return "页面文本";
+    if (url.endsWith("/screenshot.png") || contentType.startsWith("image/")) return "页面截图";
+  }
+  return outputLabel(artifact.kind);
 }
 
 function outputsLabel(outputs: OutputKind[]): string {
