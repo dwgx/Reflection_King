@@ -1322,9 +1322,9 @@ async function enrichPageResourcesFromBrowser(
   resources: Map<string, PageResource>,
   warnings: string[],
 ): Promise<void> {
-  const candidates = [...resources.values()]
-    .filter((resource) => !resource.bodyBase64 && browserFetchResourceAllowed(resource))
-    .slice(0, 36);
+  const candidates = prioritizeBrowserFetchResources(
+    [...resources.values()].filter((resource) => !resource.bodyBase64 && browserFetchResourceAllowed(resource)),
+  ).slice(0, 16);
   if (!candidates.length) {
     return;
   }
@@ -1423,7 +1423,7 @@ async function enrichPageResourcesFromBrowser(
           totalBudget: remainingBudget,
         },
       ),
-      3_500,
+      2_500,
     ).catch((error) => {
       warnings.push(`browser resource fetch failed: ${error instanceof Error ? error.message : String(error)}`);
       return [];
@@ -1451,6 +1451,28 @@ async function enrichPageResourcesFromBrowser(
       });
     }
   }
+}
+
+function prioritizeBrowserFetchResources(resources: PageResource[]): PageResource[] {
+  return resources.sort((left, right) => browserFetchPriority(right) - browserFetchPriority(left));
+}
+
+function browserFetchPriority(resource: PageResource): number {
+  const source = resource.source.toLowerCase();
+  const type = (resource.contentType ?? "").toLowerCase();
+  const resourceType = (resource.resourceType ?? "").toLowerCase();
+  const path = urlPath(resource.url).toLowerCase();
+  let score = source.includes("network") ? 100 : 0;
+  if (resource.bodyBase64) score -= 1_000;
+  if (type.startsWith("text/css") || resourceType === "stylesheet" || path.endsWith(".css")) score += 70;
+  if (type.includes("javascript") || resourceType === "script" || /\.(js|mjs)(?:$|[?#])/i.test(path)) score += 60;
+  if (type.startsWith("image/") || resourceType === "image" || /\.(png|jpe?g|webp|gif|avif|svg|ico)(?:$|[?#])/i.test(path)) score += 45;
+  if (type.startsWith("font/") || resourceType === "font" || /\.(woff2?|ttf|otf|eot)(?:$|[?#])/i.test(path)) score += 30;
+  const size = resource.contentLength ?? 0;
+  if (size > 0 && size <= 128 * 1024) score += 20;
+  if (size > 512 * 1024) score -= 50;
+  if (source.includes("dns-prefetch")) score -= 200;
+  return score;
 }
 
 function browserFetchResourceAllowed(resource: PageResource): boolean {
