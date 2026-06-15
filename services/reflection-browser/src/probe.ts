@@ -1323,8 +1323,12 @@ async function enrichPageResourcesFromBrowser(
   warnings: string[],
 ): Promise<void> {
   const candidates = prioritizeBrowserFetchResources(
-    [...resources.values()].filter((resource) => !resource.bodyBase64 && browserFetchResourceAllowed(resource)),
-  ).slice(0, 16);
+    [...resources.values()].filter((resource) => (
+      !resource.bodyBase64 &&
+      resource.source.toLowerCase().includes("network") &&
+      browserFetchResourceAllowed(resource)
+    )),
+  ).slice(0, 24);
   if (!candidates.length) {
     return;
   }
