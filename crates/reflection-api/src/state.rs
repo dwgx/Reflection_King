@@ -1830,9 +1830,13 @@ impl AppState {
             let asset_path = assets_dir.join(&asset_name);
             let download_result = async {
                 validate_candidate_url(&resource.url)?;
-                let bytes =
-                    write_or_download_page_resource(resource, &asset_path, &downloader, &snapshot.final_url)
-                        .await?;
+                let bytes = write_or_download_page_resource(
+                    resource,
+                    &asset_path,
+                    &downloader,
+                    &snapshot.final_url,
+                )
+                .await?;
                 if bytes > remaining {
                     tokio::fs::remove_file(&asset_path).await.ok();
                     return Err(RkError::DownloadTooLarge {
