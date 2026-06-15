@@ -8,7 +8,9 @@ use std::{
 
 use base64::Engine;
 use reflection_core::{
-    browser_probe::{BrowserCookie, BrowserProbeClient, LoginSessionSnapshot, PageSnapshot},
+    browser_probe::{
+        BrowserCookie, BrowserProbeClient, LoginSessionSnapshot, PageResource, PageSnapshot,
+    },
     download::Downloader,
     external_probe::YtDlpProbe,
     external_tools::{ExternalToolKind, ExternalToolProbe},
@@ -90,6 +92,22 @@ pub struct AppState {
     queue_tx: mpsc::Sender<Uuid>,
     queue_rx: Mutex<mpsc::Receiver<Uuid>>,
     worker_slots: Arc<Semaphore>,
+}
+
+#[derive(Debug, Clone)]
+struct ArchivedPageResource {
+    resource: PageResource,
+    local_path: String,
+    asset_path: PathBuf,
+}
+
+struct PageArchiveContext {
+    used_asset_paths: HashSet<String>,
+    rewrites: HashMap<String, String>,
+    resource_records: Vec<serde_json::Value>,
+    archived_resources: Vec<ArchivedPageResource>,
+    archived_url_keys: HashSet<String>,
+    total_bytes: u64,
 }
 
 impl AppState {
@@ -1742,10 +1760,14 @@ impl AppState {
                 .page_archive_max_resource_bytes
                 .min(settings.max_download_bytes),
         )?;
-        let mut used_asset_paths = HashSet::new();
-        let mut rewrites = HashMap::new();
-        let mut resource_records = Vec::new();
-        let mut total_bytes = snapshot.html.len() as u64;
+        let mut archive = PageArchiveContext {
+            used_asset_paths: HashSet::new(),
+            rewrites: HashMap::new(),
+            resource_records: Vec::new(),
+            archived_resources: Vec::new(),
+            archived_url_keys: HashSet::new(),
+            total_bytes: snapshot.html.len() as u64,
+        };
 
         for resource in snapshot
             .resources
@@ -1753,8 +1775,8 @@ impl AppState {
             .filter(|resource| page_resource_is_archivable(resource))
             .take(settings.page_archive_max_resources)
         {
-            if total_bytes >= settings.page_archive_max_total_bytes {
-                resource_records.push(serde_json::json!({
+            if archive.total_bytes >= settings.page_archive_max_total_bytes {
+                archive.resource_records.push(serde_json::json!({
                     "url": &resource.url,
                     "source": &resource.source,
                     "skipped": true,
@@ -1764,13 +1786,13 @@ impl AppState {
             }
             let remaining = settings
                 .page_archive_max_total_bytes
-                .saturating_sub(total_bytes);
+                .saturating_sub(archive.total_bytes);
             if let Some(length) = resource
                 .content_length
                 .and_then(|value| u64::try_from(value).ok())
             {
                 if length > settings.page_archive_max_resource_bytes || length > remaining {
-                    resource_records.push(page_resource_record(
+                    archive.resource_records.push(page_resource_record(
                         resource,
                         None,
                         0,
@@ -1780,7 +1802,7 @@ impl AppState {
                 }
             }
 
-            let asset_name = unique_asset_name(resource, &mut used_asset_paths);
+            let asset_name = unique_asset_name(resource, &mut archive.used_asset_paths);
             let asset_path = assets_dir.join(&asset_name);
             let download_result = async {
                 validate_candidate_url(&resource.url)?;
@@ -1801,15 +1823,21 @@ impl AppState {
 
             match download_result {
                 Ok(bytes) => {
-                    total_bytes = total_bytes.saturating_add(bytes);
+                    archive.total_bytes = archive.total_bytes.saturating_add(bytes);
                     let relative_path = format!("assets/{asset_name}");
                     insert_page_rewrites(
-                        &mut rewrites,
+                        &mut archive.rewrites,
                         &snapshot.final_url,
                         resource,
                         &relative_path,
                     );
-                    resource_records.push(page_resource_record(
+                    archive.archived_url_keys.insert(resource.url.clone());
+                    archive.archived_resources.push(ArchivedPageResource {
+                        resource: resource.clone(),
+                        local_path: relative_path.clone(),
+                        asset_path,
+                    });
+                    archive.resource_records.push(page_resource_record(
                         resource,
                         Some(&relative_path),
                         bytes,
@@ -1818,7 +1846,7 @@ impl AppState {
                 }
                 Err(error) => {
                     tokio::fs::remove_file(&asset_path).await.ok();
-                    resource_records.push(page_resource_record(
+                    archive.resource_records.push(page_resource_record(
                         resource,
                         None,
                         0,
@@ -1828,7 +1856,10 @@ impl AppState {
             }
         }
 
-        let html = rewrite_page_html(&snapshot.html, &rewrites);
+        archive_css_dependencies(&assets_dir, &downloader, settings, &mut archive).await?;
+        rewrite_archived_css_files(&archive.archived_resources, &archive.rewrites).await?;
+
+        let html = rewrite_page_html(&snapshot.html, &archive.rewrites);
         let html_path = job_dir.join("page.html");
         tokio::fs::write(&html_path, html).await?;
         tokio::fs::copy(&html_path, page_dir.join("index.html")).await?;
@@ -1874,7 +1905,7 @@ impl AppState {
                 "final_url": &snapshot.final_url,
                 "title": &snapshot.title,
                 "captured_at": &snapshot.captured_at,
-                "resources": resource_records,
+                "resources": archive.resource_records,
             }))?,
         )
         .await?;
@@ -2232,10 +2263,223 @@ fn page_archive_header_allowed(name: &str) -> bool {
     )
 }
 
+async fn archive_css_dependencies(
+    assets_dir: &Path,
+    downloader: &Downloader,
+    settings: &EffectiveRuntimeSettings,
+    archive: &mut PageArchiveContext,
+) -> Result<()> {
+    let mut index = 0usize;
+    while index < archive.archived_resources.len() {
+        let archived = archive.archived_resources[index].clone();
+        index += 1;
+        if !page_resource_is_css(&archived.resource) {
+            continue;
+        }
+        let Ok(css) = tokio::fs::read_to_string(&archived.asset_path).await else {
+            continue;
+        };
+        for reference in css_asset_references(&css) {
+            if archive.total_bytes >= settings.page_archive_max_total_bytes {
+                archive.resource_records.push(serde_json::json!({
+                    "url": reference.raw,
+                    "source": "css",
+                    "initiator_url": archived.resource.url,
+                    "skipped": true,
+                    "reason": "archive_total_limit_reached",
+                }));
+                continue;
+            }
+            let Some(absolute_url) = resolve_css_asset_url(&archived.resource.url, &reference.raw)
+            else {
+                continue;
+            };
+            if archive.archived_url_keys.contains(&absolute_url)
+                || archive.rewrites.contains_key(&absolute_url)
+            {
+                continue;
+            }
+
+            let remaining = settings
+                .page_archive_max_total_bytes
+                .saturating_sub(archive.total_bytes);
+            let resource = css_dependency_resource(
+                &absolute_url,
+                &archived.resource.url,
+                &archived.resource.request_headers,
+            );
+            let asset_name = unique_asset_name(&resource, &mut archive.used_asset_paths);
+            let asset_path = assets_dir.join(&asset_name);
+            let download_result = async {
+                validate_candidate_url(&resource.url)?;
+                let headers = page_resource_download_headers(&resource, &archived.resource.url);
+                downloader
+                    .download_to_file_with_headers(&resource.url, &asset_path, headers)
+                    .await?;
+                let bytes = tokio::fs::metadata(&asset_path).await?.len();
+                if bytes > remaining {
+                    tokio::fs::remove_file(&asset_path).await.ok();
+                    return Err(RkError::DownloadTooLarge {
+                        max_bytes: remaining,
+                    });
+                }
+                Ok::<u64, RkError>(bytes)
+            }
+            .await;
+
+            match download_result {
+                Ok(bytes) => {
+                    archive.total_bytes = archive.total_bytes.saturating_add(bytes);
+                    let relative_path = format!("assets/{asset_name}");
+                    insert_page_rewrites(
+                        &mut archive.rewrites,
+                        &archived.resource.url,
+                        &resource,
+                        &relative_path,
+                    );
+                    archive.archived_url_keys.insert(resource.url.clone());
+                    archive.archived_resources.push(ArchivedPageResource {
+                        resource: resource.clone(),
+                        local_path: relative_path.clone(),
+                        asset_path,
+                    });
+                    archive.resource_records.push(page_resource_record(
+                        &resource,
+                        Some(&relative_path),
+                        bytes,
+                        None,
+                    ));
+                }
+                Err(error) => {
+                    tokio::fs::remove_file(&asset_path).await.ok();
+                    archive.resource_records.push(page_resource_record(
+                        &resource,
+                        None,
+                        0,
+                        Some(&friendly_candidate_failure(&error)),
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn rewrite_archived_css_files(
+    archived_resources: &[ArchivedPageResource],
+    rewrites: &HashMap<String, String>,
+) -> Result<()> {
+    for archived in archived_resources
+        .iter()
+        .filter(|archived| page_resource_is_css(&archived.resource))
+    {
+        let Ok(css) = tokio::fs::read_to_string(&archived.asset_path).await else {
+            continue;
+        };
+        let rewritten =
+            rewrite_css_urls(&css, &archived.resource.url, &archived.local_path, rewrites);
+        if rewritten != css {
+            tokio::fs::write(&archived.asset_path, rewritten).await?;
+        }
+    }
+    Ok(())
+}
+
+fn page_resource_is_css(resource: &PageResource) -> bool {
+    resource
+        .content_type
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .starts_with("text/css")
+        || resource
+            .resource_type
+            .as_deref()
+            .unwrap_or_default()
+            .eq_ignore_ascii_case("stylesheet")
+        || resource
+            .url
+            .split('?')
+            .next()
+            .unwrap_or_default()
+            .ends_with(".css")
+}
+
+fn css_dependency_resource(
+    url: &str,
+    initiator_url: &str,
+    initiator_headers: &HashMap<String, String>,
+) -> PageResource {
+    PageResource {
+        url: url.to_string(),
+        method: Some("GET".to_string()),
+        status: None,
+        content_type: content_type_hint_for_url(url),
+        content_length: None,
+        resource_type: Some(resource_type_hint_for_url(url).to_string()),
+        initiator_url: Some(initiator_url.to_string()),
+        request_headers: initiator_headers.clone(),
+        source: "css".to_string(),
+    }
+}
+
+fn content_type_hint_for_url(url: &str) -> Option<String> {
+    let path = url::Url::parse(url)
+        .ok()
+        .map(|url| url.path().to_ascii_lowercase())
+        .unwrap_or_else(|| url.to_ascii_lowercase());
+    let content_type = if path.ends_with(".css") {
+        "text/css"
+    } else if path.ends_with(".js") {
+        "text/javascript"
+    } else if path.ends_with(".png") {
+        "image/png"
+    } else if path.ends_with(".jpg") || path.ends_with(".jpeg") {
+        "image/jpeg"
+    } else if path.ends_with(".webp") {
+        "image/webp"
+    } else if path.ends_with(".gif") {
+        "image/gif"
+    } else if path.ends_with(".svg") {
+        "image/svg+xml"
+    } else if path.ends_with(".woff2") {
+        "font/woff2"
+    } else if path.ends_with(".woff") {
+        "font/woff"
+    } else if path.ends_with(".ttf") {
+        "font/ttf"
+    } else if path.ends_with(".otf") {
+        "font/otf"
+    } else {
+        return None;
+    };
+    Some(content_type.to_string())
+}
+
+fn resource_type_hint_for_url(url: &str) -> &'static str {
+    let path = url::Url::parse(url)
+        .ok()
+        .map(|url| url.path().to_ascii_lowercase())
+        .unwrap_or_else(|| url.to_ascii_lowercase());
+    if path.ends_with(".css") {
+        "stylesheet"
+    } else if path.ends_with(".js") {
+        "script"
+    } else if path.ends_with(".woff2")
+        || path.ends_with(".woff")
+        || path.ends_with(".ttf")
+        || path.ends_with(".otf")
+    {
+        "font"
+    } else {
+        "image"
+    }
+}
+
 fn insert_page_rewrites(
     rewrites: &mut HashMap<String, String>,
     final_url: &str,
-    resource: &reflection_core::browser_probe::PageResource,
+    resource: &PageResource,
     relative_path: &str,
 ) {
     rewrites.insert(resource.url.clone(), relative_path.to_string());
@@ -2262,6 +2506,261 @@ fn insert_page_rewrites(
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CssAssetReference {
+    raw: String,
+}
+
+fn css_asset_references(css: &str) -> Vec<CssAssetReference> {
+    let mut refs = Vec::new();
+    collect_css_url_function_references(css, &mut refs);
+    collect_css_import_references(css, &mut refs);
+    refs
+}
+
+fn collect_css_url_function_references(css: &str, refs: &mut Vec<CssAssetReference>) {
+    let bytes = css.as_bytes();
+    let mut index = 0usize;
+    while let Some(offset) = find_ascii_case_insensitive(&css[index..], "url(") {
+        let start = index + offset + 4;
+        let Some(end) = find_css_closing_paren(css, start) else {
+            break;
+        };
+        if let Some(raw) = normalize_css_reference(&css[start..end]) {
+            refs.push(CssAssetReference { raw });
+        }
+        index = end.saturating_add(1);
+        if index >= bytes.len() {
+            break;
+        }
+    }
+}
+
+fn collect_css_import_references(css: &str, refs: &mut Vec<CssAssetReference>) {
+    let mut index = 0usize;
+    while let Some(offset) = find_ascii_case_insensitive(&css[index..], "@import") {
+        let mut cursor = index + offset + "@import".len();
+        cursor = skip_css_whitespace(css, cursor);
+        if css[cursor..].starts_with("url(") {
+            index = cursor + 4;
+            continue;
+        }
+        let Some(quote) = css[cursor..].chars().next() else {
+            break;
+        };
+        if quote != '\'' && quote != '"' {
+            index = cursor.saturating_add(1);
+            continue;
+        }
+        let value_start = cursor + quote.len_utf8();
+        let Some(value_end) = find_css_quote_end(css, value_start, quote) else {
+            break;
+        };
+        if let Some(raw) = normalize_css_reference(&css[value_start..value_end]) {
+            refs.push(CssAssetReference { raw });
+        }
+        index = value_end.saturating_add(1);
+    }
+}
+
+fn rewrite_css_urls(
+    css: &str,
+    css_url: &str,
+    css_local_path: &str,
+    rewrites: &HashMap<String, String>,
+) -> String {
+    let mut out = String::with_capacity(css.len());
+    let mut index = 0usize;
+    while let Some(offset) = find_ascii_case_insensitive(&css[index..], "url(") {
+        let absolute_start = index + offset;
+        let value_start = absolute_start + 4;
+        let Some(value_end) = find_css_closing_paren(css, value_start) else {
+            break;
+        };
+        out.push_str(&css[index..absolute_start]);
+        let original = &css[value_start..value_end];
+        if let Some(raw) = normalize_css_reference(original) {
+            if let Some(target) = css_rewrite_target(css_url, &raw, css_local_path, rewrites) {
+                out.push_str("url(\"");
+                out.push_str(&target);
+                out.push_str("\")");
+            } else {
+                out.push_str(&css[absolute_start..=value_end]);
+            }
+        } else {
+            out.push_str(&css[absolute_start..=value_end]);
+        }
+        index = value_end.saturating_add(1);
+    }
+    out.push_str(&css[index..]);
+
+    let mut imported = String::with_capacity(out.len());
+    let mut index = 0usize;
+    while let Some(offset) = find_ascii_case_insensitive(&out[index..], "@import") {
+        let import_start = index + offset;
+        let mut cursor = import_start + "@import".len();
+        cursor = skip_css_whitespace(&out, cursor);
+        if out[cursor..].starts_with("url(") {
+            imported.push_str(&out[index..cursor]);
+            index = cursor;
+            continue;
+        }
+        let Some(quote) = out[cursor..].chars().next() else {
+            break;
+        };
+        if quote != '\'' && quote != '"' {
+            imported.push_str(&out[index..=cursor.min(out.len().saturating_sub(1))]);
+            index = cursor.saturating_add(1);
+            continue;
+        }
+        let value_start = cursor + quote.len_utf8();
+        let Some(value_end) = find_css_quote_end(&out, value_start, quote) else {
+            break;
+        };
+        imported.push_str(&out[index..value_start]);
+        let raw = &out[value_start..value_end];
+        if let Some(target) = normalize_css_reference(raw)
+            .and_then(|raw| css_rewrite_target(css_url, &raw, css_local_path, rewrites))
+        {
+            imported.push_str(&target);
+        } else {
+            imported.push_str(raw);
+        }
+        index = value_end;
+    }
+    imported.push_str(&out[index..]);
+    imported
+}
+
+fn css_rewrite_target(
+    css_url: &str,
+    raw: &str,
+    css_local_path: &str,
+    rewrites: &HashMap<String, String>,
+) -> Option<String> {
+    let absolute = resolve_css_asset_url(css_url, raw)?;
+    if let Some(local) = rewrites.get(&absolute) {
+        return Some(css_relative_local_path(css_local_path, local));
+    }
+    if raw.starts_with("http://") || raw.starts_with("https://") {
+        None
+    } else {
+        Some(absolute)
+    }
+}
+
+fn resolve_css_asset_url(css_url: &str, raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty()
+        || trimmed.starts_with('#')
+        || trimmed.starts_with("data:")
+        || trimmed.starts_with("blob:")
+        || trimmed.starts_with("javascript:")
+        || trimmed.starts_with("mailto:")
+    {
+        return None;
+    }
+    let base = url::Url::parse(css_url).ok()?;
+    let resolved = base.join(trimmed).ok()?;
+    if resolved.scheme() != "http" && resolved.scheme() != "https" {
+        return None;
+    }
+    Some(resolved.to_string())
+}
+
+fn css_relative_local_path(css_local_path: &str, target_local_path: &str) -> String {
+    let css_dir = css_local_path
+        .rsplit_once('/')
+        .map(|(dir, _)| dir)
+        .unwrap_or_default();
+    let target = target_local_path
+        .strip_prefix(css_dir)
+        .unwrap_or(target_local_path);
+    target.trim_start_matches('/').to_string()
+}
+
+fn normalize_css_reference(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let unquoted = if let Some(rest) = trimmed.strip_prefix('"') {
+        rest.strip_suffix('"').unwrap_or(rest)
+    } else if let Some(rest) = trimmed.strip_prefix('\'') {
+        rest.strip_suffix('\'').unwrap_or(rest)
+    } else {
+        trimmed
+    };
+    let cleaned = unquoted.trim();
+    if cleaned.is_empty() {
+        None
+    } else {
+        Some(cleaned.to_string())
+    }
+}
+
+fn find_css_closing_paren(css: &str, start: usize) -> Option<usize> {
+    let mut quote = None;
+    let mut escaped = false;
+    for (offset, ch) in css[start..].char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        if let Some(current_quote) = quote {
+            if ch == current_quote {
+                quote = None;
+            }
+            continue;
+        }
+        if ch == '\'' || ch == '"' {
+            quote = Some(ch);
+        } else if ch == ')' {
+            return Some(start + offset);
+        }
+    }
+    None
+}
+
+fn find_css_quote_end(css: &str, start: usize, quote: char) -> Option<usize> {
+    let mut escaped = false;
+    for (offset, ch) in css[start..].char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        if ch == quote {
+            return Some(start + offset);
+        }
+    }
+    None
+}
+
+fn skip_css_whitespace(css: &str, mut index: usize) -> usize {
+    while let Some(ch) = css[index..].chars().next() {
+        if !ch.is_whitespace() {
+            break;
+        }
+        index += ch.len_utf8();
+    }
+    index
+}
+
+fn find_ascii_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
+    haystack
+        .as_bytes()
+        .windows(needle.len())
+        .position(|window| window.eq_ignore_ascii_case(needle.as_bytes()))
+}
+
 fn rewrite_page_html(html: &str, rewrites: &HashMap<String, String>) -> String {
     let mut out = html.to_string();
     for (url, relative) in rewrites {
@@ -2269,7 +2768,104 @@ fn rewrite_page_html(html: &str, rewrites: &HashMap<String, String>) -> String {
         out = out.replace(&html_escape_attribute(url), relative);
         out = out.replace(&url.replace('/', "\\/"), relative);
     }
+    out = remove_local_archive_attribute(&out, "integrity", rewrites);
+    out = remove_local_archive_attribute(&out, "crossorigin", rewrites);
     out
+}
+
+fn remove_local_archive_attribute(
+    html: &str,
+    attribute: &str,
+    rewrites: &HashMap<String, String>,
+) -> String {
+    let mut out = html.to_string();
+    for relative in rewrites.values() {
+        if !relative.starts_with("assets/") {
+            continue;
+        }
+        out = remove_attribute_near_local_path(&out, relative, attribute);
+    }
+    out
+}
+
+fn remove_attribute_near_local_path(html: &str, relative: &str, attribute: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut index = 0usize;
+    while let Some(offset) = html[index..].find(relative) {
+        let hit = index + offset;
+        let tag_start = html[..hit].rfind('<').unwrap_or(hit);
+        let tag_end = html[hit..]
+            .find('>')
+            .map(|end| hit + end + 1)
+            .unwrap_or(hit + relative.len());
+        out.push_str(&html[index..tag_start]);
+        out.push_str(&remove_html_attribute(&html[tag_start..tag_end], attribute));
+        index = tag_end;
+    }
+    out.push_str(&html[index..]);
+    out
+}
+
+fn remove_html_attribute(tag: &str, attribute: &str) -> String {
+    let mut out = String::with_capacity(tag.len());
+    let mut index = 0usize;
+    let attr = attribute.as_bytes();
+    while index < tag.len() {
+        let rest = &tag[index..];
+        let Some(offset) = find_ascii_case_insensitive(rest, attribute) else {
+            out.push_str(rest);
+            break;
+        };
+        let start = index + offset;
+        let before = tag[..start].chars().next_back();
+        let after = tag[start + attribute.len()..].chars().next();
+        if before.is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+            || after.is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+        {
+            out.push_str(&tag[index..start + attr.len()]);
+            index = start + attr.len();
+            continue;
+        }
+        out.push_str(&tag[index..start]);
+        let mut cursor = start + attribute.len();
+        cursor = skip_html_whitespace(tag, cursor);
+        if tag[cursor..].starts_with('=') {
+            cursor += 1;
+            cursor = skip_html_whitespace(tag, cursor);
+            if let Some(quote) = tag[cursor..]
+                .chars()
+                .next()
+                .filter(|ch| *ch == '\'' || *ch == '"')
+            {
+                cursor += quote.len_utf8();
+                if let Some(end) = find_css_quote_end(tag, cursor, quote) {
+                    cursor = end + quote.len_utf8();
+                }
+            } else {
+                while let Some(ch) = tag[cursor..].chars().next() {
+                    if ch.is_whitespace() || ch == '>' {
+                        break;
+                    }
+                    cursor += ch.len_utf8();
+                }
+            }
+        }
+        while out.ends_with(' ') || out.ends_with('\t') {
+            out.pop();
+        }
+        index = cursor;
+    }
+    out
+}
+
+fn skip_html_whitespace(html: &str, mut index: usize) -> usize {
+    while let Some(ch) = html[index..].chars().next() {
+        if !ch.is_whitespace() {
+            break;
+        }
+        index += ch.len_utf8();
+    }
+    index
 }
 
 fn html_escape_attribute(value: &str) -> String {
@@ -3420,6 +4016,70 @@ mod tests {
             rewrite_page_html(html, &rewrites),
             r#"<link href="assets/neverlose.cc-app.css" rel="stylesheet">"#
         );
+    }
+
+    #[test]
+    fn page_archive_rewrites_css_relative_and_root_urls() {
+        let css_url = "https://neverlose.cc/static/assets/css/app.css?hash=abc";
+        let css_local_path = "assets/neverlose.cc-app.css";
+        let mut rewrites = HashMap::new();
+        rewrites.insert(
+            "https://neverlose.cc/static/assets/font/MuseoSansCyrl-700.woff".to_string(),
+            "assets/neverlose.cc-MuseoSansCyrl-700.woff".to_string(),
+        );
+        rewrites.insert(
+            "https://neverlose.cc/static/font/fa5/fa-solid-900.woff2?v=1".to_string(),
+            "assets/neverlose.cc-fa-solid-900.woff2".to_string(),
+        );
+        rewrites.insert(
+            "https://neverlose.cc/static/assets/img/blue-smoke.png".to_string(),
+            "assets/neverlose.cc-blue-smoke.png".to_string(),
+        );
+
+        let css = r#"
+@font-face{src:url("../font/MuseoSansCyrl-700.woff") format("woff")}
+.fa{src:url('/static/font/fa5/fa-solid-900.woff2?v=1')}
+.hero{background:url(/static/assets/img/blue-smoke.png)}
+"#;
+
+        let rewritten = rewrite_css_urls(css, css_url, css_local_path, &rewrites);
+
+        assert!(rewritten.contains(r#"url("neverlose.cc-MuseoSansCyrl-700.woff")"#));
+        assert!(rewritten.contains(r#"url("neverlose.cc-fa-solid-900.woff2")"#));
+        assert!(rewritten.contains(r#"url("neverlose.cc-blue-smoke.png")"#));
+        assert!(!rewritten.contains("../font/MuseoSansCyrl-700.woff"));
+        assert!(!rewritten.contains("/static/font/fa5/fa-solid-900.woff2"));
+        assert!(!rewritten.contains("/static/assets/img/blue-smoke.png"));
+    }
+
+    #[test]
+    fn page_archive_css_missing_assets_fall_back_to_absolute_urls() {
+        let css_url = "https://neverlose.cc/static/assets/css/app.css?hash=abc";
+        let rewritten = rewrite_css_urls(
+            ".hero{background:url(/static/assets/img/missing.png)}",
+            css_url,
+            "assets/neverlose.cc-app.css",
+            &HashMap::new(),
+        );
+
+        assert!(rewritten.contains(r#"url("https://neverlose.cc/static/assets/img/missing.png")"#));
+        assert!(!rewritten.contains("url(/static/assets/img/missing.png)"));
+    }
+
+    #[test]
+    fn page_archive_removes_local_sri_attributes() {
+        let mut rewrites = HashMap::new();
+        rewrites.insert(
+            "https://example.com/app.js".to_string(),
+            "assets/example.com-app.js".to_string(),
+        );
+
+        let html = r#"<script defer src="assets/example.com-app.js" integrity="sha384-test" crossorigin="anonymous"></script>"#;
+        let rewritten = rewrite_page_html(html, &rewrites);
+
+        assert!(rewritten.contains(r#"src="assets/example.com-app.js""#));
+        assert!(!rewritten.contains("integrity="));
+        assert!(!rewritten.contains("crossorigin="));
     }
 
     #[test]
