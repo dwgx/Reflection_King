@@ -860,6 +860,11 @@ impl AppState {
         }
 
         if outcome.candidates.is_empty() {
+            if let Some(reason) = browser_interaction_reason(&outcome) {
+                return Err(RkError::Browser(format!(
+                    "{reason}; open the job browser login session, complete the verification, then resume with profile"
+                )));
+            }
             if job.outputs.contains(&OutputKind::PageHtml) && snapshot_count > 0 {
                 let artifacts = self.job_store.list_artifacts(job.id).await?;
                 let media_url = artifacts
@@ -1926,6 +1931,23 @@ impl AppState {
     }
 }
 
+fn browser_interaction_reason(
+    outcome: &reflection_core::extractors::ResolveOutcome,
+) -> Option<String> {
+    outcome
+        .page_snapshots
+        .iter()
+        .find(|snapshot| snapshot.requires_interaction)
+        .and_then(|snapshot| snapshot.interaction_reason.clone())
+        .or_else(|| {
+            outcome
+                .warnings
+                .iter()
+                .find(|warning| is_profile_required_message(warning))
+                .cloned()
+        })
+}
+
 fn resolver_error_summary(attempts: &[reflection_core::extractors::AttemptLog]) -> Option<String> {
     let errors = attempts
         .iter()
@@ -1949,6 +1971,11 @@ fn resolver_error_summary(attempts: &[reflection_core::extractors::AttemptLog]) 
 
 fn is_profile_required_error(error: &RkError) -> bool {
     let message = error.to_string().to_ascii_lowercase();
+    is_profile_required_message(&message)
+}
+
+fn is_profile_required_message(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
     message.contains("fresh cookies")
         || message.contains("sign in")
         || message.contains("login required")
@@ -3212,6 +3239,16 @@ mod tests {
         assert!(!headers.contains_key(reqwest::header::COOKIE));
         assert!(!headers.contains_key(reqwest::header::AUTHORIZATION));
         assert!(!headers.contains_key("x-test"));
+    }
+
+    #[test]
+    fn browser_challenge_warnings_require_profile() {
+        assert!(is_profile_required_message(
+            "page is blocked by a Cloudflare security challenge"
+        ));
+        assert!(is_profile_required_message(
+            "page requires a human verification interaction"
+        ));
     }
 
     #[test]

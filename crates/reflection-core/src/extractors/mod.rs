@@ -505,4 +505,14 @@ mod tests {
         assert!(outcome.candidates.is_empty());
         assert_eq!(outcome.chain_label(), "a>b");
     }
+
+    #[test]
+    fn cloudflare_challenge_errors_are_blocked() {
+        let error = RkError::Source(
+            "page is blocked by a Cloudflare security challenge; open the job browser login session"
+                .to_string(),
+        );
+
+        assert_eq!(classify(&error), ErrorClass::Blocked);
+    }
 }

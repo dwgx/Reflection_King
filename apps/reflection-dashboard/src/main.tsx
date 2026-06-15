@@ -1481,7 +1481,7 @@ function App() {
                   </div>
                   {activeLoginJobId === selectedJob.id && loginSnapshot && (
                     <div className="screen-help">
-                      验证浏览器已在页面中央打开。像远程桌面一样在截图上操作即可同步到服务端浏览器。
+                      验证浏览器已在页面中央打开。当前控制器会把点击、输入和滚轮同步到服务端 Profile；复杂真人验证建议使用受信任的真实远程桌面浏览器完成后再继续。
                     </div>
                   )}
                 </div>

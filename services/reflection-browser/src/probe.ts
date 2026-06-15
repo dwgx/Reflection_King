@@ -191,9 +191,14 @@ export class BrowserProbeService {
         addPageResource(pageResources, resource);
       }
     }
-    const pageSnapshot = capturePageSnapshot
-      ? await captureSnapshot(page, finalUrl, title, [...pageResources.values()], warnings)
-      : undefined;
+    const pageSnapshot = await captureSnapshot(
+      page,
+      finalUrl,
+      title,
+      [...pageResources.values()],
+      warnings,
+      { includeScreenshot: capturePageSnapshot },
+    );
     const userAgent = await contextUserAgent(context).catch(() => undefined);
     await page.close().catch(() => undefined);
 
@@ -268,7 +273,9 @@ export class BrowserProbeService {
       title,
       platformHint: request.platformHint,
       candidates: filtered.sort((a, b) => b.score - a.score),
-      pageSnapshot,
+      pageSnapshot: capturePageSnapshot ? pageSnapshot : undefined,
+      requiresInteraction: pageSnapshot.requiresInteraction,
+      interactionReason: pageSnapshot.interactionReason,
       warnings,
       eventCount,
       timedOut,
@@ -1232,6 +1239,7 @@ async function captureSnapshot(
   title: string | undefined,
   resources: PageResource[],
   warnings: string[],
+  options: { includeScreenshot?: boolean } = {},
 ): Promise<PageSnapshot> {
   const html = await page
     .evaluate(() => document.documentElement.outerHTML)
@@ -1242,12 +1250,14 @@ async function captureSnapshot(
   const text = await page
     .evaluate(() => document.body?.innerText?.slice(0, 200_000) ?? "")
     .catch(() => "");
-  const screenshotBuffer = await page
-    .screenshot({ type: "png", fullPage: false })
-    .catch((error) => {
-      warnings.push(`page screenshot capture failed: ${error instanceof Error ? error.message : String(error)}`);
-      return undefined;
-    });
+  const screenshotBuffer = options.includeScreenshot
+    ? await page
+        .screenshot({ type: "png", fullPage: false })
+        .catch((error) => {
+          warnings.push(`page screenshot capture failed: ${error instanceof Error ? error.message : String(error)}`);
+          return undefined;
+        })
+    : undefined;
   const interaction = detectRequiredInteraction(finalUrl, title, html, text, resources);
   if (interaction.requiresInteraction && interaction.reason) {
     warnings.push(interaction.reason);

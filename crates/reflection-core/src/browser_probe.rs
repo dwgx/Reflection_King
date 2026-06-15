@@ -38,6 +38,10 @@ pub struct ProbeResponse {
     pub candidates: Vec<BrowserCandidate>,
     #[serde(rename = "pageSnapshot", default)]
     pub page_snapshot: Option<PageSnapshot>,
+    #[serde(rename = "requiresInteraction", default)]
+    pub requires_interaction: bool,
+    #[serde(rename = "interactionReason", default)]
+    pub interaction_reason: Option<String>,
     pub warnings: Vec<String>,
     #[serde(rename = "eventCount")]
     pub event_count: usize,
@@ -58,6 +62,8 @@ pub struct ProbeResponse {
 pub struct BrowserProbeOutcome {
     pub candidates: Vec<MediaCandidate>,
     pub page_snapshot: Option<PageSnapshot>,
+    pub requires_interaction: bool,
+    pub interaction_reason: Option<String>,
     pub final_url: String,
     pub title: Option<String>,
     pub warnings: Vec<String>,
@@ -321,6 +327,8 @@ impl BrowserProbeClient {
         Ok(BrowserProbeOutcome {
             candidates,
             page_snapshot: response.page_snapshot,
+            requires_interaction: response.requires_interaction,
+            interaction_reason: response.interaction_reason,
             final_url: response.final_url,
             title: response.title,
             warnings: response.warnings,

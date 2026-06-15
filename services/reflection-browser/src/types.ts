@@ -57,6 +57,8 @@ export interface ProbeResponse {
   platformHint?: string;
   candidates: BrowserCandidate[];
   pageSnapshot?: PageSnapshot;
+  requiresInteraction?: boolean;
+  interactionReason?: string;
   warnings: string[];
   eventCount: number;
   timedOut: boolean;
