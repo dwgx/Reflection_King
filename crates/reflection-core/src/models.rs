@@ -493,6 +493,13 @@ fn job_issue_kind(job: &JobRecord) -> JobIssueKind {
         || lowered.contains("login required")
         || lowered.contains("requires authorization")
         || lowered.contains("requires headers")
+        || lowered.contains("human verification")
+        || lowered.contains("human browser interaction")
+        || lowered.contains("security verification")
+        || lowered.contains("security challenge")
+        || lowered.contains("cloudflare")
+        || lowered.contains("turnstile")
+        || lowered.contains("captcha")
         || lowered.contains("profile")
     {
         JobIssueKind::NeedsProfile

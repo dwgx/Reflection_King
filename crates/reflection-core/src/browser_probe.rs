@@ -79,6 +79,10 @@ pub struct PageSnapshot {
     pub resources: Vec<PageResource>,
     #[serde(rename = "capturedAt")]
     pub captured_at: String,
+    #[serde(rename = "requiresInteraction", default)]
+    pub requires_interaction: bool,
+    #[serde(rename = "interactionReason", default)]
+    pub interaction_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

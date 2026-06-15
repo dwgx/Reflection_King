@@ -777,6 +777,19 @@ impl AppState {
 
         let snapshot_count = outcome.page_snapshots.len();
         if job.outputs.contains(&OutputKind::PageHtml) {
+            if let Some(snapshot) = outcome
+                .page_snapshots
+                .iter()
+                .find(|snapshot| snapshot.requires_interaction)
+            {
+                let reason = snapshot
+                    .interaction_reason
+                    .as_deref()
+                    .unwrap_or("page requires a human browser interaction");
+                return Err(RkError::Browser(format!(
+                    "{reason}; open the job browser login session, complete the verification, then resume with profile"
+                )));
+            }
             for snapshot in &outcome.page_snapshots {
                 self.persist_page_snapshot(&job, snapshot, &settings)
                     .await?;
@@ -1880,6 +1893,13 @@ fn is_profile_required_error(error: &RkError) -> bool {
         || message.contains("requires headers")
         || message.contains("needs profile")
         || message.contains("profile required")
+        || message.contains("human verification")
+        || message.contains("human browser interaction")
+        || message.contains("security verification")
+        || message.contains("security challenge")
+        || message.contains("cloudflare")
+        || message.contains("turnstile")
+        || message.contains("captcha")
         || message.contains("401")
         || message.contains("403")
 }

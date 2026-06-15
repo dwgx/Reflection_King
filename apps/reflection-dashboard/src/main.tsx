@@ -1006,7 +1006,7 @@ function App() {
         {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ ...point, button, click_count: clickCount }),
+          body: JSON.stringify({ ...point, button, clickCount }),
         },
       ));
     } catch (error) {
@@ -1025,8 +1025,8 @@ function App() {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
-            delta_x: event.deltaX,
-            delta_y: event.deltaY,
+            deltaX: event.deltaX,
+            deltaY: event.deltaY,
             x: point?.x,
             y: point?.y,
           }),
@@ -1319,8 +1319,8 @@ function App() {
                 <div className="remote-login-card">
                   <div className="remote-login-head">
                     <div>
-                      <strong>此任务需要网页登录授权</strong>
-                      <span>打开临时服务端浏览器，登录完成后继续解析此任务。</span>
+                      <strong>此任务需要网页登录或安全验证</strong>
+                      <span>打开临时服务端浏览器，完成登录、真人验证或站点确认后继续解析此任务。</span>
                     </div>
                     <div className="panel-actions">
                       <Button type="button" variant="secondary" disabled={busy} onClick={() => startJobBrowserLoginSession(selectedJob)}>

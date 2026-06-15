@@ -47,6 +47,8 @@ export interface PageSnapshot {
   screenshot?: string;
   resources: PageResource[];
   capturedAt: string;
+  requiresInteraction?: boolean;
+  interactionReason?: string;
 }
 
 export interface ProbeResponse {

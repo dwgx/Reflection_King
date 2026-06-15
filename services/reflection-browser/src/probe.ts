@@ -1189,6 +1189,10 @@ async function captureSnapshot(
       warnings.push(`page screenshot capture failed: ${error instanceof Error ? error.message : String(error)}`);
       return undefined;
     });
+  const interaction = detectRequiredInteraction(finalUrl, title, html, text, resources);
+  if (interaction.requiresInteraction && interaction.reason) {
+    warnings.push(interaction.reason);
+  }
 
   return {
     finalUrl,
@@ -1198,7 +1202,43 @@ async function captureSnapshot(
     screenshot: screenshotBuffer ? `data:image/png;base64,${screenshotBuffer.toString("base64")}` : undefined,
     resources,
     capturedAt: new Date().toISOString(),
+    requiresInteraction: interaction.requiresInteraction,
+    interactionReason: interaction.reason,
   };
+}
+
+function detectRequiredInteraction(
+  finalUrl: string,
+  title: string | undefined,
+  html: string,
+  text: string,
+  resources: PageResource[],
+): { requiresInteraction: boolean; reason?: string } {
+  const haystack = `${finalUrl}\n${title ?? ""}\n${text}\n${html.slice(0, 1_000_000)}`
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+  const resourceText = resources
+    .slice(0, 500)
+    .map((resource) => `${resource.url} ${resource.contentType ?? ""} ${resource.resourceType ?? ""}`)
+    .join(" ")
+    .toLowerCase();
+
+  const checks: Array<[RegExp, string]> = [
+    [/cloudflare.+(?:challenge|turnstile|ray id|正在进行安全验证|安全验证|验证您是真人|请验证您是真人)/, "page is blocked by a Cloudflare security challenge"],
+    [/(?:cf-turnstile|challenges\.cloudflare\.com|turnstile\.render|turnstile)/, "page requires a Cloudflare Turnstile interaction"],
+    [/(?:hcaptcha\.com|h-captcha|data-hcaptcha|hcaptcha)/, "page requires an hCaptcha interaction"],
+    [/(?:www\.google\.com\/recaptcha|g-recaptcha|grecaptcha|recaptcha)/, "page requires a reCAPTCHA interaction"],
+    [/(?:captcha|验证码|人机验证|真人验证|robot check|verify you are human|checking your browser|just a moment)/, "page requires a human verification interaction"],
+    [/(?:正在进行安全验证|请稍候.*安全|checking.*secure|security check)/, "page is still in a security verification flow"],
+  ];
+
+  for (const [pattern, reason] of checks) {
+    if (pattern.test(haystack) || pattern.test(resourceText)) {
+      return { requiresInteraction: true, reason };
+    }
+  }
+
+  return { requiresInteraction: false };
 }
 
 async function adultVideoCandidatesFromPage(page: Page, pageUrl: string): Promise<BrowserCandidate[]> {
