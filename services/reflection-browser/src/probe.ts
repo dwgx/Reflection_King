@@ -317,7 +317,7 @@ export class BrowserProbeService {
 
   async startLoginSession(profileId: string, url: string): Promise<LoginSessionSnapshot> {
     const normalizedProfileId = sanitizeProfileId(profileId || this.config.defaultProfileId);
-    const context = await this.context(normalizedProfileId, false);
+    const context = await this.context(normalizedProfileId, this.config.headed);
     const page = await context.newPage();
     await page.setViewportSize({ width: 1280, height: 720 });
     const now = Date.now();

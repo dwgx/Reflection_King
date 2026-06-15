@@ -145,6 +145,10 @@ Profile 或来自旧版本的 `job_<id>_<actor>` Profile 会归并到 `RK_BROWSE
 指定的共享 Profile。这个 Profile 的 Cookie 对所有具备 `allow_login_profile=true` 的密钥
 可见，公网多人部署时应只给可信密钥开启该权限。
 
+截图控制器只适合普通登录、扫码和 Cookie 保存；它不是高保真的远程桌面。需要操作者直接操作
+真实浏览器窗口时，把 `RK_BROWSER_HEADED=1` 配合受信任的显示或远程桌面通道使用。不要把
+CDP、VNC、noVNC、Playwright sidecar 或浏览器调试端口直接暴露到公网。
+
 如果 Windows 本机已经登录 Edge、Chrome 或 Firefox，可以用本地 Python 导入器只抽取指定站点
 Cookie 并上传到服务器 Profile：
 
