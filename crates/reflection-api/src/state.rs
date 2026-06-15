@@ -480,11 +480,11 @@ impl AppState {
             .get(job_id)
             .await?
             .ok_or_else(|| RkError::NotFound(format!("job {job_id}")))?;
-        if !job.outputs.contains(&OutputKind::PageHtml) {
-            return Err(RkError::BadRequest(
-                "force page archive is only available for HTML/CSS/JS output jobs".to_string(),
-            ));
-        }
+        let previous_outputs = job
+            .outputs
+            .iter()
+            .map(|output| output.as_str())
+            .collect::<Vec<_>>();
         tokio::fs::remove_dir_all(self.paths.public_job_dir(job_id))
             .await
             .ok();
@@ -500,6 +500,7 @@ impl AppState {
             serde_json::json!({
                 "discovery": DiscoveryMode::Browser.as_str(),
                 "auth_mode": AuthMode::None.as_str(),
+                "previous_outputs": previous_outputs,
                 "outputs": [OutputKind::PageHtml.as_str()]
             }),
         ))

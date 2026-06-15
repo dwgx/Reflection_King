@@ -428,6 +428,7 @@ function App() {
     () => candidateDisplayList(candidates, selectedJob, showAllCandidates),
     [candidates, selectedJob, showAllCandidates],
   );
+  const selectedJobIsPageArchive = isPageArchiveJob(selectedJob);
 
   const defaultCandidate = useMemo(
     () => bestCandidate(candidates, selectedJob),
@@ -1264,18 +1265,18 @@ function App() {
 
   async function closeBrowserLoginSession() {
     if (!loginSnapshot) return;
-    setBusy(true);
+    const closeEndpoint = loginSessionEndpoint("close");
+    setLoginSnapshot(null);
+    setActiveLoginJobId(null);
+    activePointerRef.current = null;
+    loginSnapshotRequestRef.current += 1;
     try {
-      await request(loginSessionEndpoint("close"), {
+      await request(closeEndpoint, {
         method: "POST",
       });
-      setLoginSnapshot(null);
-      setActiveLoginJobId(null);
       notify("已关闭服务端浏览器会话，Profile 已保留登录态。", "success");
     } catch (error) {
-      notify(errorMessage(error), "error");
-    } finally {
-      setBusy(false);
+      notify(`验证浏览器已从当前页面关闭；服务端清理失败：${errorMessage(error)}`, "error");
     }
   }
 
@@ -1457,11 +1458,9 @@ function App() {
                   </Button>
                 </>
               )}
-              {isPageArchiveJob(selectedJob) && (
-                <Button type="button" variant="secondary" disabled={busy} onClick={forceSelectedJobPageArchive}>
-                  <RefreshCw size={16} /> 强制解析
-                </Button>
-              )}
+              <Button type="button" variant="secondary" disabled={busy} onClick={forceSelectedJobPageArchive}>
+                <RefreshCw size={16} /> 保存网页包
+              </Button>
             </div>
           ) : undefined}
         >
@@ -1497,11 +1496,9 @@ function App() {
                       <Button type="button" disabled={busy} onClick={resumeSelectedJobWithProfile}>
                         <RefreshCw size={16} /> 继续解析
                       </Button>
-                      {isPageArchiveJob(selectedJob) && (
-                        <Button type="button" variant="secondary" disabled={busy} onClick={forceSelectedJobPageArchive}>
-                          <RefreshCw size={16} /> 强制解析
-                        </Button>
-                      )}
+                      <Button type="button" variant="secondary" disabled={busy} onClick={forceSelectedJobPageArchive}>
+                        <RefreshCw size={16} /> 保存网页包
+                      </Button>
                     </div>
                   )}
                 </div>
@@ -1525,11 +1522,9 @@ function App() {
                       <Button type="button" disabled={busy} onClick={resumeSelectedJobWithProfile}>
                         <RefreshCw size={16} /> 继续解析
                       </Button>
-                      {isPageArchiveJob(selectedJob) && (
-                        <Button type="button" variant="secondary" disabled={busy} onClick={forceSelectedJobPageArchive}>
-                          <RefreshCw size={16} /> 强制解析
-                        </Button>
-                      )}
+                      <Button type="button" variant="secondary" disabled={busy} onClick={forceSelectedJobPageArchive}>
+                        <RefreshCw size={16} /> 保存网页包
+                      </Button>
                     </div>
                   </div>
                   {activeLoginJobId === selectedJob.id && loginSnapshot && (
@@ -2206,8 +2201,12 @@ function App() {
                 <Button type="button" variant="secondary" disabled={busy} onClick={refreshBrowserLoginSession}>
                   <RefreshCw size={16} /> 刷新
                 </Button>
-                <Button type="button" disabled={busy} onClick={resumeSelectedJobWithProfile}>
-                  <RefreshCw size={16} /> 继续解析
+                <Button
+                  type="button"
+                  disabled={busy}
+                  onClick={selectedJobIsPageArchive ? forceSelectedJobPageArchive : resumeSelectedJobWithProfile}
+                >
+                  <RefreshCw size={16} /> {selectedJobIsPageArchive ? "保存网页包" : "继续解析"}
                 </Button>
                 <Button type="button" variant="secondary" disabled={busy} onClick={closeBrowserLoginSession}>
                   关闭
@@ -2253,7 +2252,7 @@ function App() {
                   </button>
                 </div>
                 <div className="screen-help">
-                  <span>像远程桌面一样操作截图：移动、左键、右键、双击、按住拖动和滚轮都会投射到服务端浏览器。</span>
+                  <span>像远程桌面一样操作截图：移动、左键、右键、双击、按住拖动和滚轮都会投射到服务端浏览器。页面已可见但只想保存公开 UI 时，请创建 HTML/CSS/JS 网页包任务；继续解析用于带 Profile 再抓媒体候选。</span>
                 </div>
                 <div className="remote-input-controls">
                   <Input

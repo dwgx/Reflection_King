@@ -145,6 +145,9 @@ export class BrowserProbeService {
       await page.waitForLoadState("networkidle", { timeout: Math.min(timeoutMs, 15_000) }).catch(() => {
         warnings.push("networkidle timeout");
       });
+      if (capturePageSnapshot) {
+        await preparePageForArchive(page, warnings);
+      }
       await addDomCandidates(page, page.url(), warnings, addCandidate);
       const hasStaticPlayableCandidate = hasPlayableMediaCandidate([...candidates.values()]);
       if (
@@ -498,7 +501,7 @@ export class BrowserProbeService {
       return { closed: false };
     }
     this.loginSessions.delete(sessionId);
-    await entry.page.close().catch(() => undefined);
+    void entry.page.close().catch(() => undefined);
     return { closed: true };
   }
 
@@ -1211,6 +1214,32 @@ function parseContentLength(value: string | undefined): number | undefined {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
 }
 
+async function preparePageForArchive(page: Page, warnings: string[]): Promise<void> {
+  await dismissConsentPrompt(page).catch(() => undefined);
+  try {
+    await page.evaluate(async () => {
+      const sleep = (duration: number) => new Promise((resolve) => window.setTimeout(resolve, duration));
+      const maxScrollY = Math.max(
+        document.documentElement.scrollHeight,
+        document.body?.scrollHeight ?? 0,
+      );
+      const viewportHeight = Math.max(window.innerHeight || 720, 360);
+      const steps = Math.min(8, Math.max(2, Math.ceil(maxScrollY / viewportHeight)));
+      for (let index = 1; index <= steps; index += 1) {
+        window.scrollTo(0, Math.floor((maxScrollY * index) / steps));
+        window.dispatchEvent(new Event("scroll", { bubbles: true }));
+        await sleep(350);
+      }
+      window.scrollTo(0, 0);
+      window.dispatchEvent(new Event("scroll", { bubbles: true }));
+      await sleep(500);
+    });
+    await page.waitForLoadState("networkidle", { timeout: 8_000 }).catch(() => undefined);
+  } catch (error) {
+    warnings.push(`page archive warmup failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 async function genericPageResourcesFromPage(page: Page, pageUrl: string): Promise<PageResource[]> {
   return page.evaluate((baseUrl) => {
     const out = new Map<string, PageResource>();
@@ -1243,8 +1272,43 @@ async function genericPageResourcesFromPage(page: Page, pageUrl: string): Promis
     document.querySelectorAll<HTMLLinkElement>("link[href]").forEach((node) => add(node.href, `dom_link:${node.rel || "link"}`));
     document.querySelectorAll<HTMLScriptElement>("script[src]").forEach((node) => add(node.src, "dom_script"));
     document.querySelectorAll<HTMLImageElement>("img[src]").forEach((node) => add(node.currentSrc || node.src, "dom_image"));
+    document.querySelectorAll<HTMLImageElement>("img[srcset]").forEach((node) => addSrcset(node.getAttribute("srcset"), "dom_image_srcset"));
     document.querySelectorAll<HTMLSourceElement>("source[src]").forEach((node) => add(node.src, "dom_source"));
+    document.querySelectorAll<HTMLSourceElement>("source[srcset]").forEach((node) => addSrcset(node.getAttribute("srcset"), "dom_source_srcset"));
     document.querySelectorAll<HTMLVideoElement | HTMLAudioElement>("video[src],audio[src]").forEach((node) => add(node.currentSrc || node.src, "dom_media"));
+    document.querySelectorAll<HTMLVideoElement>("video[poster]").forEach((node) => add(node.poster, "dom_video_poster"));
+    document.querySelectorAll<HTMLElement>("[style]").forEach((node) => {
+      for (const value of cssUrlValues(node.getAttribute("style") || "")) {
+        add(value, "dom_inline_style_url");
+      }
+    });
+    document.querySelectorAll<HTMLMetaElement>("meta[property],meta[name],meta[itemprop]").forEach((node) => {
+      const key = (node.getAttribute("property") || node.getAttribute("name") || node.getAttribute("itemprop") || "").toLowerCase();
+      if (/image|logo|icon|video|audio|manifest|thumbnail/.test(key)) {
+        add(node.getAttribute("content"), `dom_meta:${key.replace(/[^a-z0-9_-]/g, "_")}`);
+      }
+    });
+    document.querySelectorAll<HTMLElement>("[data-src],[data-srcset],[data-original],[data-lazy-src]").forEach((node) => {
+      add(node.getAttribute("data-src"), "dom_data_src");
+      add(node.getAttribute("data-original"), "dom_data_original");
+      add(node.getAttribute("data-lazy-src"), "dom_data_lazy_src");
+      addSrcset(node.getAttribute("data-srcset"), "dom_data_srcset");
+    });
+
+    for (const sheet of Array.from(document.styleSheets)) {
+      let rules: CSSRuleList | undefined;
+      try {
+        rules = sheet.cssRules;
+      } catch {
+        continue;
+      }
+      for (const rule of Array.from(rules).slice(0, 2_000)) {
+        const text = (rule as CSSRule).cssText || "";
+        for (const value of cssUrlValues(text)) {
+          add(value, "dom_cssom_url");
+        }
+      }
+    }
 
     for (const entry of performance.getEntriesByType("resource") as PerformanceResourceTiming[]) {
       add(entry.name, `performance:${entry.initiatorType || "resource"}`);
@@ -1256,6 +1320,24 @@ async function genericPageResourcesFromPage(page: Page, pageUrl: string): Promis
     }
 
     return [...out.values()].slice(0, 2_000);
+
+    function addSrcset(value: string | null | undefined, source: string) {
+      if (!value) return;
+      for (const item of value.split(",")) {
+        const candidate = item.trim().split(/\s+/)[0];
+        add(candidate, source);
+      }
+    }
+
+    function cssUrlValues(value: string): string[] {
+      const urls: string[] = [];
+      const pattern = /url\(\s*(['"]?)(.*?)\1\s*\)/gi;
+      let match: RegExpExecArray | null;
+      while ((match = pattern.exec(value))) {
+        urls.push(match[2]);
+      }
+      return urls;
+    }
   }, pageUrl);
 }
 
@@ -1309,27 +1391,53 @@ function detectRequiredInteraction(
   text: string,
   resources: PageResource[],
 ): { requiresInteraction: boolean; reason?: string } {
-  const haystack = `${finalUrl}\n${title ?? ""}\n${text}\n${html.slice(0, 1_000_000)}`
-    .replace(/\s+/g, " ")
-    .toLowerCase();
+  return detectRequiredInteractionFromVisiblePage(finalUrl, title, html, text, resources);
+}
+
+function detectRequiredInteractionFromVisiblePage(
+  finalUrl: string,
+  title: string | undefined,
+  html: string,
+  text: string,
+  resources: PageResource[],
+): { requiresInteraction: boolean; reason?: string } {
+  const visibleText = text.replace(/\s+/g, " ").trim().toLowerCase();
+  const pageTitle = (title ?? "").replace(/\s+/g, " ").trim().toLowerCase();
+  const visibleHaystack = `${finalUrl.toLowerCase()}\n${pageTitle}\n${visibleText}`;
+  const markupHaystack = html.slice(0, 1_000_000).replace(/\s+/g, " ").toLowerCase();
   const resourceText = resources
     .slice(0, 500)
     .map((resource) => `${resource.url} ${resource.contentType ?? ""} ${resource.resourceType ?? ""}`)
     .join(" ")
     .toLowerCase();
 
-  const checks: Array<[RegExp, string]> = [
-    [/cloudflare.+(?:challenge|turnstile|ray id|正在进行安全验证|安全验证|验证您是真人|请验证您是真人)/, "page is blocked by a Cloudflare security challenge"],
-    [/(?:cf-turnstile|challenges\.cloudflare\.com|turnstile\.render|turnstile)/, "page requires a Cloudflare Turnstile interaction"],
-    [/(?:hcaptcha\.com|h-captcha|data-hcaptcha|hcaptcha)/, "page requires an hCaptcha interaction"],
-    [/(?:www\.google\.com\/recaptcha|g-recaptcha|grecaptcha|recaptcha)/, "page requires a reCAPTCHA interaction"],
-    [/(?:captcha|验证码|人机验证|真人验证|robot check|verify you are human|checking your browser|just a moment)/, "page requires a human verification interaction"],
-    [/(?:正在进行安全验证|请稍候.*安全|checking.*secure|security check)/, "page is still in a security verification flow"],
-  ];
-
-  for (const [pattern, reason] of checks) {
-    if (pattern.test(haystack) || pattern.test(resourceText)) {
-      return { requiresInteraction: true, reason };
+  if (
+    /\bcloudflare\b/.test(visibleHaystack) &&
+    /\b(?:challenge|turnstile|ray id|security check|security verification|verify you are human|checking your browser)\b/.test(visibleHaystack)
+  ) {
+    return { requiresInteraction: true, reason: "page is blocked by a Cloudflare security challenge" };
+  }
+  if (/(?:checking your browser|just a moment|verify you are human|robot check|security verification|security check)/.test(visibleHaystack)) {
+    return { requiresInteraction: true, reason: "page requires a human verification interaction" };
+  }
+  if (/(?:cf-turnstile|challenges\.cloudflare\.com|turnstile\.render|turnstile)/.test(markupHaystack)) {
+    if (/(?:turnstile|verify|verification|challenge|human|captcha|security)/.test(visibleHaystack)) {
+      return { requiresInteraction: true, reason: "page requires a Cloudflare Turnstile interaction" };
+    }
+  }
+  if (/(?:hcaptcha\.com|h-captcha|data-hcaptcha|hcaptcha)/.test(markupHaystack)) {
+    if (/(?:hcaptcha|captcha|verify|verification|human|robot)/.test(visibleHaystack)) {
+      return { requiresInteraction: true, reason: "page requires an hCaptcha interaction" };
+    }
+  }
+  if (/(?:www\.google\.com\/recaptcha|g-recaptcha|grecaptcha|recaptcha)/.test(markupHaystack)) {
+    if (/(?:recaptcha|captcha|verify|verification|human|robot)/.test(visibleHaystack)) {
+      return { requiresInteraction: true, reason: "page requires a reCAPTCHA interaction" };
+    }
+  }
+  if (/(?:challenges\.cloudflare\.com|hcaptcha\.com|recaptcha|g-recaptcha)/.test(resourceText)) {
+    if (/(?:captcha|verify|verification|human|robot|security check|challenge)/.test(visibleHaystack)) {
+      return { requiresInteraction: true, reason: "page requires a human verification interaction" };
     }
   }
 
