@@ -1598,9 +1598,10 @@
 
   .remote-browser-toolbar {
     display: grid;
-    grid-template-columns: minmax(240px, 1fr) minmax(130px, auto) auto auto;
+    grid-template-columns: minmax(130px, auto) auto auto;
     gap: 8px;
     align-items: center;
+    justify-content: end;
   }
 
   .remote-input-controls {
@@ -1663,6 +1664,8 @@
     background: #020305;
     padding: 0;
     cursor: crosshair;
+    touch-action: none;
+    user-select: none;
   }
 
   .remote-browser-screen img {

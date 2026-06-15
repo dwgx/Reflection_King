@@ -414,9 +414,9 @@ impl AppState {
     pub async fn start_job_browser_login_session(
         &self,
         job: &JobRecord,
-        requester_key_id: Option<Uuid>,
+        _requester_key_id: Option<Uuid>,
     ) -> Result<LoginSessionSnapshot> {
-        let profile_id = job_scoped_profile_id(job.id, requester_key_id);
+        let profile_id = shared_job_profile_id(job);
         self.job_store
             .attach_profile_for_job(job.id, &profile_id)
             .await?;
@@ -2285,12 +2285,28 @@ fn crc32(bytes: &[u8]) -> u32 {
     !crc
 }
 
-fn job_scoped_profile_id(job_id: Uuid, requester_key_id: Option<Uuid>) -> String {
-    let job = job_id.simple().to_string();
-    let actor = requester_key_id
-        .map(|id| id.simple().to_string()[..12].to_string())
-        .unwrap_or_else(|| "admin".to_string());
-    format!("job_{job}_{actor}")
+fn shared_job_profile_id(job: &JobRecord) -> String {
+    let profile_id = job.profile_id.trim();
+    if profile_id.is_empty() || is_legacy_job_scoped_profile_id(profile_id) {
+        "admin_default".to_string()
+    } else {
+        profile_id.to_string()
+    }
+}
+
+fn is_legacy_job_scoped_profile_id(profile_id: &str) -> bool {
+    let Some(rest) = profile_id.strip_prefix("job_") else {
+        return false;
+    };
+    let Some((job_id, actor)) = rest.split_once('_') else {
+        return false;
+    };
+    job_id.len() == 32
+        && job_id.chars().all(|ch| ch.is_ascii_hexdigit())
+        && !actor.is_empty()
+        && actor
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
 }
 
 fn is_yt_dlp_inline_manifest_candidate(candidate: &MediaCandidate) -> bool {
@@ -2998,6 +3014,23 @@ mod tests {
             best_companion_audio(&video, std::slice::from_ref(&audio)).map(|c| c.id),
             Some(audio.id)
         );
+    }
+
+    #[test]
+    fn job_login_sessions_use_shared_default_profile() {
+        let mut job = JobRecord::new_with_options(
+            "https://example.com/watch".to_string(),
+            "auto".to_string(),
+            "http://127.0.0.1:8787",
+            JobCreateOptions::default(),
+        );
+        assert_eq!(shared_job_profile_id(&job), "admin_default");
+
+        job.profile_id = format!("job_{}_admin", Uuid::new_v4().simple());
+        assert_eq!(shared_job_profile_id(&job), "admin_default");
+
+        job.profile_id = "custom_profile".to_string();
+        assert_eq!(shared_job_profile_id(&job), "custom_profile");
     }
 
     #[test]

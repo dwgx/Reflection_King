@@ -44,7 +44,7 @@ type PlatformHint =
 type OutputKind = "audio" | "video" | "image" | "page_html";
 type OutputMode = "auto" | "video" | "audio" | "image" | "page_html";
 type ViewMode = "console" | "admin" | "help";
-type LoginClickMode = "left" | "right" | "double" | "drag";
+type BrowserMouseButton = "left" | "right" | "middle";
 
 interface Health {
   ok: boolean;
@@ -358,11 +358,15 @@ function App() {
   const [loginText, setLoginText] = useState("");
   const [loginSnapshot, setLoginSnapshot] = useState<BrowserLoginSnapshot | null>(null);
   const [activeLoginJobId, setActiveLoginJobId] = useState<string | null>(null);
-  const [loginClickMode, setLoginClickMode] = useState<LoginClickMode>("left");
   const [loginZoom, setLoginZoom] = useState("1");
   const lastMouseMoveRef = useRef(0);
-  const dragActiveRef = useRef(false);
   const lastBrowserPointRef = useRef<{ x: number; y: number } | null>(null);
+  const moveInFlightRef = useRef(false);
+  const activePointerRef = useRef<{
+    pointerId: number;
+    button: BrowserMouseButton;
+    point: { x: number; y: number };
+  } | null>(null);
   const [hiddenBatches, setHiddenBatches] = useState<HiddenJobBatchView[]>([]);
   const [form, setForm] = useState<CreateJobPayload>({
     url: "",
@@ -893,7 +897,7 @@ function App() {
       setProfileId(snapshot.session.profileId);
       setLoginUrl(snapshot.url);
       setLoginSnapshot(snapshot);
-      notify("已打开此任务的临时网页登录会话。登录完成后点击继续解析。", "success");
+      notify("已打开共享 Profile 验证浏览器。完成验证或登录后点击继续解析。", "success");
     } catch (error) {
       notify(errorMessage(error), "error");
     } finally {
@@ -988,7 +992,9 @@ function App() {
     }
   }
 
-  function browserPointFromEvent(event: React.MouseEvent<HTMLElement> | React.WheelEvent<HTMLElement>) {
+  function browserPointFromEvent(
+    event: React.PointerEvent<HTMLElement> | React.WheelEvent<HTMLElement>,
+  ) {
     if (!loginSnapshot) return;
     const rect = event.currentTarget.getBoundingClientRect();
     const point = {
@@ -999,87 +1005,84 @@ function App() {
     return point;
   }
 
-  async function moveBrowserLoginSession(event: React.MouseEvent<HTMLButtonElement>) {
+  function browserButtonFromPointer(event: React.PointerEvent<HTMLElement>): BrowserMouseButton {
+    if (event.button === 1) return "middle";
+    if (event.button === 2) return "right";
+    return "left";
+  }
+
+  async function sendBrowserPointerAction(
+    action: "move" | "mouse-down" | "mouse-up",
+    point: { x: number; y: number },
+    button?: BrowserMouseButton,
+  ) {
+    const payload = action === "move" ? point : { ...point, button: button ?? "left" };
+    setLoginSnapshot(await request<BrowserLoginSnapshot>(
+      loginSessionEndpoint(action),
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      },
+    ));
+  }
+
+  async function moveBrowserLoginSession(event: React.PointerEvent<HTMLButtonElement>) {
     if (!loginSnapshot) return;
     const now = Date.now();
-    if (now - lastMouseMoveRef.current < 180) return;
+    if (now - lastMouseMoveRef.current < 120 || moveInFlightRef.current) return;
     lastMouseMoveRef.current = now;
     const point = browserPointFromEvent(event);
     if (!point) return;
+    if (activePointerRef.current?.pointerId === event.pointerId) {
+      activePointerRef.current.point = point;
+    }
+    moveInFlightRef.current = true;
     try {
-      setLoginSnapshot(await request<BrowserLoginSnapshot>(
-        loginSessionEndpoint("move"),
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(point),
-        },
-      ));
+      await sendBrowserPointerAction("move", point);
     } catch {
       // Mouse movement is best-effort; keep the current screenshot usable.
+    } finally {
+      moveInFlightRef.current = false;
     }
   }
 
-  async function clickBrowserLoginSession(event: React.MouseEvent<HTMLButtonElement>, mode = loginClickMode) {
+  async function mouseDownBrowserLoginSession(event: React.PointerEvent<HTMLButtonElement>) {
     if (!loginSnapshot) return;
-    if (mode === "drag") return;
-    const point = browserPointFromEvent(event);
-    if (!point) return;
-    const button = mode === "right" ? "right" : "left";
-    const clickCount = mode === "double" ? 2 : 1;
-    try {
-      setLoginSnapshot(await request<BrowserLoginSnapshot>(
-        loginSessionEndpoint("click"),
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ ...point, button, clickCount }),
-        },
-      ));
-    } catch (error) {
-      notify(errorMessage(error), "error");
-    }
-  }
-
-  async function mouseDownBrowserLoginSession(event: React.MouseEvent<HTMLButtonElement>) {
-    if (!loginSnapshot || loginClickMode !== "drag") return;
     event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
     const point = browserPointFromEvent(event);
     if (!point) return;
-    dragActiveRef.current = true;
+    const button = browserButtonFromPointer(event);
+    activePointerRef.current = { pointerId: event.pointerId, button, point };
     try {
-      setLoginSnapshot(await request<BrowserLoginSnapshot>(
-        loginSessionEndpoint("mouse-down"),
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ ...point, button: "left" }),
-        },
-      ));
+      await sendBrowserPointerAction("mouse-down", point, button);
     } catch (error) {
-      dragActiveRef.current = false;
+      activePointerRef.current = null;
       notify(errorMessage(error), "error");
     }
   }
 
-  async function mouseUpBrowserLoginSession(event?: React.MouseEvent<HTMLButtonElement>) {
-    if (!loginSnapshot || loginClickMode !== "drag" || !dragActiveRef.current) return;
+  async function mouseUpBrowserLoginSession(event?: React.PointerEvent<HTMLButtonElement>) {
+    if (!loginSnapshot || !activePointerRef.current) return;
     event?.preventDefault();
-    const point = event ? browserPointFromEvent(event) : lastBrowserPointRef.current;
+    const activePointer = activePointerRef.current;
+    const point = event ? browserPointFromEvent(event) : (lastBrowserPointRef.current ?? activePointer.point);
     if (!point) return;
-    dragActiveRef.current = false;
+    activePointerRef.current = null;
+    if (event?.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
     try {
-      setLoginSnapshot(await request<BrowserLoginSnapshot>(
-        loginSessionEndpoint("mouse-up"),
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ ...point, button: "left" }),
-        },
-      ));
+      await sendBrowserPointerAction("mouse-up", point, activePointer.button);
     } catch (error) {
       notify(errorMessage(error), "error");
     }
+  }
+
+  async function cancelBrowserPointerSession(event: React.PointerEvent<HTMLButtonElement>) {
+    if (activePointerRef.current?.pointerId !== event.pointerId) return;
+    await mouseUpBrowserLoginSession(event);
   }
 
   async function wheelBrowserLoginSession(event: React.WheelEvent<HTMLButtonElement>) {
@@ -1433,7 +1436,7 @@ function App() {
                   <div className="remote-login-head">
                     <div>
                       <strong>此任务需要网页登录或安全验证</strong>
-                      <span>打开临时服务端浏览器，完成登录、真人验证或站点确认后继续解析此任务。</span>
+                      <span>打开共享 Profile 服务端浏览器，完成登录、真人验证或站点确认后继续解析此任务。</span>
                     </div>
                     <div className="panel-actions">
                       <Button type="button" variant="secondary" disabled={busy} onClick={() => startJobBrowserLoginSession(selectedJob)}>
@@ -1446,7 +1449,7 @@ function App() {
                   </div>
                   {activeLoginJobId === selectedJob.id && loginSnapshot && (
                     <div className="screen-help">
-                      验证浏览器已在页面中央打开。鼠标移动到截图上会同步到服务端浏览器。
+                      验证浏览器已在页面中央打开。像远程桌面一样在截图上操作即可同步到服务端浏览器。
                     </div>
                   )}
                 </div>
@@ -1864,12 +1867,6 @@ function App() {
                     <em>{loginSnapshot.url}</em>
                   </div>
                   <div className="remote-browser-toolbar">
-                    <SegmentedControl
-                      value={loginClickMode}
-                      options={["left", "right", "double", "drag"]}
-                      labelFor={loginClickModeLabel}
-                      onChange={(value) => setLoginClickMode(value as LoginClickMode)}
-                    />
                     <Dropdown
                       value={loginZoom}
                       options={["0.75", "1", "1.25", "1.5", "2"]}
@@ -1898,23 +1895,21 @@ function App() {
                       className="remote-browser-screen"
                       type="button"
                       style={{ width: `${Number(loginZoom) * 100}%` }}
-                      onMouseMove={moveBrowserLoginSession}
-                      onMouseDown={mouseDownBrowserLoginSession}
-                      onMouseUp={mouseUpBrowserLoginSession}
-                      onMouseLeave={() => void mouseUpBrowserLoginSession()}
-                      onClick={clickBrowserLoginSession}
+                      onPointerMove={moveBrowserLoginSession}
+                      onPointerDown={mouseDownBrowserLoginSession}
+                      onPointerUp={mouseUpBrowserLoginSession}
+                      onPointerCancel={cancelBrowserPointerSession}
+                      onLostPointerCapture={cancelBrowserPointerSession}
                       onWheel={wheelBrowserLoginSession}
                       onContextMenu={(event) => {
                         event.preventDefault();
-                        setLoginClickMode("right");
-                        void clickBrowserLoginSession(event, "right");
                       }}
                     >
                       <img src={loginSnapshot.image} alt="服务端浏览器截图" draggable={false} />
                     </button>
                   </div>
                   <div className="screen-help">
-                    <span>鼠标移动会同步到服务端页面；普通模式点击，拖动模式按住后移动再松开；滚轮和右键也会转发。</span>
+                    <span>像远程桌面一样操作截图：移动、左键、右键、双击、按住拖动和滚轮都会投射到服务端浏览器。</span>
                   </div>
                   <div className="remote-input-controls">
                     <Input
@@ -2139,12 +2134,6 @@ function App() {
                   <em>{loginSnapshot.url}</em>
                 </div>
                 <div className="remote-browser-toolbar">
-                  <SegmentedControl
-                    value={loginClickMode}
-                    options={["left", "right", "double", "drag"]}
-                    labelFor={loginClickModeLabel}
-                    onChange={(value) => setLoginClickMode(value as LoginClickMode)}
-                  />
                   <Dropdown
                     value={loginZoom}
                     options={["0.75", "1", "1.25", "1.5", "2"]}
@@ -2163,22 +2152,21 @@ function App() {
                     className="remote-browser-screen"
                     type="button"
                     style={{ width: `${Number(loginZoom) * 100}%` }}
-                    onMouseMove={moveBrowserLoginSession}
-                    onMouseDown={mouseDownBrowserLoginSession}
-                    onMouseUp={mouseUpBrowserLoginSession}
-                    onMouseLeave={() => void mouseUpBrowserLoginSession()}
-                    onClick={clickBrowserLoginSession}
+                    onPointerMove={moveBrowserLoginSession}
+                    onPointerDown={mouseDownBrowserLoginSession}
+                    onPointerUp={mouseUpBrowserLoginSession}
+                    onPointerCancel={cancelBrowserPointerSession}
+                    onLostPointerCapture={cancelBrowserPointerSession}
                     onWheel={wheelBrowserLoginSession}
                     onContextMenu={(event) => {
                       event.preventDefault();
-                      void clickBrowserLoginSession(event, "right");
                     }}
                   >
                     <img src={loginSnapshot.image} alt="任务验证浏览器截图" draggable={false} />
                   </button>
                 </div>
                 <div className="screen-help">
-                  <span>鼠标移动会同步到服务端浏览器；普通模式点击，拖动模式按住后移动再松开。滚轮、右键和快捷键也会转发。</span>
+                  <span>像远程桌面一样操作截图：移动、左键、右键、双击、按住拖动和滚轮都会投射到服务端浏览器。</span>
                 </div>
                 <div className="remote-input-controls">
                   <Input
@@ -2761,15 +2749,6 @@ function authModeLabel(value: string): string {
   } as Record<string, string>)[value] ?? value;
 }
 
-function loginClickModeLabel(value: string): string {
-  return ({
-    left: "左键",
-    right: "右键",
-    double: "双击",
-    drag: "拖动",
-  } as Record<string, string>)[value] ?? value;
-}
-
 function outputLabel(value: string): string {
   return ({
     audio: "音频",
@@ -3289,7 +3268,7 @@ function friendlyError(value: string, job?: JobView | null): string {
     lower.includes("security challenge") ||
     lower.includes("security verification")
   ) {
-    return "站点正在进行安全验证。请打开验证浏览器，在服务端浏览器截图里完成真人验证或登录确认，然后继续解析。";
+    return "站点正在进行安全验证。请打开验证浏览器，像远程桌面一样完成真人验证或登录确认，然后继续解析。";
   }
   if (lower.includes("phantomjs")) {
     return "爱奇艺/iQ.com 当前解析器需要 PhantomJS 兼容依赖；这是待补依赖/适配项。";
@@ -3322,7 +3301,7 @@ function friendlyError(value: string, job?: JobView | null): string {
     return "解析超时";
   }
   if (lower.includes("requires headers") || lower.includes("requires authorization") || lower.includes("profile")) {
-    return "资源需要登录态、页面授权或安全验证。请打开验证浏览器处理后继续解析。";
+    return "资源需要登录态、页面授权或安全验证。请打开验证浏览器，使用共享 Profile 处理后继续解析。";
   }
   return value.length > 140 ? `${value.slice(0, 140)}...` : value;
 }
