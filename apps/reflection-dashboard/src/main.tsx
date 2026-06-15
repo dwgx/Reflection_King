@@ -361,6 +361,7 @@ function App() {
   const [loginZoom, setLoginZoom] = useState("1");
   const lastMouseMoveRef = useRef(0);
   const lastBrowserPointRef = useRef<{ x: number; y: number } | null>(null);
+  const loginSnapshotRequestRef = useRef(0);
   const moveInFlightRef = useRef(false);
   const activePointerRef = useRef<{
     pointerId: number;
@@ -886,6 +887,37 @@ function App() {
     return `/api/admin/browser-login-sessions/${sessionId}/${action}`;
   }
 
+  async function requestLoginSnapshot(
+    endpoint: string,
+    options?: RequestInit,
+  ): Promise<BrowserLoginSnapshot> {
+    const requestId = ++loginSnapshotRequestRef.current;
+    const snapshot = await request<BrowserLoginSnapshot>(endpoint, options);
+    if (requestId === loginSnapshotRequestRef.current) {
+      setLoginSnapshot(snapshot);
+    }
+    return snapshot;
+  }
+
+  function capturePointerSafely(event: React.PointerEvent<HTMLElement>) {
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      // Pointer capture can fail if the browser already ended the pointer stream.
+    }
+  }
+
+  function releasePointerSafely(event?: React.PointerEvent<HTMLElement>) {
+    if (!event) return;
+    try {
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+    } catch {
+      // Losing capture is recoverable; the server-side mouse-up is the important step.
+    }
+  }
+
   async function startJobBrowserLoginSession(job: JobView) {
     setBusy(true);
     try {
@@ -949,14 +981,14 @@ function App() {
     setBusy(true);
     try {
       if (loginSnapshot) {
-        setLoginSnapshot(await request<BrowserLoginSnapshot>(
+        await requestLoginSnapshot(
           loginSessionEndpoint("navigate"),
           {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({ url }),
           },
-        ));
+        );
         notify("已切换服务端远程浏览器站点。", "success");
       } else {
         setActiveLoginJobId(null);
@@ -982,9 +1014,9 @@ function App() {
     if (!loginSnapshot) return;
     setBusy(true);
     try {
-      setLoginSnapshot(await request<BrowserLoginSnapshot>(
+      await requestLoginSnapshot(
         loginSessionEndpoint("snapshot"),
-      ));
+      );
     } catch (error) {
       notify(errorMessage(error), "error");
     } finally {
@@ -1017,14 +1049,14 @@ function App() {
     button?: BrowserMouseButton,
   ) {
     const payload = action === "move" ? point : { ...point, button: button ?? "left" };
-    setLoginSnapshot(await request<BrowserLoginSnapshot>(
+    await requestLoginSnapshot(
       loginSessionEndpoint(action),
       {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(payload),
       },
-    ));
+    );
   }
 
   async function moveBrowserLoginSession(event: React.PointerEvent<HTMLButtonElement>) {
@@ -1050,9 +1082,9 @@ function App() {
   async function mouseDownBrowserLoginSession(event: React.PointerEvent<HTMLButtonElement>) {
     if (!loginSnapshot) return;
     event.preventDefault();
-    event.currentTarget.setPointerCapture(event.pointerId);
     const point = browserPointFromEvent(event);
     if (!point) return;
+    capturePointerSafely(event);
     const button = browserButtonFromPointer(event);
     activePointerRef.current = { pointerId: event.pointerId, button, point };
     try {
@@ -1069,12 +1101,12 @@ function App() {
     const activePointer = activePointerRef.current;
     const point = event ? browserPointFromEvent(event) : (lastBrowserPointRef.current ?? activePointer.point);
     if (!point) return;
-    activePointerRef.current = null;
-    if (event?.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    }
+    releasePointerSafely(event);
     try {
       await sendBrowserPointerAction("mouse-up", point, activePointer.button);
+      if (activePointerRef.current?.pointerId === activePointer.pointerId) {
+        activePointerRef.current = null;
+      }
     } catch (error) {
       notify(errorMessage(error), "error");
     }
@@ -1090,7 +1122,7 @@ function App() {
     event.preventDefault();
     const point = browserPointFromEvent(event);
     try {
-      setLoginSnapshot(await request<BrowserLoginSnapshot>(
+      await requestLoginSnapshot(
         loginSessionEndpoint("wheel"),
         {
           method: "POST",
@@ -1102,7 +1134,7 @@ function App() {
             y: point?.y,
           }),
         },
-      ));
+      );
     } catch (error) {
       notify(errorMessage(error), "error");
     }
@@ -1112,14 +1144,14 @@ function App() {
     if (!loginSnapshot) return;
     setBusy(true);
     try {
-      setLoginSnapshot(await request<BrowserLoginSnapshot>(
+      await requestLoginSnapshot(
         loginSessionEndpoint("resize"),
         {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ width, height }),
         },
-      ));
+      );
     } catch (error) {
       notify(errorMessage(error), "error");
     } finally {
@@ -1131,14 +1163,14 @@ function App() {
     if (!loginSnapshot || !loginText) return;
     setBusy(true);
     try {
-      setLoginSnapshot(await request<BrowserLoginSnapshot>(
+      await requestLoginSnapshot(
         loginSessionEndpoint("type"),
         {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ text: loginText }),
         },
-      ));
+      );
       setLoginText("");
     } catch (error) {
       notify(errorMessage(error), "error");
@@ -1151,14 +1183,14 @@ function App() {
     if (!loginSnapshot || !loginText) return;
     setBusy(true);
     try {
-      setLoginSnapshot(await request<BrowserLoginSnapshot>(
+      await requestLoginSnapshot(
         loginSessionEndpoint("insert-text"),
         {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ text: loginText }),
         },
-      ));
+      );
       setLoginText("");
     } catch (error) {
       notify(errorMessage(error), "error");
@@ -1171,14 +1203,14 @@ function App() {
     if (!loginSnapshot) return;
     setBusy(true);
     try {
-      setLoginSnapshot(await request<BrowserLoginSnapshot>(
+      await requestLoginSnapshot(
         loginSessionEndpoint("press"),
         {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ key }),
         },
-      ));
+      );
     } catch (error) {
       notify(errorMessage(error), "error");
     } finally {
@@ -1190,14 +1222,14 @@ function App() {
     if (!loginSnapshot) return;
     setBusy(true);
     try {
-      setLoginSnapshot(await request<BrowserLoginSnapshot>(
+      await requestLoginSnapshot(
         loginSessionEndpoint("navigate"),
         {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ url: loginUrl }),
         },
-      ));
+      );
     } catch (error) {
       notify(errorMessage(error), "error");
     } finally {
