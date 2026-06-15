@@ -15,7 +15,7 @@ use reflection_core::{
         normalize_bitrate, normalize_outputs, normalize_profile_id, ApiKeyRecord, ApiKeyRole,
         ApiKeyView, AuthMode, ClearJobsResponse, CreateJobRequest, CreateUserKeyRequest,
         CreatedUserKeyResponse, DiscoveryMode, HiddenJobBatchView, JobCreateOptions, JobRecord,
-        JobView, PlatformHint, RestoreJobsResponse, SelectCandidatesRequest,
+        JobView, OutputKind, PlatformHint, RestoreJobsResponse, SelectCandidatesRequest,
         UpdateRuntimeSettingsRequest,
     },
     AppConfig, RkError,
@@ -426,7 +426,7 @@ async fn create_job(
         .platform_hint
         .unwrap_or_else(|| infer_platform(source_url));
     let profile_id = normalize_profile_id(request.profile_id);
-    let auth_mode = request.auth_mode.unwrap_or(AuthMode::Auto);
+    let auth_mode = normalize_auth_mode_for_outputs(request.auth_mode, &outputs);
     let settings = state.runtime_settings_view().await?;
     let record = JobRecord::new_with_options(
         source_url.to_string(),
@@ -1288,10 +1288,10 @@ async fn ensure_job_access(
 
 fn authorized_discovery(
     requested: DiscoveryMode,
-    outputs: &[reflection_core::models::OutputKind],
+    outputs: &[OutputKind],
     principal: &AuthPrincipal,
 ) -> Result<DiscoveryMode, RkError> {
-    if outputs.contains(&reflection_core::models::OutputKind::PageHtml) {
+    if outputs.contains(&OutputKind::PageHtml) {
         return match requested {
             DiscoveryMode::Browser | DiscoveryMode::Auto | DiscoveryMode::Direct
                 if principal.allow_browser_probe =>
@@ -1328,6 +1328,18 @@ fn authorized_discovery(
     }
 }
 
+fn normalize_auth_mode_for_outputs(
+    requested: Option<AuthMode>,
+    outputs: &[OutputKind],
+) -> AuthMode {
+    let auth_mode = requested.unwrap_or(AuthMode::Auto);
+    if outputs.contains(&OutputKind::PageHtml) && auth_mode == AuthMode::Auto {
+        AuthMode::None
+    } else {
+        auth_mode
+    }
+}
+
 fn supported_discovery_modes(principal: &AuthPrincipal) -> Vec<&'static str> {
     let mut modes = vec!["direct"];
     if principal.allow_ytdlp || principal.allow_external_adapters {
@@ -1340,6 +1352,50 @@ fn supported_discovery_modes(principal: &AuthPrincipal) -> Vec<&'static str> {
         modes.push("auto");
     }
     modes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn page_html_auto_auth_defaults_to_none() {
+        assert_eq!(
+            normalize_auth_mode_for_outputs(None, &[OutputKind::PageHtml]),
+            AuthMode::None
+        );
+        assert_eq!(
+            normalize_auth_mode_for_outputs(Some(AuthMode::Auto), &[OutputKind::PageHtml]),
+            AuthMode::None
+        );
+    }
+
+    #[test]
+    fn page_html_explicit_auth_is_preserved() {
+        assert_eq!(
+            normalize_auth_mode_for_outputs(Some(AuthMode::Profile), &[OutputKind::PageHtml]),
+            AuthMode::Profile
+        );
+        assert_eq!(
+            normalize_auth_mode_for_outputs(Some(AuthMode::Cookies), &[OutputKind::PageHtml]),
+            AuthMode::Cookies
+        );
+    }
+
+    #[test]
+    fn media_auto_auth_stays_auto() {
+        assert_eq!(
+            normalize_auth_mode_for_outputs(None, &[OutputKind::Video, OutputKind::Audio]),
+            AuthMode::Auto
+        );
+        assert_eq!(
+            normalize_auth_mode_for_outputs(
+                Some(AuthMode::Auto),
+                &[OutputKind::Video, OutputKind::Audio],
+            ),
+            AuthMode::Auto
+        );
+    }
 }
 
 #[derive(Debug)]
