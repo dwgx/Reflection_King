@@ -165,7 +165,7 @@ export class BrowserProbeService {
 
     try {
       await page.goto(request.url, {
-        waitUntil: "domcontentloaded",
+        waitUntil: capturePageSnapshot ? "commit" : "domcontentloaded",
         timeout: capturePageSnapshot ? Math.min(timeoutMs, 20_000) : timeoutMs,
       });
       await page.waitForLoadState("networkidle", { timeout: capturePageSnapshot ? 5_000 : Math.min(timeoutMs, 15_000) }).catch(() => {
@@ -222,6 +222,7 @@ export class BrowserProbeService {
       })) {
         addPageResource(pageResources, resource);
       }
+      await enrichPageResourcesFromBrowser(page, pageResources, warnings);
     }
     const pageSnapshot = await captureSnapshot(
       page,
@@ -1314,6 +1315,173 @@ function addPageResource(resources: Map<string, PageResource>, resource: PageRes
     bodyBase64: existing.bodyBase64 ?? resource.bodyBase64,
     source: existing.source === resource.source ? existing.source : `${existing.source},${resource.source}`,
   });
+}
+
+async function enrichPageResourcesFromBrowser(
+  page: Page,
+  resources: Map<string, PageResource>,
+  warnings: string[],
+): Promise<void> {
+  const candidates = [...resources.values()]
+    .filter((resource) => !resource.bodyBase64 && browserFetchResourceAllowed(resource))
+    .slice(0, 80);
+  if (!candidates.length) {
+    return;
+  }
+
+  let cachedBytes = [...resources.values()].reduce((total, resource) => {
+    return total + (resource.bodyBase64 ? Buffer.byteLength(resource.bodyBase64, "base64") : 0);
+  }, 0);
+  for (const batch of chunk(candidates, 6)) {
+    if (cachedBytes >= ARCHIVE_RESPONSE_BODY_TOTAL_MAX_BYTES) {
+      break;
+    }
+    const remainingBudget = ARCHIVE_RESPONSE_BODY_TOTAL_MAX_BYTES - cachedBytes;
+    const fetched = await withTimeout(
+      page.evaluate(
+        async ({ items, maxBytes, totalBudget }) => {
+          type FetchResult = {
+            url: string;
+            status?: number;
+            contentType?: string;
+            contentLength?: number;
+            bodyBase64?: string;
+          };
+          const out: FetchResult[] = [];
+          let used = 0;
+          for (const item of items) {
+            if (used >= totalBudget) {
+              break;
+            }
+            try {
+              const response = await fetch(item.url, {
+                credentials: "include",
+                cache: "force-cache",
+                mode: "cors",
+              });
+              const contentType = response.headers.get("content-type") ?? undefined;
+              const contentLength = Number(response.headers.get("content-length") ?? "");
+              if (!response.ok || !browserFetchContentAllowed(contentType, item.resourceType)) {
+                out.push({ url: item.url, status: response.status, contentType });
+                continue;
+              }
+              const buffer = await response.arrayBuffer();
+              if (buffer.byteLength > maxBytes || used + buffer.byteLength > totalBudget) {
+                out.push({
+                  url: item.url,
+                  status: response.status,
+                  contentType,
+                  contentLength: Number.isFinite(contentLength) ? contentLength : buffer.byteLength,
+                });
+                continue;
+              }
+              used += buffer.byteLength;
+              out.push({
+                url: item.url,
+                status: response.status,
+                contentType,
+                contentLength: Number.isFinite(contentLength) ? contentLength : buffer.byteLength,
+                bodyBase64: arrayBufferToBase64(buffer),
+              });
+            } catch {
+              out.push({ url: item.url });
+            }
+          }
+          return out;
+
+          function browserFetchContentAllowed(contentType: string | undefined, resourceType: string | undefined): boolean {
+            const loweredType = (contentType ?? "").toLowerCase();
+            const loweredResource = (resourceType ?? "").toLowerCase();
+            return loweredType.startsWith("text/css") ||
+              loweredType.includes("javascript") ||
+              loweredType.startsWith("image/") ||
+              loweredType.startsWith("font/") ||
+              loweredType === "application/font-woff" ||
+              loweredType === "application/manifest+json" ||
+              loweredType === "application/wasm" ||
+              loweredType === "image/svg+xml" ||
+              ["stylesheet", "script", "image", "font", "manifest"].includes(loweredResource);
+          }
+
+          function arrayBufferToBase64(buffer: ArrayBuffer): string {
+            let binary = "";
+            const bytes = new Uint8Array(buffer);
+            const chunkSize = 0x8000;
+            for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+              const chunk = bytes.subarray(offset, offset + chunkSize);
+              binary += String.fromCharCode(...chunk);
+            }
+            return btoa(binary);
+          }
+        },
+        {
+          items: batch.map((resource) => ({
+            url: resource.url,
+            resourceType: resource.resourceType,
+          })),
+          maxBytes: ARCHIVE_RESPONSE_BODY_MAX_BYTES,
+          totalBudget: remainingBudget,
+        },
+      ),
+      8_000,
+    ).catch((error) => {
+      warnings.push(`browser resource fetch failed: ${error instanceof Error ? error.message : String(error)}`);
+      return [];
+    });
+
+    for (const item of fetched) {
+      const resource = resources.get(item.url);
+      if (!resource) {
+        continue;
+      }
+      if (item.bodyBase64) {
+        const bytes = Buffer.byteLength(item.bodyBase64, "base64");
+        if (cachedBytes + bytes > ARCHIVE_RESPONSE_BODY_TOTAL_MAX_BYTES) {
+          continue;
+        }
+        cachedBytes += bytes;
+      }
+      addPageResource(resources, {
+        ...resource,
+        status: item.status ?? resource.status,
+        contentType: item.contentType ?? resource.contentType,
+        contentLength: item.contentLength ?? resource.contentLength,
+        bodyBase64: item.bodyBase64 ?? resource.bodyBase64,
+        source: "browser_fetch",
+      });
+    }
+  }
+}
+
+function browserFetchResourceAllowed(resource: PageResource): boolean {
+  if (!isHttpUrl(resource.url)) {
+    return false;
+  }
+  const contentLength = resource.contentLength;
+  if (contentLength !== undefined && contentLength > ARCHIVE_RESPONSE_BODY_MAX_BYTES) {
+    return false;
+  }
+  const loweredType = (resource.contentType ?? "").toLowerCase();
+  const loweredResource = (resource.resourceType ?? "").toLowerCase();
+  const path = urlPath(resource.url).toLowerCase();
+  return loweredType.startsWith("text/css") ||
+    loweredType.includes("javascript") ||
+    loweredType.startsWith("image/") ||
+    loweredType.startsWith("font/") ||
+    loweredType === "application/font-woff" ||
+    loweredType === "application/manifest+json" ||
+    loweredType === "application/wasm" ||
+    loweredType === "image/svg+xml" ||
+    ["stylesheet", "script", "image", "font", "manifest"].includes(loweredResource) ||
+    /\.(css|js|mjs|png|jpe?g|webp|gif|avif|svg|ico|woff2?|ttf|otf|eot|webmanifest)(?:$|[?#])/i.test(path);
+}
+
+function chunk<T>(items: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let index = 0; index < items.length; index += size) {
+    out.push(items.slice(index, index + size));
+  }
+  return out;
 }
 
 function parseContentLength(value: string | undefined): number | undefined {
