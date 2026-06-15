@@ -30,6 +30,11 @@ const loginClickSchema = z.object({
   clickCount: z.number().int().min(1).max(3).optional(),
 });
 
+const loginMoveSchema = z.object({
+  x: z.number().finite(),
+  y: z.number().finite(),
+});
+
 const loginTypeSchema = z.object({
   text: z.string().max(2_000),
 });
@@ -134,6 +139,15 @@ app.post("/login-sessions/:sessionId/click", async (request, reply) => {
     parsed.data.button ?? "left",
     parsed.data.clickCount ?? 1,
   );
+});
+
+app.post("/login-sessions/:sessionId/move", async (request, reply) => {
+  const params = z.object({ sessionId: z.string() }).parse(request.params);
+  const parsed = loginMoveSchema.safeParse(request.body);
+  if (!parsed.success) {
+    return reply.status(400).send({ error: parsed.error.flatten() });
+  }
+  return probeService.loginMove(params.sessionId, parsed.data.x, parsed.data.y);
 });
 
 app.post("/login-sessions/:sessionId/type", async (request, reply) => {

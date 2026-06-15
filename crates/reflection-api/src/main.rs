@@ -88,6 +88,10 @@ fn build_router(state: Arc<AppState>) -> Router {
             post(job_browser_login_session_click),
         )
         .route(
+            "/api/jobs/{id}/browser-login-session/{session_id}/move",
+            post(job_browser_login_session_move),
+        )
+        .route(
             "/api/jobs/{id}/browser-login-session/{session_id}/type",
             post(job_browser_login_session_type),
         )
@@ -140,6 +144,10 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route(
             "/api/admin/browser-login-sessions/{session_id}/click",
             post(browser_login_session_click),
+        )
+        .route(
+            "/api/admin/browser-login-sessions/{session_id}/move",
+            post(browser_login_session_move),
         )
         .route(
             "/api/admin/browser-login-sessions/{session_id}/type",
@@ -532,6 +540,22 @@ async fn job_browser_login_session_click(
     ))
 }
 
+async fn job_browser_login_session_move(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((id, session_id)): Path<(Uuid, String)>,
+    Json(request): Json<BrowserLoginMoveRequest>,
+) -> Result<Json<reflection_core::browser_probe::LoginSessionSnapshot>, ApiError> {
+    let principal = authorize(&state, &headers).await?;
+    ensure_login_profile(&principal)?;
+    ensure_job_access(&state, &principal, id).await?;
+    Ok(Json(
+        state
+            .browser_login_session_move(&session_id, request.x, request.y)
+            .await?,
+    ))
+}
+
 async fn job_browser_login_session_type(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -755,6 +779,12 @@ struct BrowserLoginClickRequest {
 }
 
 #[derive(Debug, Deserialize)]
+struct BrowserLoginMoveRequest {
+    x: f64,
+    y: f64,
+}
+
+#[derive(Debug, Deserialize)]
 struct BrowserLoginTypeRequest {
     text: String,
 }
@@ -830,6 +860,21 @@ async fn browser_login_session_click(
                 request.button.as_deref(),
                 request.click_count,
             )
+            .await?,
+    ))
+}
+
+async fn browser_login_session_move(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Json(request): Json<BrowserLoginMoveRequest>,
+) -> Result<Json<reflection_core::browser_probe::LoginSessionSnapshot>, ApiError> {
+    let principal = authorize(&state, &headers).await?;
+    ensure_login_profile(&principal)?;
+    Ok(Json(
+        state
+            .browser_login_session_move(&session_id, request.x, request.y)
             .await?,
     ))
 }

@@ -360,6 +360,7 @@ function App() {
   const [activeLoginJobId, setActiveLoginJobId] = useState<string | null>(null);
   const [loginClickMode, setLoginClickMode] = useState<LoginClickMode>("left");
   const [loginZoom, setLoginZoom] = useState("1");
+  const lastMouseMoveRef = useRef(0);
   const [hiddenBatches, setHiddenBatches] = useState<HiddenJobBatchView[]>([]);
   const [form, setForm] = useState<CreateJobPayload>({
     url: "",
@@ -994,6 +995,27 @@ function App() {
     };
   }
 
+  async function moveBrowserLoginSession(event: React.MouseEvent<HTMLButtonElement>) {
+    if (!loginSnapshot) return;
+    const now = Date.now();
+    if (now - lastMouseMoveRef.current < 180) return;
+    lastMouseMoveRef.current = now;
+    const point = browserPointFromEvent(event);
+    if (!point) return;
+    try {
+      setLoginSnapshot(await request<BrowserLoginSnapshot>(
+        loginSessionEndpoint("move"),
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(point),
+        },
+      ));
+    } catch {
+      // Mouse movement is best-effort; keep the current screenshot usable.
+    }
+  }
+
   async function clickBrowserLoginSession(event: React.MouseEvent<HTMLButtonElement>, mode = loginClickMode) {
     if (!loginSnapshot) return;
     const point = browserPointFromEvent(event);
@@ -1357,43 +1379,8 @@ function App() {
                     </div>
                   </div>
                   {activeLoginJobId === selectedJob.id && loginSnapshot && (
-                    <div className="remote-browser">
-                      <div className="remote-browser-meta">
-                        <span>{loginSnapshot.title || "未命名页面"}</span>
-                        <em>{loginSnapshot.url}</em>
-                      </div>
-                      <div className="remote-login-controls">
-                        <Input value={loginUrl} onChange={(event) => setLoginUrl(event.target.value)} />
-                        <Button type="button" variant="secondary" disabled={busy} onClick={navigateBrowserLoginSession}>跳转</Button>
-                        <Button type="button" variant="secondary" disabled={busy} onClick={refreshBrowserLoginSession}>
-                          <RefreshCw size={16} /> 刷新截图
-                        </Button>
-                        <Button type="button" variant="secondary" disabled={busy} onClick={closeBrowserLoginSession}>关闭</Button>
-                      </div>
-                      <div className="remote-browser-viewport">
-                        <button
-                          className="remote-browser-screen"
-                          type="button"
-                          onClick={clickBrowserLoginSession}
-                          onWheel={wheelBrowserLoginSession}
-                          onContextMenu={(event) => {
-                            event.preventDefault();
-                            void clickBrowserLoginSession(event, "right");
-                          }}
-                        >
-                          <img src={loginSnapshot.image} alt="任务网页登录截图" draggable={false} />
-                        </button>
-                      </div>
-                      <div className="remote-login-controls">
-                        <Input
-                          value={loginText}
-                          placeholder="输入要发送到当前焦点的文本"
-                          onChange={(event) => setLoginText(event.target.value)}
-                        />
-                        <Button type="button" variant="secondary" disabled={busy || !loginText} onClick={typeIntoBrowserLoginSession}>输入</Button>
-                        <Button type="button" variant="secondary" disabled={busy} onClick={() => pressBrowserLoginKey("Enter")}>Enter</Button>
-                        <Button type="button" variant="secondary" disabled={busy} onClick={() => pressBrowserLoginKey("Escape")}>Esc</Button>
-                      </div>
+                    <div className="screen-help">
+                      验证浏览器已在页面中央打开。鼠标移动到截图上会同步到服务端浏览器。
                     </div>
                   )}
                 </div>
@@ -1845,6 +1832,7 @@ function App() {
                       className="remote-browser-screen"
                       type="button"
                       style={{ width: `${Number(loginZoom) * 100}%` }}
+                      onMouseMove={moveBrowserLoginSession}
                       onClick={clickBrowserLoginSession}
                       onWheel={wheelBrowserLoginSession}
                       onContextMenu={(event) => {
@@ -2038,6 +2026,98 @@ function App() {
         </footer>
       </section>
       <NotificationStack items={notifications} onClose={(id) => setNotifications((items) => items.filter((item) => item.id !== id))} />
+      {activeLoginJobId && loginSnapshot && (
+        <div className="remote-browser-overlay" role="dialog" aria-modal="true" aria-label="任务验证浏览器">
+          <section className="remote-browser-modal">
+            <div className="remote-browser-modal-head">
+              <div>
+                <strong>任务验证浏览器</strong>
+                <span>{loginSnapshot.title || loginSnapshot.url}</span>
+              </div>
+              <div className="profile-card-actions">
+                <Button type="button" variant="secondary" disabled={busy} onClick={refreshBrowserLoginSession}>
+                  <RefreshCw size={16} /> 刷新
+                </Button>
+                <Button type="button" disabled={busy} onClick={resumeSelectedJobWithProfile}>
+                  <RefreshCw size={16} /> 继续解析
+                </Button>
+                <Button type="button" variant="secondary" disabled={busy} onClick={closeBrowserLoginSession}>
+                  关闭
+                </Button>
+              </div>
+            </div>
+            <div className="remote-browser-modal-body">
+              <div className="remote-browser">
+                <div className="remote-browser-meta">
+                  <span>{loginSnapshot.title || "未命名页面"}</span>
+                  <em>{loginSnapshot.url}</em>
+                </div>
+                <div className="remote-browser-toolbar">
+                  <SegmentedControl
+                    value={loginClickMode}
+                    options={["left", "right", "double"]}
+                    labelFor={loginClickModeLabel}
+                    onChange={(value) => setLoginClickMode(value as LoginClickMode)}
+                  />
+                  <Dropdown
+                    value={loginZoom}
+                    options={["0.75", "1", "1.25", "1.5", "2"]}
+                    labelFor={(value) => `缩放 ${Math.round(Number(value) * 100)}%`}
+                    onChange={setLoginZoom}
+                  />
+                  <Button type="button" variant="secondary" disabled={busy} onClick={() => resizeBrowserLoginSession(1280, 720)}>
+                    720p
+                  </Button>
+                  <Button type="button" variant="secondary" disabled={busy} onClick={() => resizeBrowserLoginSession(1920, 1080)}>
+                    1080p
+                  </Button>
+                </div>
+                <div className="remote-browser-viewport floating">
+                  <button
+                    className="remote-browser-screen"
+                    type="button"
+                    style={{ width: `${Number(loginZoom) * 100}%` }}
+                    onMouseMove={moveBrowserLoginSession}
+                    onClick={clickBrowserLoginSession}
+                    onWheel={wheelBrowserLoginSession}
+                    onContextMenu={(event) => {
+                      event.preventDefault();
+                      void clickBrowserLoginSession(event, "right");
+                    }}
+                  >
+                    <img src={loginSnapshot.image} alt="任务验证浏览器截图" draggable={false} />
+                  </button>
+                </div>
+                <div className="screen-help">
+                  <span>鼠标移动会同步到服务端浏览器；移动到验证控件上再点击。滚轮和右键也会转发。</span>
+                </div>
+                <div className="remote-login-controls">
+                  <Input
+                    value={loginText}
+                    placeholder="输入要发送到当前焦点的文本"
+                    onChange={(event) => setLoginText(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        void typeIntoBrowserLoginSession();
+                      }
+                    }}
+                  />
+                  <Button type="button" variant="secondary" disabled={busy || !loginText} onClick={typeIntoBrowserLoginSession}>
+                    输入
+                  </Button>
+                  <Button type="button" variant="secondary" disabled={busy} onClick={() => pressBrowserLoginKey("Enter")}>
+                    Enter
+                  </Button>
+                  <Button type="button" variant="secondary" disabled={busy} onClick={() => pressBrowserLoginKey("Escape")}>
+                    Esc
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+      )}
       <ConfirmDialog state={confirmDialog} busy={busy} onClose={() => setConfirmDialog(null)} />
     </main>
   );

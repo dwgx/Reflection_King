@@ -170,6 +170,12 @@ struct LoginClickRequest {
 }
 
 #[derive(Debug, Clone, Serialize)]
+struct LoginMoveRequest {
+    x: f64,
+    y: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
 struct LoginTypeRequest<'a> {
     text: &'a str,
 }
@@ -452,6 +458,23 @@ impl BrowserProbeClient {
             .send()
             .await?;
         self.login_response(response, "login-session click").await
+    }
+
+    pub async fn login_session_move(
+        &self,
+        session_id: &str,
+        x: f64,
+        y: f64,
+    ) -> Result<LoginSessionSnapshot> {
+        let response = self
+            .request(
+                reqwest::Method::POST,
+                format!("{}/login-sessions/{}/move", self.base_url, session_id),
+            )
+            .json(&LoginMoveRequest { x, y })
+            .send()
+            .await?;
+        self.login_response(response, "login-session move").await
     }
 
     pub async fn login_session_type(

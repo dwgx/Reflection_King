@@ -372,6 +372,19 @@ export class BrowserProbeService {
     return this.snapshotLoginSession(sessionId);
   }
 
+  async loginMove(sessionId: string, x: number, y: number): Promise<LoginSessionSnapshot> {
+    const entry = this.requireLoginSession(sessionId);
+    entry.lastActiveAt = Date.now();
+    const viewport = entry.page.viewportSize() ?? { width: 1280, height: 720 };
+    await entry.page.mouse.move(
+      clamp(x, 0, viewport.width),
+      clamp(y, 0, viewport.height),
+      { steps: 8 },
+    );
+    await entry.page.waitForTimeout(120).catch(() => undefined);
+    return this.snapshotLoginSession(sessionId);
+  }
+
   async loginType(sessionId: string, text: string): Promise<LoginSessionSnapshot> {
     const entry = this.requireLoginSession(sessionId);
     entry.lastActiveAt = Date.now();

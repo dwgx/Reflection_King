@@ -1540,6 +1540,62 @@
     gap: 8px;
   }
 
+  .remote-browser-overlay {
+    position: fixed;
+    z-index: 80;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    background: rgba(2, 6, 12, 0.78);
+    padding: 24px;
+  }
+
+  .remote-browser-modal {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    width: min(1180px, 94vw);
+    max-height: 90vh;
+    overflow: hidden;
+    border: 1px solid #2a3544;
+    border-radius: 8px;
+    background: #0b0f15;
+    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.55);
+  }
+
+  .remote-browser-modal-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    border-bottom: 1px solid #242a34;
+    padding: 12px 14px;
+  }
+
+  .remote-browser-modal-head div:first-child {
+    display: grid;
+    min-width: 0;
+    gap: 3px;
+  }
+
+  .remote-browser-modal-head strong {
+    color: #f4f7fb;
+    font-size: 14px;
+  }
+
+  .remote-browser-modal-head span {
+    overflow: hidden;
+    color: #8792a2;
+    font-size: 12px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .remote-browser-modal-body {
+    min-height: 0;
+    overflow: auto;
+    padding: 12px;
+  }
+
   .remote-browser-toolbar {
     display: grid;
     grid-template-columns: minmax(240px, 1fr) minmax(130px, auto) auto auto;
@@ -1574,6 +1630,10 @@
     border: 1px solid #1c2634;
     border-radius: 8px;
     background: #030509;
+  }
+
+  .remote-browser-viewport.floating {
+    max-height: min(58vh, 720px);
   }
 
   .remote-browser-screen {
@@ -1678,6 +1738,7 @@
     .url-command-row,
     .parameter-grid,
     .remote-login-head,
+    .remote-browser-modal-head,
     .remote-login-controls,
     .remote-browser-meta,
     .settings-grid,
