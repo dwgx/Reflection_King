@@ -140,9 +140,9 @@ export class BrowserProbeService {
     try {
       await page.goto(request.url, {
         waitUntil: "domcontentloaded",
-        timeout: timeoutMs,
+        timeout: capturePageSnapshot ? Math.min(timeoutMs, 20_000) : timeoutMs,
       });
-      await page.waitForLoadState("networkidle", { timeout: Math.min(timeoutMs, 15_000) }).catch(() => {
+      await page.waitForLoadState("networkidle", { timeout: capturePageSnapshot ? 5_000 : Math.min(timeoutMs, 15_000) }).catch(() => {
         warnings.push("networkidle timeout");
       });
       if (capturePageSnapshot) {

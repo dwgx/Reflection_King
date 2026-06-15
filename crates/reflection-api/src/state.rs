@@ -115,6 +115,7 @@ struct PageArchiveDownloadContext<'a> {
     assets_dir: &'a Path,
     downloader: &'a Downloader,
     settings: &'a EffectiveRuntimeSettings,
+    deadline: std::time::Instant,
 }
 
 impl AppState {
@@ -1780,6 +1781,8 @@ impl AppState {
             archived_url_keys: HashSet::new(),
             total_bytes: snapshot.html.len() as u64,
         };
+        let archive_deadline = std::time::Instant::now()
+            + page_archive_total_resource_timeout(settings.download_timeout);
 
         for resource in snapshot
             .resources
@@ -1787,6 +1790,15 @@ impl AppState {
             .filter(|resource| page_resource_is_archivable(resource))
             .take(settings.page_archive_max_resources)
         {
+            if std::time::Instant::now() >= archive_deadline {
+                archive.resource_records.push(serde_json::json!({
+                    "url": &resource.url,
+                    "source": &resource.source,
+                    "skipped": true,
+                    "reason": "archive_time_budget_reached",
+                }));
+                continue;
+            }
             if archive.total_bytes >= settings.page_archive_max_total_bytes {
                 archive.resource_records.push(serde_json::json!({
                     "url": &resource.url,
@@ -1868,13 +1880,21 @@ impl AppState {
             }
         }
 
-        archive_css_dependencies(&assets_dir, &downloader, settings, &mut archive).await?;
+        archive_css_dependencies(
+            &assets_dir,
+            &downloader,
+            settings,
+            archive_deadline,
+            &mut archive,
+        )
+        .await?;
         archive_text_dependencies(
             &snapshot.html,
             &snapshot.final_url,
             &assets_dir,
             &downloader,
             settings,
+            archive_deadline,
             &mut archive,
         )
         .await?;
@@ -2075,6 +2095,10 @@ fn should_block_for_browser_interaction(
 
 fn page_archive_resource_timeout(download_timeout: Duration) -> Duration {
     download_timeout.min(Duration::from_secs(15))
+}
+
+fn page_archive_total_resource_timeout(download_timeout: Duration) -> Duration {
+    download_timeout.min(Duration::from_secs(45))
 }
 
 fn resolver_error_summary(attempts: &[reflection_core::extractors::AttemptLog]) -> Option<String> {
@@ -2296,6 +2320,7 @@ async fn archive_css_dependencies(
     assets_dir: &Path,
     downloader: &Downloader,
     settings: &EffectiveRuntimeSettings,
+    deadline: std::time::Instant,
     archive: &mut PageArchiveContext,
 ) -> Result<()> {
     let mut index = 0usize;
@@ -2309,6 +2334,16 @@ async fn archive_css_dependencies(
             continue;
         };
         for reference in css_asset_references(&css) {
+            if std::time::Instant::now() >= deadline {
+                archive.resource_records.push(serde_json::json!({
+                    "url": reference.raw,
+                    "source": "css",
+                    "initiator_url": archived.resource.url,
+                    "skipped": true,
+                    "reason": "archive_time_budget_reached",
+                }));
+                continue;
+            }
             if archive.archived_resources.len() >= settings.page_archive_max_resources {
                 archive.resource_records.push(serde_json::json!({
                     "url": reference.raw,
@@ -2410,12 +2445,14 @@ async fn archive_text_dependencies(
     assets_dir: &Path,
     downloader: &Downloader,
     settings: &EffectiveRuntimeSettings,
+    deadline: std::time::Instant,
     archive: &mut PageArchiveContext,
 ) -> Result<()> {
     let download = PageArchiveDownloadContext {
         assets_dir,
         downloader,
         settings,
+        deadline,
     };
     archive_text_dependencies_from_source(
         html,
@@ -2459,6 +2496,16 @@ async fn archive_text_dependencies_from_source(
     archive: &mut PageArchiveContext,
 ) -> Result<()> {
     for raw in text_asset_references(text) {
+        if std::time::Instant::now() >= download.deadline {
+            archive.resource_records.push(serde_json::json!({
+                "url": raw,
+                "source": source,
+                "initiator_url": base_url,
+                "skipped": true,
+                "reason": "archive_time_budget_reached",
+            }));
+            continue;
+        }
         if archive.archived_resources.len() >= download.settings.page_archive_max_resources {
             archive.resource_records.push(serde_json::json!({
                 "url": raw,
@@ -5499,6 +5546,14 @@ mod tests {
         assert_eq!(
             page_archive_resource_timeout(Duration::from_secs(7)),
             Duration::from_secs(7)
+        );
+        assert_eq!(
+            page_archive_total_resource_timeout(Duration::from_secs(300)),
+            Duration::from_secs(45)
+        );
+        assert_eq!(
+            page_archive_total_resource_timeout(Duration::from_secs(12)),
+            Duration::from_secs(12)
         );
     }
 
