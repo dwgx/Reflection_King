@@ -1313,6 +1313,16 @@ function App() {
                     <strong>{jobIssue(selectedJob)?.label ?? "失败原因"}</strong>
                     <span>{friendlyError(selectedJob.error, selectedJob)}</span>
                   </div>
+                  {jobIssue(selectedJob)?.kind === "profile" && (
+                    <div className="error-line-actions">
+                      <Button type="button" variant="secondary" disabled={busy} onClick={() => startJobBrowserLoginSession(selectedJob)}>
+                        <MonitorPlay size={16} /> 打开验证浏览器
+                      </Button>
+                      <Button type="button" disabled={busy} onClick={resumeSelectedJobWithProfile}>
+                        <RefreshCw size={16} /> 继续解析
+                      </Button>
+                    </div>
+                  )}
                 </div>
               )}
               {jobIssue(selectedJob)?.kind === "profile" && (
@@ -3069,6 +3079,16 @@ function friendlyError(value: string, job?: JobView | null): string {
   if (lower.includes("fresh cookies")) {
     return "该链接需要 fresh cookies。请导入对应站点 Cookie/Profile 后重试；这不是媒体管线损坏。";
   }
+  if (
+    lower.includes("cloudflare") ||
+    lower.includes("turnstile") ||
+    lower.includes("captcha") ||
+    lower.includes("human verification") ||
+    lower.includes("security challenge") ||
+    lower.includes("security verification")
+  ) {
+    return "站点正在进行安全验证。请打开验证浏览器，在服务端浏览器截图里完成真人验证或登录确认，然后继续解析。";
+  }
   if (lower.includes("phantomjs")) {
     return "爱奇艺/iQ.com 当前解析器需要 PhantomJS 兼容依赖；这是待补依赖/适配项。";
   }
@@ -3099,8 +3119,8 @@ function friendlyError(value: string, job?: JobView | null): string {
   if (lower.includes("timed out")) {
     return "解析超时";
   }
-  if (lower.includes("requires headers") || lower.includes("requires authorization")) {
-    return "资源需要登录态或页面授权";
+  if (lower.includes("requires headers") || lower.includes("requires authorization") || lower.includes("profile")) {
+    return "资源需要登录态、页面授权或安全验证。请打开验证浏览器处理后继续解析。";
   }
   return value.length > 140 ? `${value.slice(0, 140)}...` : value;
 }
