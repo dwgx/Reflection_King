@@ -190,7 +190,10 @@
   }
 
   .panel {
+    display: grid;
     min-width: 0;
+    min-height: 0;
+    grid-template-rows: auto minmax(0, 1fr);
     overflow: hidden;
     border: 1px solid #242a34;
     border-radius: 8px;
@@ -203,6 +206,7 @@
     min-height: 48px;
     align-items: center;
     justify-content: space-between;
+    flex-wrap: wrap;
     gap: 12px;
     border-bottom: 1px solid #242a34;
     padding: 11px 14px;
@@ -212,10 +216,19 @@
     display: flex;
     align-items: center;
     gap: 8px;
+    min-width: min(100%, 180px);
+    flex: 1 1 180px;
     margin: 0;
     color: #f4f7fb;
     font-size: 14px;
     font-weight: 750;
+  }
+
+  .panel-header-action {
+    display: flex;
+    min-width: 0;
+    flex: 0 1 auto;
+    justify-content: flex-end;
   }
 
   .panel-header p {
@@ -237,6 +250,7 @@
 
   .profile-card-actions {
     display: flex;
+    min-width: 0;
     flex-wrap: wrap;
     justify-content: flex-end;
     gap: 8px;
@@ -570,7 +584,7 @@
   }
 
   .dashboard-panel-body {
-    height: calc(440px - 49px);
+    min-height: 0;
   }
 
   .resource-panel {
@@ -578,7 +592,7 @@
   }
 
   .resource-panel-body {
-    height: calc(540px - 49px);
+    min-height: 0;
   }
 
   .panel-scroll-layout {
@@ -764,9 +778,7 @@
   }
 
   .detail-title-row strong {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    overflow-wrap: anywhere;
   }
 
   .detail-title-row span {

@@ -2261,7 +2261,7 @@ function Card(props: {
     <section className={`panel ${props.className ?? ""}`}>
       <div className="panel-header">
         <h2>{props.icon}{props.title}</h2>
-        {props.action}
+        {props.action && <div className="panel-header-action">{props.action}</div>}
       </div>
       <div className={`panel-body ${props.bodyClassName ?? ""}`}>{props.children}</div>
     </section>
