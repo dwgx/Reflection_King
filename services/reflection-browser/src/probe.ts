@@ -135,7 +135,6 @@ export class BrowserProbeService {
       }
       eventCount += 1;
       const task = (async () => {
-        const candidate = await candidateFromResponse(response);
         const resource = await pageResourceFromResponse(
           response,
           capturePageSnapshot,
@@ -150,6 +149,12 @@ export class BrowserProbeService {
           }
         }
         addPageResource(pageResources, resource);
+        const candidate = await candidateFromResponse(response).catch((error) => {
+          if (capturePageSnapshot) {
+            warnings.push(`candidate response scan failed: ${error instanceof Error ? error.message : String(error)}`);
+          }
+          return undefined;
+        });
         if (candidate) {
           addCandidate(candidate);
         }
@@ -623,7 +628,7 @@ async function candidateFromResponse(response: Response): Promise<BrowserCandida
     contentType,
     contentLength: Number.isFinite(contentLength) ? contentLength : undefined,
     resourceType: request.resourceType(),
-    initiatorUrl: request.frame()?.url(),
+    initiatorUrl: safeRequestFrameUrl(request),
     qualityLabel: qualityLabel(url, contentType),
     score: scoreCandidate(kind, contentType, url),
     requiresAuthorization: Boolean(headers["set-cookie"] || request.headers().cookie),
