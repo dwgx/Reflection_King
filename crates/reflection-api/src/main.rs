@@ -132,6 +132,10 @@ fn build_router(state: Arc<AppState>) -> Router {
             post(resume_job_with_profile),
         )
         .route(
+            "/api/jobs/{id}/force-page-archive",
+            post(force_page_archive),
+        )
+        .route(
             "/api/admin/user-keys",
             get(list_user_keys).post(create_user_key),
         )
@@ -744,6 +748,19 @@ async fn resume_job_with_profile(
     ensure_login_profile(&principal)?;
     ensure_job_access(&state, &principal, id).await?;
     Ok(Json(state.resume_job_with_profile(id).await?))
+}
+
+async fn force_page_archive(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<JobView>, ApiError> {
+    let principal = authorize(&state, &headers).await?;
+    if !principal.allow_browser_probe {
+        return Err(RkError::Unauthorized.into());
+    }
+    ensure_job_access(&state, &principal, id).await?;
+    Ok(Json(state.force_page_archive(id).await?))
 }
 
 async fn list_user_keys(

@@ -1001,6 +1001,45 @@ impl JobStore {
         Ok(())
     }
 
+    pub async fn reset_for_page_archive_force(&self, id: Uuid) -> Result<()> {
+        sqlx::query(
+            r#"
+            UPDATE jobs
+            SET status = ?,
+                media_url = NULL,
+                error = NULL,
+                error_class = 'none',
+                discovery = ?,
+                auth_mode = ?,
+                outputs_json = ?,
+                selected_candidate_ids_json = '[]',
+                completed_at = NULL,
+                updated_at = ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(JobStatus::Queued.as_str())
+        .bind(DiscoveryMode::Browser.as_str())
+        .bind(AuthMode::None.as_str())
+        .bind(serde_json::to_string(&[OutputKind::PageHtml.as_str()])?)
+        .bind(format_time(OffsetDateTime::now_utc())?)
+        .bind(id.to_string())
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query("DELETE FROM source_candidates WHERE job_id = ?")
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+
+        sqlx::query("DELETE FROM artifacts WHERE job_id = ?")
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
+
     pub async fn attach_profile_for_job(&self, id: Uuid, profile_id: &str) -> Result<()> {
         sqlx::query(
             r#"

@@ -955,6 +955,24 @@ function App() {
     }
   }
 
+  async function forceSelectedJobPageArchive() {
+    if (!selectedJob) return;
+    setBusy(true);
+    try {
+      const job = await request<JobView>(
+        `/api/jobs/${encodeURIComponent(selectedJob.id)}/force-page-archive`,
+        { method: "POST" },
+      );
+      setSelectedJob(job);
+      await refreshJobs();
+      notify("已强制按未登录网页包重新解析。", "success");
+    } catch (error) {
+      notify(errorMessage(error), "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function startBrowserLoginSession() {
     setBusy(true);
     try {
@@ -1419,14 +1437,23 @@ function App() {
           icon={<Settings size={16} />}
           className="dashboard-panel"
           bodyClassName="dashboard-panel-body"
-          action={selectedJob && jobIssue(selectedJob)?.kind === "profile" ? (
+          action={selectedJob && (jobIssue(selectedJob)?.kind === "profile" || isPageArchiveJob(selectedJob)) ? (
             <div className="profile-card-actions">
-              <Button type="button" variant="secondary" disabled={busy} onClick={() => startJobBrowserLoginSession(selectedJob)}>
-                <MonitorPlay size={16} /> 打开验证
-              </Button>
-              <Button type="button" disabled={busy} onClick={resumeSelectedJobWithProfile}>
-                <RefreshCw size={16} /> 继续
-              </Button>
+              {jobIssue(selectedJob)?.kind === "profile" && (
+                <>
+                  <Button type="button" variant="secondary" disabled={busy} onClick={() => startJobBrowserLoginSession(selectedJob)}>
+                    <MonitorPlay size={16} /> 打开验证
+                  </Button>
+                  <Button type="button" disabled={busy} onClick={resumeSelectedJobWithProfile}>
+                    <RefreshCw size={16} /> 继续
+                  </Button>
+                </>
+              )}
+              {isPageArchiveJob(selectedJob) && (
+                <Button type="button" variant="secondary" disabled={busy} onClick={forceSelectedJobPageArchive}>
+                  <RefreshCw size={16} /> 强制解析
+                </Button>
+              )}
             </div>
           ) : undefined}
         >
@@ -1462,8 +1489,18 @@ function App() {
                       <Button type="button" disabled={busy} onClick={resumeSelectedJobWithProfile}>
                         <RefreshCw size={16} /> 继续解析
                       </Button>
+                      {isPageArchiveJob(selectedJob) && (
+                        <Button type="button" variant="secondary" disabled={busy} onClick={forceSelectedJobPageArchive}>
+                          <RefreshCw size={16} /> 强制解析
+                        </Button>
+                      )}
                     </div>
                   )}
+                </div>
+              )}
+              {isPageArchiveJob(selectedJob) && jobIssue(selectedJob)?.kind === "profile" && (
+                <div className="screen-help">
+                  只想保存未登录主页 UI 时，点“强制解析”。系统会忽略登录提示，重新保存当前可公开访问的 HTML/CSS/JS 和页面资源。
                 </div>
               )}
               {jobIssue(selectedJob)?.kind === "profile" && (
@@ -1480,6 +1517,11 @@ function App() {
                       <Button type="button" disabled={busy} onClick={resumeSelectedJobWithProfile}>
                         <RefreshCw size={16} /> 继续解析
                       </Button>
+                      {isPageArchiveJob(selectedJob) && (
+                        <Button type="button" variant="secondary" disabled={busy} onClick={forceSelectedJobPageArchive}>
+                          <RefreshCw size={16} /> 强制解析
+                        </Button>
+                      )}
                     </div>
                   </div>
                   {activeLoginJobId === selectedJob.id && loginSnapshot && (
@@ -2830,6 +2872,10 @@ function outputsForMode(mode: OutputMode): OutputKind[] {
   return [mode];
 }
 
+function isPageArchiveJob(job: JobView | null): boolean {
+  return job?.outputs.includes("page_html") ?? false;
+}
+
 function bitrateLabel(value: string): string {
   return ({
     auto: "自动（最高可用）",
@@ -3316,6 +3362,9 @@ function friendlyError(value: string, job?: JobView | null): string {
     lower.includes("security challenge") ||
     lower.includes("security verification")
   ) {
+    if (isPageArchiveJob(job ?? null)) {
+      return "站点提示登录或安全验证；如果只需要未登录主页 UI 和公开资源，请点“强制解析”。";
+    }
     return "站点正在进行安全验证。请打开验证浏览器，像远程桌面一样完成真人验证或登录确认，然后继续解析。";
   }
   if (lower.includes("phantomjs")) {
@@ -3349,6 +3398,9 @@ function friendlyError(value: string, job?: JobView | null): string {
     return "解析超时";
   }
   if (lower.includes("requires headers") || lower.includes("requires authorization") || lower.includes("profile")) {
+    if (isPageArchiveJob(job ?? null)) {
+      return "当前任务是网页包；如果只需要未登录页面，请点“强制解析”重新保存 HTML/CSS/JS。";
+    }
     return "资源需要登录态、页面授权或安全验证。请打开验证浏览器，使用共享 Profile 处理后继续解析。";
   }
   return value.length > 140 ? `${value.slice(0, 140)}...` : value;

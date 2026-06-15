@@ -15,7 +15,7 @@ use reflection_core::{
     extractors::{ExtractContext, SourceResolver},
     job_store::JobStore,
     models::{
-        ApiKeyRecord, ApiKeyView, ArtifactView, CandidateKind, CandidateProtection,
+        ApiKeyRecord, ApiKeyView, ArtifactView, AuthMode, CandidateKind, CandidateProtection,
         CandidateValidationState, ClearJobsResponse, CreateUserKeyRequest, CreatedUserKeyResponse,
         DiscoveryMode, HiddenJobBatchView, JobRecord, JobStatus, JobView, MediaCandidate,
         OutputKind, RestoreJobsResponse, RotatedAdminKeyResponse, RuntimeSettingsView,
@@ -449,6 +449,43 @@ impl AppState {
             .ok_or_else(|| RkError::NotFound(format!("job {job_id}")))
     }
 
+    pub async fn force_page_archive(&self, job_id: Uuid) -> Result<JobView> {
+        let job = self
+            .job_store
+            .get(job_id)
+            .await?
+            .ok_or_else(|| RkError::NotFound(format!("job {job_id}")))?;
+        if !job.outputs.contains(&OutputKind::PageHtml) {
+            return Err(RkError::BadRequest(
+                "force page archive is only available for HTML/CSS/JS output jobs".to_string(),
+            ));
+        }
+        tokio::fs::remove_dir_all(self.paths.public_job_dir(job_id))
+            .await
+            .ok();
+        tokio::fs::remove_dir_all(self.paths.tmp_dir().join(job_id.to_string()))
+            .await
+            .ok();
+        self.job_store.reset_for_page_archive_force(job_id).await?;
+        self.record_event(PipelineEvent::new(
+            job_id,
+            "force_page_archive",
+            "api",
+            PipelineEventType::Note,
+            serde_json::json!({
+                "discovery": DiscoveryMode::Browser.as_str(),
+                "auth_mode": AuthMode::None.as_str(),
+                "outputs": [OutputKind::PageHtml.as_str()]
+            }),
+        ))
+        .await;
+        self.enqueue(job_id).await?;
+        self.get_job(job_id)
+            .await?
+            .map(JobView::from)
+            .ok_or_else(|| RkError::NotFound(format!("job {job_id}")))
+    }
+
     pub async fn browser_login_session_snapshot(
         &self,
         session_id: &str,
@@ -839,42 +876,39 @@ impl AppState {
         }
 
         let snapshot_count = outcome.page_snapshots.len();
-        if job.outputs.contains(&OutputKind::PageHtml) {
-            if let Some(snapshot) = outcome
-                .page_snapshots
-                .iter()
-                .find(|snapshot| snapshot.requires_interaction)
-            {
-                let reason = snapshot
-                    .interaction_reason
-                    .as_deref()
-                    .unwrap_or("page requires a human browser interaction");
-                return Err(RkError::Browser(format!(
-                    "{reason}; open the job browser login session, complete the verification, then resume with profile"
-                )));
-            }
+        let wants_page_archive = job.outputs.contains(&OutputKind::PageHtml);
+        if wants_page_archive {
             for snapshot in &outcome.page_snapshots {
+                if snapshot.requires_interaction {
+                    let reason = snapshot
+                        .interaction_reason
+                        .as_deref()
+                        .unwrap_or("page requires a human browser interaction");
+                    self.record_event(PipelineEvent::new(
+                        job.id,
+                        "page_archive_interaction_detected",
+                        "browser_probe",
+                        PipelineEventType::Note,
+                        serde_json::json!({ "reason": reason }),
+                    ))
+                    .await;
+                }
                 self.persist_page_snapshot(&job, snapshot, &settings)
                     .await?;
             }
         }
 
         if outcome.candidates.is_empty() {
-            if let Some(reason) = browser_interaction_reason(&outcome) {
+            if let Some(reason) = should_block_for_browser_interaction(&outcome, wants_page_archive)
+            {
                 return Err(RkError::Browser(format!(
                     "{reason}; open the job browser login session, complete the verification, then resume with profile"
                 )));
             }
-            if job.outputs.contains(&OutputKind::PageHtml) && snapshot_count > 0 {
-                let artifacts = self.job_store.list_artifacts(job.id).await?;
-                let media_url = artifacts
-                    .iter()
-                    .find(|artifact| artifact.media_url.ends_with("/archive.zip"))
-                    .or_else(|| artifacts.first())
-                    .map(|artifact| artifact.media_url.clone())
-                    .unwrap_or_else(|| {
-                        format!("{}/api/jobs/{}/artifacts", settings.public_base_url, job.id)
-                    });
+            if wants_page_archive && snapshot_count > 0 {
+                let media_url = self
+                    .page_archive_media_url(job.id, &settings.public_base_url)
+                    .await?;
                 self.mark_ready(job.id, media_url).await?;
                 return Ok(());
             }
@@ -892,6 +926,14 @@ impl AppState {
                 )
             };
             return Err(RkError::Source(detail));
+        }
+
+        if wants_page_archive && snapshot_count > 0 {
+            let media_url = self
+                .page_archive_media_url(job.id, &settings.public_base_url)
+                .await?;
+            self.mark_ready(job.id, media_url).await?;
+            return Ok(());
         }
 
         let chain_label = outcome.chain_label();
@@ -1886,6 +1928,16 @@ impl AppState {
         Ok(())
     }
 
+    async fn page_archive_media_url(&self, job_id: Uuid, public_base_url: &str) -> Result<String> {
+        let artifacts = self.job_store.list_artifacts(job_id).await?;
+        Ok(artifacts
+            .iter()
+            .find(|artifact| artifact.media_url.ends_with("/archive.zip"))
+            .or_else(|| artifacts.first())
+            .map(|artifact| artifact.media_url.clone())
+            .unwrap_or_else(|| format!("{}/api/jobs/{}/artifacts", public_base_url, job_id)))
+    }
+
     async fn mark_error(&self, job_id: Uuid, error: String, class: ErrorClass) {
         if let Err(store_error) = self.job_store.mark_error(job_id, &error, class).await {
             error!(%job_id, "failed to persist job error: {store_error}");
@@ -1946,6 +1998,17 @@ fn browser_interaction_reason(
                 .find(|warning| is_profile_required_message(warning))
                 .cloned()
         })
+}
+
+fn should_block_for_browser_interaction(
+    outcome: &reflection_core::extractors::ResolveOutcome,
+    wants_page_archive: bool,
+) -> Option<String> {
+    if wants_page_archive && !outcome.page_snapshots.is_empty() {
+        None
+    } else {
+        browser_interaction_reason(outcome)
+    }
 }
 
 fn resolver_error_summary(attempts: &[reflection_core::extractors::AttemptLog]) -> Option<String> {
@@ -3249,6 +3312,32 @@ mod tests {
         assert!(is_profile_required_message(
             "page requires a human verification interaction"
         ));
+    }
+
+    #[test]
+    fn page_archive_snapshots_do_not_block_on_interaction_prompt() {
+        let mut outcome = reflection_core::extractors::ResolveOutcome::default();
+        outcome
+            .page_snapshots
+            .push(reflection_core::browser_probe::PageSnapshot {
+                final_url: "https://example.com/".to_string(),
+                title: Some("Example".to_string()),
+                html: "<html><body>Sign in</body></html>".to_string(),
+                text: "Sign in".to_string(),
+                screenshot: None,
+                resources: Vec::new(),
+                captured_at: "2026-06-15T00:00:00Z".to_string(),
+                requires_interaction: true,
+                interaction_reason: Some(
+                    "page requires a human verification interaction".to_string(),
+                ),
+            });
+
+        assert_eq!(
+            should_block_for_browser_interaction(&outcome, false).as_deref(),
+            Some("page requires a human verification interaction")
+        );
+        assert_eq!(should_block_for_browser_interaction(&outcome, true), None);
     }
 
     #[test]
