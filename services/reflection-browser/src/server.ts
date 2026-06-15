@@ -142,13 +142,17 @@ app.post("/login-sessions/:sessionId/click", async (request, reply) => {
   if (!parsed.success) {
     return reply.status(400).send({ error: parsed.error.flatten() });
   }
-  return probeService.loginClick(
-    params.sessionId,
-    parsed.data.x,
-    parsed.data.y,
-    parsed.data.button ?? "left",
-    parsed.data.clickCount ?? 1,
-  );
+  try {
+    return await probeService.loginClick(
+      params.sessionId,
+      parsed.data.x,
+      parsed.data.y,
+      parsed.data.button ?? "left",
+      parsed.data.clickCount ?? 1,
+    );
+  } catch (error) {
+    return sendLoginSessionError(reply, error);
+  }
 });
 
 app.post("/login-sessions/:sessionId/move", async (request, reply) => {
@@ -157,7 +161,11 @@ app.post("/login-sessions/:sessionId/move", async (request, reply) => {
   if (!parsed.success) {
     return reply.status(400).send({ error: parsed.error.flatten() });
   }
-  return probeService.loginMove(params.sessionId, parsed.data.x, parsed.data.y);
+  try {
+    return await probeService.loginMove(params.sessionId, parsed.data.x, parsed.data.y);
+  } catch (error) {
+    return sendLoginSessionError(reply, error);
+  }
 });
 
 app.post("/login-sessions/:sessionId/mouse-down", async (request, reply) => {
@@ -166,12 +174,16 @@ app.post("/login-sessions/:sessionId/mouse-down", async (request, reply) => {
   if (!parsed.success) {
     return reply.status(400).send({ error: parsed.error.flatten() });
   }
-  return probeService.loginMouseDown(
-    params.sessionId,
-    parsed.data.x,
-    parsed.data.y,
-    parsed.data.button ?? "left",
-  );
+  try {
+    return await probeService.loginMouseDown(
+      params.sessionId,
+      parsed.data.x,
+      parsed.data.y,
+      parsed.data.button ?? "left",
+    );
+  } catch (error) {
+    return sendLoginSessionError(reply, error);
+  }
 });
 
 app.post("/login-sessions/:sessionId/mouse-up", async (request, reply) => {
@@ -180,12 +192,16 @@ app.post("/login-sessions/:sessionId/mouse-up", async (request, reply) => {
   if (!parsed.success) {
     return reply.status(400).send({ error: parsed.error.flatten() });
   }
-  return probeService.loginMouseUp(
-    params.sessionId,
-    parsed.data.x,
-    parsed.data.y,
-    parsed.data.button ?? "left",
-  );
+  try {
+    return await probeService.loginMouseUp(
+      params.sessionId,
+      parsed.data.x,
+      parsed.data.y,
+      parsed.data.button ?? "left",
+    );
+  } catch (error) {
+    return sendLoginSessionError(reply, error);
+  }
 });
 
 app.post("/login-sessions/:sessionId/type", async (request, reply) => {
@@ -230,13 +246,17 @@ app.post("/login-sessions/:sessionId/wheel", async (request, reply) => {
   if (!parsed.success) {
     return reply.status(400).send({ error: parsed.error.flatten() });
   }
-  return probeService.loginWheel(
-    params.sessionId,
-    parsed.data.deltaX ?? 0,
-    parsed.data.deltaY ?? 0,
-    parsed.data.x,
-    parsed.data.y,
-  );
+  try {
+    return await probeService.loginWheel(
+      params.sessionId,
+      parsed.data.deltaX ?? 0,
+      parsed.data.deltaY ?? 0,
+      parsed.data.x,
+      parsed.data.y,
+    );
+  } catch (error) {
+    return sendLoginSessionError(reply, error);
+  }
 });
 
 app.post("/login-sessions/:sessionId/resize", async (request, reply) => {
@@ -280,6 +300,15 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
 }
 
 await app.listen({ host: config.host, port: config.port });
+
+function sendLoginSessionError(
+  reply: { status: (code: number) => { send: (body: unknown) => unknown } },
+  error: unknown,
+) {
+  const message = error instanceof Error ? error.message : String(error);
+  const status = message.includes("not found") || message.includes("expired") ? 404 : 400;
+  return reply.status(status).send({ error: message || "login session operation failed" });
+}
 
 function isLoopbackHost(host: string): boolean {
   const normalized = host.trim().toLowerCase();

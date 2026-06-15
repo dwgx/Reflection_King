@@ -1757,6 +1757,10 @@ impl AppState {
         let assets_dir = page_dir.join("assets");
         let metadata_dir = page_dir.join("metadata");
         let preview_dir = page_dir.join("preview");
+        self.job_store
+            .clear_artifacts_for_kind(job.id, OutputKind::PageHtml)
+            .await?;
+        tokio::fs::remove_dir_all(&page_dir).await.ok();
         tokio::fs::create_dir_all(&assets_dir).await?;
         tokio::fs::create_dir_all(&metadata_dir).await?;
         tokio::fs::create_dir_all(&preview_dir).await?;

@@ -860,6 +860,9 @@ pub fn normalize_outputs(value: Option<Vec<OutputKind>>) -> Vec<OutputKind> {
     let mut outputs = value.unwrap_or_else(|| vec![OutputKind::Video, OutputKind::Audio]);
     outputs.sort_by_key(|output| output.as_str());
     outputs.dedup();
+    if outputs.contains(&OutputKind::PageHtml) {
+        return vec![OutputKind::PageHtml];
+    }
     if outputs.is_empty() {
         vec![OutputKind::Video, OutputKind::Audio]
     } else {
@@ -898,5 +901,17 @@ mod tests {
     #[test]
     fn job_status_parse_accepts_legacy_failed_as_error() {
         assert_eq!(JobStatus::parse("failed"), Some(JobStatus::Error));
+    }
+
+    #[test]
+    fn normalize_outputs_keeps_page_html_exclusive() {
+        assert_eq!(
+            normalize_outputs(Some(vec![
+                OutputKind::Video,
+                OutputKind::Audio,
+                OutputKind::PageHtml,
+            ])),
+            vec![OutputKind::PageHtml]
+        );
     }
 }

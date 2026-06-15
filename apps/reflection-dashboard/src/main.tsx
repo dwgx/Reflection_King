@@ -637,7 +637,13 @@ function App() {
     setBusy(true);
     setMessage("正在创建任务...");
     try {
-      const payload = { ...form, url: form.url.trim() };
+      const payload: CreateJobPayload = {
+        ...form,
+        url: form.url.trim(),
+        outputs: outputsForMode(outputMode),
+        discovery: outputMode === "page_html" ? "browser" : form.discovery,
+        auth_mode: outputMode === "page_html" ? "none" : form.auth_mode,
+      };
       const job = await request<JobView>("/api/jobs", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -758,6 +764,7 @@ function App() {
       ...form,
       outputs: outputsForMode(mode),
       discovery: mode === "page_html" ? "browser" : form.discovery,
+      auth_mode: mode === "page_html" ? "none" : form.auth_mode === "none" ? "auto" : form.auth_mode,
     });
   }
 
@@ -1352,9 +1359,10 @@ function App() {
             </ControlGroup>
             <ControlGroup label="授权">
               <Dropdown
-                value={form.auth_mode}
+                value={outputMode === "page_html" ? "none" : form.auth_mode}
                 options={["auto", "none", "profile", "cookies"]}
                 labelFor={authModeLabel}
+                disabled={outputMode === "page_html"}
                 onChange={(value) => setForm({ ...form, auth_mode: value as CreateJobPayload["auth_mode"] })}
               />
             </ControlGroup>
@@ -1545,7 +1553,7 @@ function App() {
           icon={<FileAudio size={16} />}
           className="resource-panel"
           bodyClassName="resource-panel-body"
-          action={
+          action={!isPageArchiveJob(selectedJob) ? (
             <Button
               onClick={selectCandidates}
               disabled={!selectedJob || (!selectedCandidates.size && defaultCandidateIds.length === 0) || busy}
@@ -1557,9 +1565,11 @@ function App() {
                   ? `转换推荐 (${defaultCandidateIds.length})`
                   : "转换推荐"}
             </Button>
-          }
+          ) : undefined}
         >
-          {candidates.length ? (
+          {isPageArchiveJob(selectedJob) ? (
+            <Empty label="当前任务是 HTML/CSS/JS 网页包；资源在产物里的网页前端包中下载。" />
+          ) : candidates.length ? (
             <div className="panel-scroll-layout">
               <div className="resource-toolbar">
                 <span>
@@ -2347,6 +2357,7 @@ function Dropdown(props: {
   labelFor?: (value: string) => string;
   onChange: (value: string) => void;
   className?: string;
+  disabled?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -2375,7 +2386,14 @@ function Dropdown(props: {
 
   return (
     <div ref={rootRef} className={`custom-select ${open ? "open" : ""} ${props.className ?? ""}`}>
-      <button className="custom-select-trigger" type="button" onClick={() => setOpen(!open)}>
+      <button
+        className="custom-select-trigger"
+        type="button"
+        disabled={props.disabled}
+        onClick={() => {
+          if (!props.disabled) setOpen(!open);
+        }}
+      >
         <span>{label}</span>
         <ChevronDown size={15} />
       </button>

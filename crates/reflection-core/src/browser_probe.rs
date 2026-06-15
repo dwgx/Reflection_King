@@ -675,9 +675,25 @@ impl BrowserProbeClient {
         label: &str,
     ) -> Result<LoginSessionSnapshot> {
         if !response.status().is_success() {
+            let status = response.status();
+            let detail = response
+                .text()
+                .await
+                .ok()
+                .and_then(|text| {
+                    serde_json::from_str::<serde_json::Value>(&text)
+                        .ok()
+                        .and_then(|value| {
+                            value
+                                .get("error")
+                                .and_then(|error| error.as_str())
+                                .map(ToString::to_string)
+                        })
+                        .or_else(|| (!text.trim().is_empty()).then(|| text.trim().to_string()))
+                })
+                .unwrap_or_else(|| status.to_string());
             return Err(RkError::Browser(format!(
-                "{label} returned HTTP {}",
-                response.status()
+                "{label} returned HTTP {status}: {detail}",
             )));
         }
         Ok(response.json().await?)

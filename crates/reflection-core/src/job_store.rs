@@ -1296,6 +1296,20 @@ impl JobStore {
         Ok(())
     }
 
+    pub async fn clear_artifacts_for_kind(
+        &self,
+        job_id: uuid::Uuid,
+        kind: OutputKind,
+    ) -> Result<()> {
+        sqlx::query("DELETE FROM artifacts WHERE job_id = ? AND kind = ?")
+            .bind(job_id.to_string())
+            .bind(kind.as_str())
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
+
     pub async fn list_artifacts(&self, job_id: uuid::Uuid) -> Result<Vec<ArtifactView>> {
         let rows = sqlx::query(
             r#"
@@ -3228,6 +3242,47 @@ mod tests {
             .await
             .unwrap()
             .is_none());
+
+        drop(store);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[tokio::test]
+    async fn artifacts_can_be_cleared_by_kind() {
+        let path = temp_db_path();
+        let store = JobStore::connect(&path).await.unwrap();
+        let record = JobRecord::new(
+            "https://example.com".to_string(),
+            "auto".to_string(),
+            "http://localhost:8787",
+        );
+        let job_id = record.id;
+        store.insert(&record).await.unwrap();
+
+        for kind in [OutputKind::PageHtml, OutputKind::Audio] {
+            store
+                .insert_artifact(&ArtifactView {
+                    id: Uuid::new_v4(),
+                    job_id,
+                    kind,
+                    path: format!("/tmp/{}", kind.as_str()),
+                    media_url: format!("http://localhost/{}", kind.as_str()),
+                    content_type: "application/octet-stream".to_string(),
+                    bytes: 1,
+                    created_at: OffsetDateTime::now_utc(),
+                })
+                .await
+                .unwrap();
+        }
+
+        store
+            .clear_artifacts_for_kind(job_id, OutputKind::PageHtml)
+            .await
+            .unwrap();
+        let artifacts = store.list_artifacts(job_id).await.unwrap();
+
+        assert_eq!(artifacts.len(), 1);
+        assert_eq!(artifacts[0].kind, OutputKind::Audio);
 
         drop(store);
         std::fs::remove_file(&path).ok();
