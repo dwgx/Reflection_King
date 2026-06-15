@@ -65,7 +65,11 @@ browser login session, then resume the job:
 POST /api/jobs/{id}/browser-login-session
 GET  /api/jobs/{id}/browser-login-session/{session_id}/snapshot
 POST /api/jobs/{id}/browser-login-session/{session_id}/click
+POST /api/jobs/{id}/browser-login-session/{session_id}/move
+POST /api/jobs/{id}/browser-login-session/{session_id}/mouse-down
+POST /api/jobs/{id}/browser-login-session/{session_id}/mouse-up
 POST /api/jobs/{id}/browser-login-session/{session_id}/type
+POST /api/jobs/{id}/browser-login-session/{session_id}/insert-text
 POST /api/jobs/{id}/browser-login-session/{session_id}/press
 POST /api/jobs/{id}/browser-login-session/{session_id}/navigate
 POST /api/jobs/{id}/browser-login-session/{session_id}/wheel

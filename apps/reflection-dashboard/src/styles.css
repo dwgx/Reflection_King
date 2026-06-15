@@ -1603,6 +1603,23 @@
     align-items: center;
   }
 
+  .remote-input-controls {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    gap: 8px;
+    align-items: center;
+  }
+
+  .remote-key-strip {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .remote-key-strip .button {
+    min-width: 68px;
+  }
+
   .remote-browser-meta {
     display: grid;
     grid-template-columns: minmax(0, 0.45fr) minmax(0, 1fr);
@@ -1760,6 +1777,11 @@
     .topbar-actions {
       display: grid;
       min-width: 0;
+    }
+
+    .remote-browser-toolbar,
+    .remote-input-controls {
+      grid-template-columns: 1fr;
     }
 
     .task-list-head {

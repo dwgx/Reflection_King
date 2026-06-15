@@ -176,6 +176,14 @@ struct LoginMoveRequest {
 }
 
 #[derive(Debug, Clone, Serialize)]
+struct LoginMouseButtonRequest {
+    x: f64,
+    y: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    button: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 struct LoginTypeRequest<'a> {
     text: &'a str,
 }
@@ -477,6 +485,52 @@ impl BrowserProbeClient {
         self.login_response(response, "login-session move").await
     }
 
+    pub async fn login_session_mouse_down(
+        &self,
+        session_id: &str,
+        x: f64,
+        y: f64,
+        button: Option<&str>,
+    ) -> Result<LoginSessionSnapshot> {
+        let response = self
+            .request(
+                reqwest::Method::POST,
+                format!("{}/login-sessions/{}/mouse-down", self.base_url, session_id),
+            )
+            .json(&LoginMouseButtonRequest {
+                x,
+                y,
+                button: button.map(ToString::to_string),
+            })
+            .send()
+            .await?;
+        self.login_response(response, "login-session mouse-down")
+            .await
+    }
+
+    pub async fn login_session_mouse_up(
+        &self,
+        session_id: &str,
+        x: f64,
+        y: f64,
+        button: Option<&str>,
+    ) -> Result<LoginSessionSnapshot> {
+        let response = self
+            .request(
+                reqwest::Method::POST,
+                format!("{}/login-sessions/{}/mouse-up", self.base_url, session_id),
+            )
+            .json(&LoginMouseButtonRequest {
+                x,
+                y,
+                button: button.map(ToString::to_string),
+            })
+            .send()
+            .await?;
+        self.login_response(response, "login-session mouse-up")
+            .await
+    }
+
     pub async fn login_session_type(
         &self,
         session_id: &str,
@@ -491,6 +545,26 @@ impl BrowserProbeClient {
             .send()
             .await?;
         self.login_response(response, "login-session type").await
+    }
+
+    pub async fn login_session_insert_text(
+        &self,
+        session_id: &str,
+        text: &str,
+    ) -> Result<LoginSessionSnapshot> {
+        let response = self
+            .request(
+                reqwest::Method::POST,
+                format!(
+                    "{}/login-sessions/{}/insert-text",
+                    self.base_url, session_id
+                ),
+            )
+            .json(&LoginTypeRequest { text })
+            .send()
+            .await?;
+        self.login_response(response, "login-session insert-text")
+            .await
     }
 
     pub async fn login_session_press(

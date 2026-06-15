@@ -35,8 +35,18 @@ const loginMoveSchema = z.object({
   y: z.number().finite(),
 });
 
+const loginMouseButtonSchema = z.object({
+  x: z.number().finite(),
+  y: z.number().finite(),
+  button: z.enum(["left", "right", "middle"]).optional(),
+});
+
 const loginTypeSchema = z.object({
   text: z.string().max(2_000),
+});
+
+const loginInsertTextSchema = z.object({
+  text: z.string().max(10_000),
 });
 
 const loginPressSchema = z.object({
@@ -150,6 +160,34 @@ app.post("/login-sessions/:sessionId/move", async (request, reply) => {
   return probeService.loginMove(params.sessionId, parsed.data.x, parsed.data.y);
 });
 
+app.post("/login-sessions/:sessionId/mouse-down", async (request, reply) => {
+  const params = z.object({ sessionId: z.string() }).parse(request.params);
+  const parsed = loginMouseButtonSchema.safeParse(request.body);
+  if (!parsed.success) {
+    return reply.status(400).send({ error: parsed.error.flatten() });
+  }
+  return probeService.loginMouseDown(
+    params.sessionId,
+    parsed.data.x,
+    parsed.data.y,
+    parsed.data.button ?? "left",
+  );
+});
+
+app.post("/login-sessions/:sessionId/mouse-up", async (request, reply) => {
+  const params = z.object({ sessionId: z.string() }).parse(request.params);
+  const parsed = loginMouseButtonSchema.safeParse(request.body);
+  if (!parsed.success) {
+    return reply.status(400).send({ error: parsed.error.flatten() });
+  }
+  return probeService.loginMouseUp(
+    params.sessionId,
+    parsed.data.x,
+    parsed.data.y,
+    parsed.data.button ?? "left",
+  );
+});
+
 app.post("/login-sessions/:sessionId/type", async (request, reply) => {
   const params = z.object({ sessionId: z.string() }).parse(request.params);
   const parsed = loginTypeSchema.safeParse(request.body);
@@ -157,6 +195,15 @@ app.post("/login-sessions/:sessionId/type", async (request, reply) => {
     return reply.status(400).send({ error: parsed.error.flatten() });
   }
   return probeService.loginType(params.sessionId, parsed.data.text);
+});
+
+app.post("/login-sessions/:sessionId/insert-text", async (request, reply) => {
+  const params = z.object({ sessionId: z.string() }).parse(request.params);
+  const parsed = loginInsertTextSchema.safeParse(request.body);
+  if (!parsed.success) {
+    return reply.status(400).send({ error: parsed.error.flatten() });
+  }
+  return probeService.loginInsertText(params.sessionId, parsed.data.text);
 });
 
 app.post("/login-sessions/:sessionId/press", async (request, reply) => {

@@ -493,6 +493,40 @@ impl AppState {
         browser_probe.login_session_move(session_id, x, y).await
     }
 
+    pub async fn browser_login_session_mouse_down(
+        &self,
+        session_id: &str,
+        x: f64,
+        y: f64,
+        button: Option<&str>,
+    ) -> Result<LoginSessionSnapshot> {
+        let Some(browser_probe) = &self.browser_probe else {
+            return Err(RkError::Browser(
+                "RK_BROWSER_PROBE_URL is required for browser profile management".to_string(),
+            ));
+        };
+        browser_probe
+            .login_session_mouse_down(session_id, x, y, button)
+            .await
+    }
+
+    pub async fn browser_login_session_mouse_up(
+        &self,
+        session_id: &str,
+        x: f64,
+        y: f64,
+        button: Option<&str>,
+    ) -> Result<LoginSessionSnapshot> {
+        let Some(browser_probe) = &self.browser_probe else {
+            return Err(RkError::Browser(
+                "RK_BROWSER_PROBE_URL is required for browser profile management".to_string(),
+            ));
+        };
+        browser_probe
+            .login_session_mouse_up(session_id, x, y, button)
+            .await
+    }
+
     pub async fn browser_login_session_type(
         &self,
         session_id: &str,
@@ -504,6 +538,21 @@ impl AppState {
             ));
         };
         browser_probe.login_session_type(session_id, text).await
+    }
+
+    pub async fn browser_login_session_insert_text(
+        &self,
+        session_id: &str,
+        text: &str,
+    ) -> Result<LoginSessionSnapshot> {
+        let Some(browser_probe) = &self.browser_probe else {
+            return Err(RkError::Browser(
+                "RK_BROWSER_PROBE_URL is required for browser profile management".to_string(),
+            ));
+        };
+        browser_probe
+            .login_session_insert_text(session_id, text)
+            .await
     }
 
     pub async fn browser_login_session_press(

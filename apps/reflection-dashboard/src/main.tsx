@@ -44,7 +44,7 @@ type PlatformHint =
 type OutputKind = "audio" | "video" | "image" | "page_html";
 type OutputMode = "auto" | "video" | "audio" | "image" | "page_html";
 type ViewMode = "console" | "admin" | "help";
-type LoginClickMode = "left" | "right" | "double";
+type LoginClickMode = "left" | "right" | "double" | "drag";
 
 interface Health {
   ok: boolean;
@@ -361,6 +361,8 @@ function App() {
   const [loginClickMode, setLoginClickMode] = useState<LoginClickMode>("left");
   const [loginZoom, setLoginZoom] = useState("1");
   const lastMouseMoveRef = useRef(0);
+  const dragActiveRef = useRef(false);
+  const lastBrowserPointRef = useRef<{ x: number; y: number } | null>(null);
   const [hiddenBatches, setHiddenBatches] = useState<HiddenJobBatchView[]>([]);
   const [form, setForm] = useState<CreateJobPayload>({
     url: "",
@@ -989,10 +991,12 @@ function App() {
   function browserPointFromEvent(event: React.MouseEvent<HTMLElement> | React.WheelEvent<HTMLElement>) {
     if (!loginSnapshot) return;
     const rect = event.currentTarget.getBoundingClientRect();
-    return {
+    const point = {
       x: ((event.clientX - rect.left) / rect.width) * loginSnapshot.width,
       y: ((event.clientY - rect.top) / rect.height) * loginSnapshot.height,
     };
+    lastBrowserPointRef.current = point;
+    return point;
   }
 
   async function moveBrowserLoginSession(event: React.MouseEvent<HTMLButtonElement>) {
@@ -1018,6 +1022,7 @@ function App() {
 
   async function clickBrowserLoginSession(event: React.MouseEvent<HTMLButtonElement>, mode = loginClickMode) {
     if (!loginSnapshot) return;
+    if (mode === "drag") return;
     const point = browserPointFromEvent(event);
     if (!point) return;
     const button = mode === "right" ? "right" : "left";
@@ -1029,6 +1034,47 @@ function App() {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ ...point, button, clickCount }),
+        },
+      ));
+    } catch (error) {
+      notify(errorMessage(error), "error");
+    }
+  }
+
+  async function mouseDownBrowserLoginSession(event: React.MouseEvent<HTMLButtonElement>) {
+    if (!loginSnapshot || loginClickMode !== "drag") return;
+    event.preventDefault();
+    const point = browserPointFromEvent(event);
+    if (!point) return;
+    dragActiveRef.current = true;
+    try {
+      setLoginSnapshot(await request<BrowserLoginSnapshot>(
+        loginSessionEndpoint("mouse-down"),
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ ...point, button: "left" }),
+        },
+      ));
+    } catch (error) {
+      dragActiveRef.current = false;
+      notify(errorMessage(error), "error");
+    }
+  }
+
+  async function mouseUpBrowserLoginSession(event?: React.MouseEvent<HTMLButtonElement>) {
+    if (!loginSnapshot || loginClickMode !== "drag" || !dragActiveRef.current) return;
+    event?.preventDefault();
+    const point = event ? browserPointFromEvent(event) : lastBrowserPointRef.current;
+    if (!point) return;
+    dragActiveRef.current = false;
+    try {
+      setLoginSnapshot(await request<BrowserLoginSnapshot>(
+        loginSessionEndpoint("mouse-up"),
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ ...point, button: "left" }),
         },
       ));
     } catch (error) {
@@ -1084,6 +1130,26 @@ function App() {
     try {
       setLoginSnapshot(await request<BrowserLoginSnapshot>(
         loginSessionEndpoint("type"),
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ text: loginText }),
+        },
+      ));
+      setLoginText("");
+    } catch (error) {
+      notify(errorMessage(error), "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function insertTextIntoBrowserLoginSession() {
+    if (!loginSnapshot || !loginText) return;
+    setBusy(true);
+    try {
+      setLoginSnapshot(await request<BrowserLoginSnapshot>(
+        loginSessionEndpoint("insert-text"),
         {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -1800,7 +1866,7 @@ function App() {
                   <div className="remote-browser-toolbar">
                     <SegmentedControl
                       value={loginClickMode}
-                      options={["left", "right", "double"]}
+                      options={["left", "right", "double", "drag"]}
                       labelFor={loginClickModeLabel}
                       onChange={(value) => setLoginClickMode(value as LoginClickMode)}
                     />
@@ -1833,6 +1899,9 @@ function App() {
                       type="button"
                       style={{ width: `${Number(loginZoom) * 100}%` }}
                       onMouseMove={moveBrowserLoginSession}
+                      onMouseDown={mouseDownBrowserLoginSession}
+                      onMouseUp={mouseUpBrowserLoginSession}
+                      onMouseLeave={() => void mouseUpBrowserLoginSession()}
                       onClick={clickBrowserLoginSession}
                       onWheel={wheelBrowserLoginSession}
                       onContextMenu={(event) => {
@@ -1845,9 +1914,9 @@ function App() {
                     </button>
                   </div>
                   <div className="screen-help">
-                    <span>点击截图按当前模式操作；滚轮会发送到服务端页面；右键截图会直接发送右键点击。</span>
+                    <span>鼠标移动会同步到服务端页面；普通模式点击，拖动模式按住后移动再松开；滚轮和右键也会转发。</span>
                   </div>
-                  <div className="remote-login-controls">
+                  <div className="remote-input-controls">
                     <Input
                       value={loginText}
                       placeholder="输入要发送到当前焦点的文本"
@@ -1855,15 +1924,32 @@ function App() {
                       onKeyDown={(event) => {
                         if (event.key === "Enter") {
                           event.preventDefault();
-                          void typeIntoBrowserLoginSession();
+                          void insertTextIntoBrowserLoginSession();
                         }
                       }}
                     />
                     <Button type="button" variant="secondary" disabled={busy || !loginText} onClick={typeIntoBrowserLoginSession}>
                       输入
                     </Button>
+                    <Button type="button" variant="secondary" disabled={busy || !loginText} onClick={insertTextIntoBrowserLoginSession}>
+                      插入
+                    </Button>
+                  </div>
+                  <div className="remote-key-strip">
                     <Button type="button" variant="secondary" disabled={busy} onClick={() => pressBrowserLoginKey("Enter")}>
                       Enter
+                    </Button>
+                    <Button type="button" variant="secondary" disabled={busy} onClick={() => pressBrowserLoginKey("Tab")}>
+                      Tab
+                    </Button>
+                    <Button type="button" variant="secondary" disabled={busy} onClick={() => pressBrowserLoginKey("Space")}>
+                      Space
+                    </Button>
+                    <Button type="button" variant="secondary" disabled={busy} onClick={() => pressBrowserLoginKey("Control+A")}>
+                      Ctrl+A
+                    </Button>
+                    <Button type="button" variant="secondary" disabled={busy} onClick={() => pressBrowserLoginKey("Backspace")}>
+                      Backspace
                     </Button>
                     <Button type="button" variant="secondary" disabled={busy} onClick={() => pressBrowserLoginKey("Escape")}>
                       Esc
@@ -2055,7 +2141,7 @@ function App() {
                 <div className="remote-browser-toolbar">
                   <SegmentedControl
                     value={loginClickMode}
-                    options={["left", "right", "double"]}
+                    options={["left", "right", "double", "drag"]}
                     labelFor={loginClickModeLabel}
                     onChange={(value) => setLoginClickMode(value as LoginClickMode)}
                   />
@@ -2078,6 +2164,9 @@ function App() {
                     type="button"
                     style={{ width: `${Number(loginZoom) * 100}%` }}
                     onMouseMove={moveBrowserLoginSession}
+                    onMouseDown={mouseDownBrowserLoginSession}
+                    onMouseUp={mouseUpBrowserLoginSession}
+                    onMouseLeave={() => void mouseUpBrowserLoginSession()}
                     onClick={clickBrowserLoginSession}
                     onWheel={wheelBrowserLoginSession}
                     onContextMenu={(event) => {
@@ -2089,9 +2178,9 @@ function App() {
                   </button>
                 </div>
                 <div className="screen-help">
-                  <span>鼠标移动会同步到服务端浏览器；移动到验证控件上再点击。滚轮和右键也会转发。</span>
+                  <span>鼠标移动会同步到服务端浏览器；普通模式点击，拖动模式按住后移动再松开。滚轮、右键和快捷键也会转发。</span>
                 </div>
-                <div className="remote-login-controls">
+                <div className="remote-input-controls">
                   <Input
                     value={loginText}
                     placeholder="输入要发送到当前焦点的文本"
@@ -2099,15 +2188,32 @@ function App() {
                     onKeyDown={(event) => {
                       if (event.key === "Enter") {
                         event.preventDefault();
-                        void typeIntoBrowserLoginSession();
+                        void insertTextIntoBrowserLoginSession();
                       }
                     }}
                   />
                   <Button type="button" variant="secondary" disabled={busy || !loginText} onClick={typeIntoBrowserLoginSession}>
                     输入
                   </Button>
+                  <Button type="button" variant="secondary" disabled={busy || !loginText} onClick={insertTextIntoBrowserLoginSession}>
+                    插入
+                  </Button>
+                </div>
+                <div className="remote-key-strip">
                   <Button type="button" variant="secondary" disabled={busy} onClick={() => pressBrowserLoginKey("Enter")}>
                     Enter
+                  </Button>
+                  <Button type="button" variant="secondary" disabled={busy} onClick={() => pressBrowserLoginKey("Tab")}>
+                    Tab
+                  </Button>
+                  <Button type="button" variant="secondary" disabled={busy} onClick={() => pressBrowserLoginKey("Space")}>
+                    Space
+                  </Button>
+                  <Button type="button" variant="secondary" disabled={busy} onClick={() => pressBrowserLoginKey("Control+A")}>
+                    Ctrl+A
+                  </Button>
+                  <Button type="button" variant="secondary" disabled={busy} onClick={() => pressBrowserLoginKey("Backspace")}>
+                    Backspace
                   </Button>
                   <Button type="button" variant="secondary" disabled={busy} onClick={() => pressBrowserLoginKey("Escape")}>
                     Esc
@@ -2660,6 +2766,7 @@ function loginClickModeLabel(value: string): string {
     left: "左键",
     right: "右键",
     double: "双击",
+    drag: "拖动",
   } as Record<string, string>)[value] ?? value;
 }
 

@@ -92,8 +92,20 @@ fn build_router(state: Arc<AppState>) -> Router {
             post(job_browser_login_session_move),
         )
         .route(
+            "/api/jobs/{id}/browser-login-session/{session_id}/mouse-down",
+            post(job_browser_login_session_mouse_down),
+        )
+        .route(
+            "/api/jobs/{id}/browser-login-session/{session_id}/mouse-up",
+            post(job_browser_login_session_mouse_up),
+        )
+        .route(
             "/api/jobs/{id}/browser-login-session/{session_id}/type",
             post(job_browser_login_session_type),
+        )
+        .route(
+            "/api/jobs/{id}/browser-login-session/{session_id}/insert-text",
+            post(job_browser_login_session_insert_text),
         )
         .route(
             "/api/jobs/{id}/browser-login-session/{session_id}/press",
@@ -150,8 +162,20 @@ fn build_router(state: Arc<AppState>) -> Router {
             post(browser_login_session_move),
         )
         .route(
+            "/api/admin/browser-login-sessions/{session_id}/mouse-down",
+            post(browser_login_session_mouse_down),
+        )
+        .route(
+            "/api/admin/browser-login-sessions/{session_id}/mouse-up",
+            post(browser_login_session_mouse_up),
+        )
+        .route(
             "/api/admin/browser-login-sessions/{session_id}/type",
             post(browser_login_session_type),
+        )
+        .route(
+            "/api/admin/browser-login-sessions/{session_id}/insert-text",
+            post(browser_login_session_insert_text),
         )
         .route(
             "/api/admin/browser-login-sessions/{session_id}/press",
@@ -556,6 +580,48 @@ async fn job_browser_login_session_move(
     ))
 }
 
+async fn job_browser_login_session_mouse_down(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((id, session_id)): Path<(Uuid, String)>,
+    Json(request): Json<BrowserLoginMouseButtonRequest>,
+) -> Result<Json<reflection_core::browser_probe::LoginSessionSnapshot>, ApiError> {
+    let principal = authorize(&state, &headers).await?;
+    ensure_login_profile(&principal)?;
+    ensure_job_access(&state, &principal, id).await?;
+    Ok(Json(
+        state
+            .browser_login_session_mouse_down(
+                &session_id,
+                request.x,
+                request.y,
+                request.button.as_deref(),
+            )
+            .await?,
+    ))
+}
+
+async fn job_browser_login_session_mouse_up(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((id, session_id)): Path<(Uuid, String)>,
+    Json(request): Json<BrowserLoginMouseButtonRequest>,
+) -> Result<Json<reflection_core::browser_probe::LoginSessionSnapshot>, ApiError> {
+    let principal = authorize(&state, &headers).await?;
+    ensure_login_profile(&principal)?;
+    ensure_job_access(&state, &principal, id).await?;
+    Ok(Json(
+        state
+            .browser_login_session_mouse_up(
+                &session_id,
+                request.x,
+                request.y,
+                request.button.as_deref(),
+            )
+            .await?,
+    ))
+}
+
 async fn job_browser_login_session_type(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -568,6 +634,22 @@ async fn job_browser_login_session_type(
     Ok(Json(
         state
             .browser_login_session_type(&session_id, &request.text)
+            .await?,
+    ))
+}
+
+async fn job_browser_login_session_insert_text(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((id, session_id)): Path<(Uuid, String)>,
+    Json(request): Json<BrowserLoginTypeRequest>,
+) -> Result<Json<reflection_core::browser_probe::LoginSessionSnapshot>, ApiError> {
+    let principal = authorize(&state, &headers).await?;
+    ensure_login_profile(&principal)?;
+    ensure_job_access(&state, &principal, id).await?;
+    Ok(Json(
+        state
+            .browser_login_session_insert_text(&session_id, &request.text)
             .await?,
     ))
 }
@@ -785,6 +867,13 @@ struct BrowserLoginMoveRequest {
 }
 
 #[derive(Debug, Deserialize)]
+struct BrowserLoginMouseButtonRequest {
+    x: f64,
+    y: f64,
+    button: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct BrowserLoginTypeRequest {
     text: String,
 }
@@ -879,6 +968,46 @@ async fn browser_login_session_move(
     ))
 }
 
+async fn browser_login_session_mouse_down(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Json(request): Json<BrowserLoginMouseButtonRequest>,
+) -> Result<Json<reflection_core::browser_probe::LoginSessionSnapshot>, ApiError> {
+    let principal = authorize(&state, &headers).await?;
+    ensure_login_profile(&principal)?;
+    Ok(Json(
+        state
+            .browser_login_session_mouse_down(
+                &session_id,
+                request.x,
+                request.y,
+                request.button.as_deref(),
+            )
+            .await?,
+    ))
+}
+
+async fn browser_login_session_mouse_up(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Json(request): Json<BrowserLoginMouseButtonRequest>,
+) -> Result<Json<reflection_core::browser_probe::LoginSessionSnapshot>, ApiError> {
+    let principal = authorize(&state, &headers).await?;
+    ensure_login_profile(&principal)?;
+    Ok(Json(
+        state
+            .browser_login_session_mouse_up(
+                &session_id,
+                request.x,
+                request.y,
+                request.button.as_deref(),
+            )
+            .await?,
+    ))
+}
+
 async fn browser_login_session_type(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -890,6 +1019,21 @@ async fn browser_login_session_type(
     Ok(Json(
         state
             .browser_login_session_type(&session_id, &request.text)
+            .await?,
+    ))
+}
+
+async fn browser_login_session_insert_text(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Json(request): Json<BrowserLoginTypeRequest>,
+) -> Result<Json<reflection_core::browser_probe::LoginSessionSnapshot>, ApiError> {
+    let principal = authorize(&state, &headers).await?;
+    ensure_login_profile(&principal)?;
+    Ok(Json(
+        state
+            .browser_login_session_insert_text(&session_id, &request.text)
             .await?,
     ))
 }

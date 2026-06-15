@@ -385,10 +385,56 @@ export class BrowserProbeService {
     return this.snapshotLoginSession(sessionId);
   }
 
+  async loginMouseDown(
+    sessionId: string,
+    x: number,
+    y: number,
+    button: "left" | "right" | "middle" = "left",
+  ): Promise<LoginSessionSnapshot> {
+    const entry = this.requireLoginSession(sessionId);
+    entry.lastActiveAt = Date.now();
+    const viewport = entry.page.viewportSize() ?? { width: 1280, height: 720 };
+    await entry.page.mouse.move(
+      clamp(x, 0, viewport.width),
+      clamp(y, 0, viewport.height),
+      { steps: 6 },
+    );
+    await entry.page.mouse.down({ button });
+    await entry.page.waitForTimeout(180).catch(() => undefined);
+    return this.snapshotLoginSession(sessionId);
+  }
+
+  async loginMouseUp(
+    sessionId: string,
+    x: number,
+    y: number,
+    button: "left" | "right" | "middle" = "left",
+  ): Promise<LoginSessionSnapshot> {
+    const entry = this.requireLoginSession(sessionId);
+    entry.lastActiveAt = Date.now();
+    const viewport = entry.page.viewportSize() ?? { width: 1280, height: 720 };
+    await entry.page.mouse.move(
+      clamp(x, 0, viewport.width),
+      clamp(y, 0, viewport.height),
+      { steps: 6 },
+    );
+    await entry.page.mouse.up({ button });
+    await entry.page.waitForTimeout(450).catch(() => undefined);
+    return this.snapshotLoginSession(sessionId);
+  }
+
   async loginType(sessionId: string, text: string): Promise<LoginSessionSnapshot> {
     const entry = this.requireLoginSession(sessionId);
     entry.lastActiveAt = Date.now();
     await entry.page.keyboard.type(text, { delay: 18 });
+    await entry.page.waitForTimeout(350).catch(() => undefined);
+    return this.snapshotLoginSession(sessionId);
+  }
+
+  async loginInsertText(sessionId: string, text: string): Promise<LoginSessionSnapshot> {
+    const entry = this.requireLoginSession(sessionId);
+    entry.lastActiveAt = Date.now();
+    await entry.page.keyboard.insertText(text);
     await entry.page.waitForTimeout(350).catch(() => undefined);
     return this.snapshotLoginSession(sessionId);
   }
