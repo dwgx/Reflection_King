@@ -17,6 +17,7 @@ RK_MAX_DOWNLOAD_MB                 单任务下载上限。
 RK_MAX_CONCURRENT_JOBS             并发任务数。
 RK_BROWSER_PROBE_URL               浏览器 sidecar 地址，默认 http://127.0.0.1:8791。
 RK_BROWSER_PROFILE_ROOT            Playwright Profile 和 Cookie 存储目录。
+RK_BROWSER_DEFAULT_PROFILE         任务登录验证使用的共享默认 Profile，默认 admin_default。
 RK_YTDLP_PATH                      yt-dlp 可执行文件。
 RK_YOU_GET_PATH                    you-get 可执行文件。
 RK_STREAMLINK_PATH                 streamlink 可执行文件。
@@ -138,6 +139,11 @@ docker compose --env-file .env.docker up -d --build
 
 同一张管理卡片也支持 Cookie JSON 导入。把浏览器插件导出的 Cookie JSON 数组粘贴到
 `Cookie JSON`，再导入到目标 Profile ID。
+
+任务进入 `needs_profile` 时，控制台的验证浏览器会使用任务自己的 `profile_id`；没有显式
+Profile 或来自旧版本的 `job_<id>_<actor>` Profile 会归并到 `RK_BROWSER_DEFAULT_PROFILE`
+指定的共享 Profile。这个 Profile 的 Cookie 对所有具备 `allow_login_profile=true` 的密钥
+可见，公网多人部署时应只给可信密钥开启该权限。
 
 如果 Windows 本机已经登录 Edge、Chrome 或 Firefox，可以用本地 Python 导入器只抽取指定站点
 Cookie 并上传到服务器 Profile：

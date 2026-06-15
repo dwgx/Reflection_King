@@ -58,8 +58,14 @@ validated by the server URL policy and byte limits before they are fetched.
 
 Jobs that need a login-capable browser profile return `status:
 needs_profile`, `issue_kind: needs_profile`, and `profile_action_url`.
-Clients with a key that has `allow_login_profile=true` can open a job-scoped
-browser login session, then resume the job:
+Clients with a key that has `allow_login_profile=true` can open a browser
+login session for the job, then resume the job:
+
+The session uses the job's explicit `profile_id` when one is set. Jobs created
+without a profile, and older jobs that used legacy `job_<id>_<actor>` profile
+IDs, use the shared browser default profile. Configure that shared profile with
+`RK_BROWSER_DEFAULT_PROFILE`; it defaults to `admin_default`. Cookies in that
+profile are shared by every authorized key that can operate login profiles.
 
 ```text
 POST /api/jobs/{id}/browser-login-session
