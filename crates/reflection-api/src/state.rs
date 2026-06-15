@@ -3024,13 +3024,22 @@ mod tests {
             "http://127.0.0.1:8787",
             JobCreateOptions::default(),
         );
-        assert_eq!(shared_job_profile_id(&job, "admin_default"), "admin_default");
+        assert_eq!(
+            shared_job_profile_id(&job, "admin_default"),
+            "admin_default"
+        );
 
         job.profile_id = format!("job_{}_admin", Uuid::new_v4().simple());
-        assert_eq!(shared_job_profile_id(&job, "shared_default"), "shared_default");
+        assert_eq!(
+            shared_job_profile_id(&job, "shared_default"),
+            "shared_default"
+        );
 
         job.profile_id = "custom_profile".to_string();
-        assert_eq!(shared_job_profile_id(&job, "shared_default"), "custom_profile");
+        assert_eq!(
+            shared_job_profile_id(&job, "shared_default"),
+            "custom_profile"
+        );
     }
 
     #[test]
