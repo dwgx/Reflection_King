@@ -110,6 +110,12 @@ struct PageArchiveContext {
     total_bytes: u64,
 }
 
+struct PageArchiveDownloadContext<'a> {
+    assets_dir: &'a Path,
+    downloader: &'a Downloader,
+    settings: &'a EffectiveRuntimeSettings,
+}
+
 impl AppState {
     pub async fn new(config: AppConfig) -> Result<Self> {
         let paths = StoragePaths::new(config.storage_dir.clone());
@@ -1857,7 +1863,16 @@ impl AppState {
         }
 
         archive_css_dependencies(&assets_dir, &downloader, settings, &mut archive).await?;
-        rewrite_archived_css_files(&archive.archived_resources, &archive.rewrites).await?;
+        archive_text_dependencies(
+            &snapshot.html,
+            &snapshot.final_url,
+            &assets_dir,
+            &downloader,
+            settings,
+            &mut archive,
+        )
+        .await?;
+        rewrite_archived_text_files(&archive.archived_resources, &archive.rewrites).await?;
 
         let html = rewrite_page_html(&snapshot.html, &archive.rewrites);
         let html_path = job_dir.join("page.html");
@@ -2280,6 +2295,16 @@ async fn archive_css_dependencies(
             continue;
         };
         for reference in css_asset_references(&css) {
+            if archive.archived_resources.len() >= settings.page_archive_max_resources {
+                archive.resource_records.push(serde_json::json!({
+                    "url": reference.raw,
+                    "source": "css",
+                    "initiator_url": archived.resource.url,
+                    "skipped": true,
+                    "reason": "archive_resource_limit_reached",
+                }));
+                continue;
+            }
             if archive.total_bytes >= settings.page_archive_max_total_bytes {
                 archive.resource_records.push(serde_json::json!({
                     "url": reference.raw,
@@ -2365,20 +2390,185 @@ async fn archive_css_dependencies(
     Ok(())
 }
 
-async fn rewrite_archived_css_files(
+async fn archive_text_dependencies(
+    html: &str,
+    final_url: &str,
+    assets_dir: &Path,
+    downloader: &Downloader,
+    settings: &EffectiveRuntimeSettings,
+    archive: &mut PageArchiveContext,
+) -> Result<()> {
+    let download = PageArchiveDownloadContext {
+        assets_dir,
+        downloader,
+        settings,
+    };
+    archive_text_dependencies_from_source(
+        html,
+        final_url,
+        "html",
+        &HashMap::new(),
+        &download,
+        archive,
+    )
+    .await?;
+
+    let mut index = 0usize;
+    while index < archive.archived_resources.len() {
+        let archived = archive.archived_resources[index].clone();
+        index += 1;
+        if !page_resource_is_textual(&archived.resource) {
+            continue;
+        }
+        let Ok(text) = tokio::fs::read_to_string(&archived.asset_path).await else {
+            continue;
+        };
+        archive_text_dependencies_from_source(
+            &text,
+            &archived.resource.url,
+            "text",
+            &archived.resource.request_headers,
+            &download,
+            archive,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+async fn archive_text_dependencies_from_source(
+    text: &str,
+    base_url: &str,
+    source: &str,
+    request_headers: &HashMap<String, String>,
+    download: &PageArchiveDownloadContext<'_>,
+    archive: &mut PageArchiveContext,
+) -> Result<()> {
+    for raw in text_asset_references(text) {
+        if archive.archived_resources.len() >= download.settings.page_archive_max_resources {
+            archive.resource_records.push(serde_json::json!({
+                "url": raw,
+                "source": source,
+                "initiator_url": base_url,
+                "skipped": true,
+                "reason": "archive_resource_limit_reached",
+            }));
+            continue;
+        }
+        if archive.total_bytes >= download.settings.page_archive_max_total_bytes {
+            archive.resource_records.push(serde_json::json!({
+                "url": raw,
+                "source": source,
+                "initiator_url": base_url,
+                "skipped": true,
+                "reason": "archive_total_limit_reached",
+            }));
+            continue;
+        }
+        let Some(absolute_url) = resolve_text_asset_url(base_url, &raw) else {
+            continue;
+        };
+        if archive.archived_url_keys.contains(&absolute_url)
+            || archive.rewrites.contains_key(&absolute_url)
+        {
+            continue;
+        }
+
+        let resource = text_dependency_resource(&absolute_url, base_url, request_headers, source);
+        if let Err(error) = validate_candidate_url(&resource.url) {
+            archive.resource_records.push(page_resource_record(
+                &resource,
+                None,
+                0,
+                Some(&friendly_candidate_failure(&error)),
+            ));
+            continue;
+        }
+
+        let remaining = download
+            .settings
+            .page_archive_max_total_bytes
+            .saturating_sub(archive.total_bytes);
+        let asset_name = unique_asset_name(&resource, &mut archive.used_asset_paths);
+        let asset_path = download.assets_dir.join(&asset_name);
+        let download_result = async {
+            let headers = page_resource_download_headers(&resource, base_url);
+            download
+                .downloader
+                .download_to_file_with_headers(&resource.url, &asset_path, headers)
+                .await?;
+            let bytes = tokio::fs::metadata(&asset_path).await?.len();
+            if bytes > remaining {
+                tokio::fs::remove_file(&asset_path).await.ok();
+                return Err(RkError::DownloadTooLarge {
+                    max_bytes: remaining,
+                });
+            }
+            Ok::<u64, RkError>(bytes)
+        }
+        .await;
+
+        match download_result {
+            Ok(bytes) => {
+                archive.total_bytes = archive.total_bytes.saturating_add(bytes);
+                let relative_path = format!("assets/{asset_name}");
+                insert_page_rewrites(&mut archive.rewrites, base_url, &resource, &relative_path);
+                archive.archived_url_keys.insert(resource.url.clone());
+                archive.archived_resources.push(ArchivedPageResource {
+                    resource: resource.clone(),
+                    local_path: relative_path.clone(),
+                    asset_path,
+                });
+                archive.resource_records.push(page_resource_record(
+                    &resource,
+                    Some(&relative_path),
+                    bytes,
+                    None,
+                ));
+            }
+            Err(error) => {
+                tokio::fs::remove_file(&asset_path).await.ok();
+                insert_page_fallback_rewrites(&mut archive.rewrites, base_url, &absolute_url, &raw);
+                archive.resource_records.push(page_resource_record(
+                    &resource,
+                    None,
+                    0,
+                    Some(&friendly_candidate_failure(&error)),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn rewrite_archived_text_files(
     archived_resources: &[ArchivedPageResource],
     rewrites: &HashMap<String, String>,
 ) -> Result<()> {
     for archived in archived_resources
         .iter()
-        .filter(|archived| page_resource_is_css(&archived.resource))
+        .filter(|archived| page_resource_is_textual(&archived.resource))
     {
-        let Ok(css) = tokio::fs::read_to_string(&archived.asset_path).await else {
+        let Ok(text) = tokio::fs::read_to_string(&archived.asset_path).await else {
             continue;
         };
-        let rewritten =
-            rewrite_css_urls(&css, &archived.resource.url, &archived.local_path, rewrites);
-        if rewritten != css {
+        let rewritten = if page_resource_is_css(&archived.resource) {
+            rewrite_css_urls(
+                &text,
+                &archived.resource.url,
+                &archived.local_path,
+                rewrites,
+            )
+        } else {
+            text.clone()
+        };
+        let rewrite_base_path = if page_resource_is_css(&archived.resource) {
+            archived.local_path.as_str()
+        } else {
+            ""
+        };
+        let rewritten = rewrite_archive_text_references(&rewritten, rewrite_base_path, rewrites);
+        if rewritten != text {
             tokio::fs::write(&archived.asset_path, rewritten).await?;
         }
     }
@@ -2405,6 +2595,27 @@ fn page_resource_is_css(resource: &PageResource) -> bool {
             .ends_with(".css")
 }
 
+fn page_resource_is_textual(resource: &PageResource) -> bool {
+    let content_type = resource
+        .content_type
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let path = url::Url::parse(&resource.url)
+        .ok()
+        .map(|url| url.path().to_ascii_lowercase())
+        .unwrap_or_else(|| resource.url.to_ascii_lowercase());
+    content_type.starts_with("text/")
+        || content_type.contains("javascript")
+        || content_type.contains("json")
+        || content_type == "image/svg+xml"
+        || path.ends_with(".css")
+        || path.ends_with(".js")
+        || path.ends_with(".json")
+        || path.ends_with(".webmanifest")
+        || path.ends_with(".svg")
+}
+
 fn css_dependency_resource(
     url: &str,
     initiator_url: &str,
@@ -2423,6 +2634,25 @@ fn css_dependency_resource(
     }
 }
 
+fn text_dependency_resource(
+    url: &str,
+    initiator_url: &str,
+    initiator_headers: &HashMap<String, String>,
+    source: &str,
+) -> PageResource {
+    PageResource {
+        url: url.to_string(),
+        method: Some("GET".to_string()),
+        status: None,
+        content_type: content_type_hint_for_url(url),
+        content_length: None,
+        resource_type: Some(resource_type_hint_for_url(url).to_string()),
+        initiator_url: Some(initiator_url.to_string()),
+        request_headers: initiator_headers.clone(),
+        source: source.to_string(),
+    }
+}
+
 fn content_type_hint_for_url(url: &str) -> Option<String> {
     let path = url::Url::parse(url)
         .ok()
@@ -2438,10 +2668,18 @@ fn content_type_hint_for_url(url: &str) -> Option<String> {
         "image/jpeg"
     } else if path.ends_with(".webp") {
         "image/webp"
+    } else if path.ends_with(".avif") {
+        "image/avif"
     } else if path.ends_with(".gif") {
         "image/gif"
     } else if path.ends_with(".svg") {
         "image/svg+xml"
+    } else if path.ends_with(".ico") {
+        "image/x-icon"
+    } else if path.ends_with(".webmanifest") {
+        "application/manifest+json"
+    } else if path.ends_with(".json") {
+        "application/json"
     } else if path.ends_with(".woff2") {
         "font/woff2"
     } else if path.ends_with(".woff") {
@@ -2450,6 +2688,8 @@ fn content_type_hint_for_url(url: &str) -> Option<String> {
         "font/ttf"
     } else if path.ends_with(".otf") {
         "font/otf"
+    } else if path.ends_with(".eot") {
+        "application/vnd.ms-fontobject"
     } else {
         return None;
     };
@@ -2465,6 +2705,8 @@ fn resource_type_hint_for_url(url: &str) -> &'static str {
         "stylesheet"
     } else if path.ends_with(".js") {
         "script"
+    } else if path.ends_with(".webmanifest") {
+        "manifest"
     } else if path.ends_with(".woff2")
         || path.ends_with(".woff")
         || path.ends_with(".ttf")
@@ -2503,6 +2745,22 @@ fn insert_page_rewrites(
                 }
             }
         }
+    }
+}
+
+fn insert_page_fallback_rewrites(
+    rewrites: &mut HashMap<String, String>,
+    final_url: &str,
+    absolute_url: &str,
+    original_reference: &str,
+) {
+    if !original_reference.starts_with("http://") && !original_reference.starts_with("https://") {
+        rewrites.insert(original_reference.to_string(), absolute_url.to_string());
+        return;
+    }
+
+    if url::Url::parse(final_url).is_ok() && url::Url::parse(absolute_url).is_ok() {
+        rewrites.insert(original_reference.to_string(), absolute_url.to_string());
     }
 }
 
@@ -2640,7 +2898,7 @@ fn css_rewrite_target(
 ) -> Option<String> {
     let absolute = resolve_css_asset_url(css_url, raw)?;
     if let Some(local) = rewrites.get(&absolute) {
-        return Some(css_relative_local_path(css_local_path, local));
+        return Some(archive_relative_local_path(css_local_path, local));
     }
     if raw.starts_with("http://") || raw.starts_with("https://") {
         None
@@ -2668,13 +2926,13 @@ fn resolve_css_asset_url(css_url: &str, raw: &str) -> Option<String> {
     Some(resolved.to_string())
 }
 
-fn css_relative_local_path(css_local_path: &str, target_local_path: &str) -> String {
-    let css_dir = css_local_path
+fn archive_relative_local_path(local_path: &str, target_local_path: &str) -> String {
+    let local_dir = local_path
         .rsplit_once('/')
         .map(|(dir, _)| dir)
         .unwrap_or_default();
     let target = target_local_path
-        .strip_prefix(css_dir)
+        .strip_prefix(local_dir)
         .unwrap_or(target_local_path);
     target.trim_start_matches('/').to_string()
 }
@@ -2761,16 +3019,268 @@ fn find_ascii_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
         .position(|window| window.eq_ignore_ascii_case(needle.as_bytes()))
 }
 
-fn rewrite_page_html(html: &str, rewrites: &HashMap<String, String>) -> String {
-    let mut out = html.to_string();
-    for (url, relative) in rewrites {
-        out = out.replace(url, relative);
-        out = out.replace(&html_escape_attribute(url), relative);
-        out = out.replace(&url.replace('/', "\\/"), relative);
+fn text_asset_references(text: &str) -> Vec<String> {
+    let mut refs = Vec::new();
+    refs.extend(
+        css_asset_references(text)
+            .into_iter()
+            .map(|reference| reference.raw),
+    );
+    collect_html_attribute_references(text, &mut refs);
+    collect_quoted_asset_references(text, &mut refs);
+    refs.sort();
+    refs.dedup();
+    refs
+}
+
+fn collect_html_attribute_references(text: &str, refs: &mut Vec<String>) {
+    for attribute in ["href", "src", "poster", "manifest"] {
+        collect_named_html_attribute_references(text, attribute, refs);
     }
+    for attribute in ["srcset", "imagesrcset"] {
+        for value in html_attribute_values(text, attribute) {
+            refs.extend(parse_srcset_references(&value));
+        }
+    }
+}
+
+fn collect_named_html_attribute_references(text: &str, attribute: &str, refs: &mut Vec<String>) {
+    for value in html_attribute_values(text, attribute) {
+        let value = html_unescape_minimal(&value);
+        if looks_like_archive_asset_reference(&value) {
+            refs.push(value);
+        }
+    }
+}
+
+fn html_attribute_values(text: &str, attribute: &str) -> Vec<String> {
+    let mut values = Vec::new();
+    let mut index = 0usize;
+    while let Some(offset) = find_ascii_case_insensitive(&text[index..], attribute) {
+        let start = index + offset;
+        let before = text[..start].chars().next_back();
+        let after = text[start + attribute.len()..].chars().next();
+        if before.is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+            || after.is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+        {
+            index = start + attribute.len();
+            continue;
+        }
+        let mut cursor = skip_html_whitespace(text, start + attribute.len());
+        if !text[cursor..].starts_with('=') {
+            index = cursor;
+            continue;
+        }
+        cursor += 1;
+        cursor = skip_html_whitespace(text, cursor);
+        let Some(first) = text[cursor..].chars().next() else {
+            break;
+        };
+        if first == '\'' || first == '"' {
+            let value_start = cursor + first.len_utf8();
+            let Some(value_end) = find_css_quote_end(text, value_start, first) else {
+                break;
+            };
+            values.push(text[value_start..value_end].to_string());
+            index = value_end + first.len_utf8();
+        } else {
+            let value_start = cursor;
+            while let Some(ch) = text[cursor..].chars().next() {
+                if ch.is_whitespace() || ch == '>' {
+                    break;
+                }
+                cursor += ch.len_utf8();
+            }
+            values.push(text[value_start..cursor].to_string());
+            index = cursor;
+        }
+    }
+    values
+}
+
+fn parse_srcset_references(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .filter_map(|candidate| candidate.split_whitespace().next())
+        .map(html_unescape_minimal)
+        .filter(|candidate| looks_like_archive_asset_reference(candidate))
+        .collect()
+}
+
+fn collect_quoted_asset_references(text: &str, refs: &mut Vec<String>) {
+    let mut index = 0usize;
+    while index < text.len() {
+        let Some((quote_offset, quote)) = next_quote(&text[index..]) else {
+            break;
+        };
+        let start = index + quote_offset;
+        let value_start = start + quote.len_utf8();
+        let Some(value_end) = find_quoted_value_end(text, value_start, quote) else {
+            break;
+        };
+        if value_end.saturating_sub(value_start) <= 512 {
+            let value = text[value_start..value_end].replace("\\/", "/");
+            let value = html_unescape_minimal(&value);
+            if looks_like_archive_asset_reference(&value) {
+                refs.push(value);
+            }
+        }
+        index = value_end + quote.len_utf8();
+    }
+}
+
+fn next_quote(value: &str) -> Option<(usize, char)> {
+    value.char_indices().find_map(|(index, ch)| {
+        if ch == '\'' || ch == '"' || ch == '`' {
+            Some((index, ch))
+        } else {
+            None
+        }
+    })
+}
+
+fn find_quoted_value_end(text: &str, start: usize, quote: char) -> Option<usize> {
+    let mut escaped = false;
+    for (offset, ch) in text[start..].char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        if ch == quote {
+            return Some(start + offset);
+        }
+    }
+    None
+}
+
+fn looks_like_archive_asset_reference(value: &str) -> bool {
+    let trimmed = value.trim();
+    if trimmed.is_empty()
+        || trimmed.starts_with('#')
+        || trimmed.starts_with("data:")
+        || trimmed.starts_with("blob:")
+        || trimmed.starts_with("javascript:")
+        || trimmed.starts_with("mailto:")
+    {
+        return false;
+    }
+    if !(trimmed.starts_with('/')
+        || trimmed.starts_with("./")
+        || trimmed.starts_with("../")
+        || trimmed.starts_with("http://")
+        || trimmed.starts_with("https://")
+        || trimmed.starts_with("//"))
+    {
+        return false;
+    }
+    let path = trimmed
+        .split(['?', '#'])
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    matches!(
+        Path::new(&path)
+            .extension()
+            .and_then(|value| value.to_str()),
+        Some(
+            "css"
+                | "js"
+                | "png"
+                | "jpg"
+                | "jpeg"
+                | "webp"
+                | "gif"
+                | "svg"
+                | "ico"
+                | "avif"
+                | "woff"
+                | "woff2"
+                | "ttf"
+                | "otf"
+                | "eot"
+                | "json"
+                | "webmanifest"
+                | "mp4"
+                | "webm"
+                | "m3u8"
+        )
+    )
+}
+
+fn resolve_text_asset_url(base_url: &str, raw: &str) -> Option<String> {
+    let trimmed = html_unescape_minimal(raw).trim().to_string();
+    if !looks_like_archive_asset_reference(&trimmed) {
+        return None;
+    }
+    let base = url::Url::parse(base_url).ok()?;
+    let resolved = base.join(&trimmed).ok()?;
+    if resolved.scheme() != "http" && resolved.scheme() != "https" {
+        return None;
+    }
+    Some(resolved.to_string())
+}
+
+fn html_unescape_minimal(value: &str) -> String {
+    value
+        .replace("&amp;", "&")
+        .replace("&quot;", "\"")
+        .replace("&#34;", "\"")
+        .replace("&#x27;", "'")
+        .replace("&#39;", "'")
+}
+
+fn rewrite_page_html(html: &str, rewrites: &HashMap<String, String>) -> String {
+    let mut out = rewrite_archive_text_references(html, "", rewrites);
     out = remove_local_archive_attribute(&out, "integrity", rewrites);
     out = remove_local_archive_attribute(&out, "crossorigin", rewrites);
     out
+}
+
+fn rewrite_archive_text_references(
+    text: &str,
+    local_path: &str,
+    rewrites: &HashMap<String, String>,
+) -> String {
+    let mut out = text.to_string();
+    for (url, relative) in sorted_rewrite_pairs(rewrites) {
+        let local = archive_relative_local_path(local_path, relative);
+        for (from, to) in rewrite_variants(url, &local) {
+            out = out.replace(&from, &to);
+        }
+    }
+    out
+}
+
+fn rewrite_variants(url: &str, local: &str) -> Vec<(String, String)> {
+    let escaped_url = url.replace('/', "\\/");
+    let escaped_local = local.replace('/', "\\/");
+    let mut seen = HashSet::new();
+    [
+        (url.to_string(), local.to_string()),
+        (html_escape_attribute(url), local.to_string()),
+        (escaped_url, escaped_local),
+    ]
+    .into_iter()
+    .filter(|(from, _)| seen.insert(from.clone()))
+    .collect()
+}
+
+fn sorted_rewrite_pairs(rewrites: &HashMap<String, String>) -> Vec<(&str, &str)> {
+    let mut pairs = rewrites
+        .iter()
+        .map(|(url, relative)| (url.as_str(), relative.as_str()))
+        .collect::<Vec<_>>();
+    pairs.sort_by(|(left_url, _), (right_url, _)| {
+        right_url
+            .len()
+            .cmp(&left_url.len())
+            .then_with(|| left_url.cmp(right_url))
+    });
+    pairs
 }
 
 fn remove_local_archive_attribute(
@@ -4080,6 +4590,83 @@ mod tests {
         assert!(rewritten.contains(r#"src="assets/example.com-app.js""#));
         assert!(!rewritten.contains("integrity="));
         assert!(!rewritten.contains("crossorigin="));
+    }
+
+    #[test]
+    fn page_archive_rewrites_js_root_paths_relative_to_page() {
+        let mut rewrites = HashMap::new();
+        rewrites.insert(
+            "/static/assets/img/blue-smoke.png".to_string(),
+            "assets/neverlose.cc-blue-smoke.png".to_string(),
+        );
+
+        let js = r#"const plain="/static/assets/img/blue-smoke.png"; const escaped="\/static\/assets\/img\/blue-smoke.png";"#;
+        let rewritten = rewrite_archive_text_references(js, "", &rewrites);
+
+        assert!(rewritten.contains(r#""assets/neverlose.cc-blue-smoke.png""#));
+        assert!(!rewritten.contains("/static/assets/img/blue-smoke.png"));
+        assert!(!rewritten.contains("\\/static\\/assets\\/img\\/blue-smoke.png"));
+    }
+
+    #[test]
+    fn page_archive_collects_html_and_quoted_asset_references() {
+        let text = r#"
+<link rel="manifest" href="/static/assets/favicon/site.webmanifest">
+<img srcset="/static/assets/img/a.png 1x, /static/assets/img/b.webp 2x">
+<script>const image="/static/assets/img/blue-smoke.png";</script>
+"#;
+
+        let refs = text_asset_references(text);
+
+        assert!(refs.contains(&"/static/assets/favicon/site.webmanifest".to_string()));
+        assert!(refs.contains(&"/static/assets/img/a.png".to_string()));
+        assert!(refs.contains(&"/static/assets/img/b.webp".to_string()));
+        assert!(refs.contains(&"/static/assets/img/blue-smoke.png".to_string()));
+    }
+
+    #[test]
+    fn page_archive_rewrite_pairs_prefer_long_urls() {
+        let mut rewrites = HashMap::new();
+        rewrites.insert(
+            "https://neverlose.cc/static/assets/img/blue-smoke.png".to_string(),
+            "assets/neverlose.cc-blue-smoke.png".to_string(),
+        );
+        rewrites.insert(
+            "/static/assets/img/blue-smoke.png".to_string(),
+            "assets/neverlose.cc-blue-smoke.png".to_string(),
+        );
+
+        let rewritten = rewrite_archive_text_references(
+            "https://neverlose.cc/static/assets/img/blue-smoke.png /static/assets/img/blue-smoke.png",
+            "",
+            &rewrites,
+        );
+
+        assert_eq!(
+            rewritten,
+            "assets/neverlose.cc-blue-smoke.png assets/neverlose.cc-blue-smoke.png"
+        );
+    }
+
+    #[test]
+    fn page_archive_fallback_rewrites_root_paths_to_https() {
+        let mut rewrites = HashMap::new();
+        insert_page_fallback_rewrites(
+            &mut rewrites,
+            "https://neverlose.cc/",
+            "https://neverlose.cc/static/assets/favicon/site.webmanifest",
+            "/static/assets/favicon/site.webmanifest",
+        );
+
+        let rewritten = rewrite_page_html(
+            r#"<link rel="manifest" href="/static/assets/favicon/site.webmanifest">"#,
+            &rewrites,
+        );
+
+        assert_eq!(
+            rewritten,
+            r#"<link rel="manifest" href="https://neverlose.cc/static/assets/favicon/site.webmanifest">"#
+        );
     }
 
     #[test]
