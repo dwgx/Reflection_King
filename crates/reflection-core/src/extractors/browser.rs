@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::{observability::BrowserSession, Result};
+use crate::{browser_probe::ProbeSessionOptions, observability::BrowserSession, Result};
 
 use super::{ExtractContext, ExtractResult, SourceExtractor};
 
@@ -31,6 +31,13 @@ impl SourceExtractor for BrowserExtractor {
         };
 
         let started_at = OffsetDateTime::now_utc();
+        let options = ProbeSessionOptions {
+            capture_cdp: ctx.page_archive_capture_cdp_enabled,
+            save_mhtml: ctx.page_archive_save_mhtml_enabled,
+            save_har: ctx.page_archive_save_har_enabled,
+            cdp_body_max_bytes: ctx.page_archive_cdp_body_max_bytes,
+            cdp_body_total_bytes: ctx.page_archive_cdp_body_total_bytes,
+        };
         let outcome = browser
             .probe_session(
                 ctx.job_id,
@@ -38,11 +45,7 @@ impl SourceExtractor for BrowserExtractor {
                 &ctx.profile_id,
                 ctx.platform_hint,
                 &ctx.output_names(),
-                ctx.page_archive_capture_cdp_enabled,
-                ctx.page_archive_save_mhtml_enabled,
-                ctx.page_archive_save_har_enabled,
-                ctx.page_archive_cdp_body_max_bytes,
-                ctx.page_archive_cdp_body_total_bytes,
+                options,
             )
             .await?;
 

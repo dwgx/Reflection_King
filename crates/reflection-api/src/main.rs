@@ -12,12 +12,12 @@ use axum::{
 };
 use reflection_core::{
     models::{
-        ArchiveTreeView,
         normalize_bitrate, normalize_outputs, normalize_profile_id, ApiKeyRecord, ApiKeyRole,
-        ApiKeyView, AuthMode, CacheCleanupRequest, CacheCleanupView, CacheInventoryView,
-        ClearJobsResponse, CreateJobRequest, CreateUserKeyRequest, CreatedUserKeyResponse,
-        DiscoveryMode, HiddenJobBatchView, JobCreateOptions, JobRecord, JobView, OutputKind,
-        PlatformHint, RestoreJobsResponse, SelectCandidatesRequest, UpdateRuntimeSettingsRequest,
+        ApiKeyView, ArchiveTreeView, AuthMode, CacheCleanupRequest, CacheCleanupView,
+        CacheInventoryView, ClearJobsResponse, CreateJobRequest, CreateUserKeyRequest,
+        CreatedUserKeyResponse, DiscoveryMode, HiddenJobBatchView, JobCreateOptions, JobRecord,
+        JobView, OutputKind, PlatformHint, RestoreJobsResponse, SelectCandidatesRequest,
+        UpdateRuntimeSettingsRequest,
     },
     AppConfig, RkError,
 };
@@ -520,7 +520,9 @@ async fn get_archive_tree(
     let principal = authorize(&state, &headers).await?;
     ensure_job_access(&state, &principal, id).await?;
     let settings = state.runtime_settings_view().await?;
-    Ok(Json(state.archive_tree(id, &settings.public_base_url).await?))
+    Ok(Json(
+        state.archive_tree(id, &settings.public_base_url).await?,
+    ))
 }
 
 async fn get_archive_file(
@@ -532,7 +534,7 @@ async fn get_archive_file(
     let principal = authorize(&state, &headers).await?;
     ensure_job_access(&state, &principal, id).await?;
     let path = state.archive_file_path(id, &query.path).await?;
-    let mut file = File::open(&path).await?;
+    let file = File::open(&path).await?;
     let file_len = file.metadata().await?.len();
     if file_len == 0 {
         return Err(RkError::Source("archive file is empty".to_string()).into());

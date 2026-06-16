@@ -1010,12 +1010,8 @@ impl JobStore {
         }
         if let Some(value) = request.page_archive_cdp_body_max_mb {
             validate_range("page_archive_cdp_body_max_mb", value, 1, 256)?;
-            upsert_runtime_setting(
-                &mut tx,
-                "page_archive_cdp_body_max_mb",
-                &value.to_string(),
-            )
-            .await?;
+            upsert_runtime_setting(&mut tx, "page_archive_cdp_body_max_mb", &value.to_string())
+                .await?;
         }
         if let Some(value) = request.page_archive_cdp_body_total_mb {
             validate_range("page_archive_cdp_body_total_mb", value, 1, 4_000)?;
@@ -1028,12 +1024,8 @@ impl JobStore {
         }
         if let Some(value) = request.cache_cleanup_min_age_hours {
             validate_range("cache_cleanup_min_age_hours", value, 1, 8_760)?;
-            upsert_runtime_setting(
-                &mut tx,
-                "cache_cleanup_min_age_hours",
-                &value.to_string(),
-            )
-            .await?;
+            upsert_runtime_setting(&mut tx, "cache_cleanup_min_age_hours", &value.to_string())
+                .await?;
         }
         tx.commit().await?;
         Ok(())

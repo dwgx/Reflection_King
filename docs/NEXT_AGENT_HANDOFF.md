@@ -98,25 +98,36 @@ raw URL，例如 VRChat 视频播放器。
 本轮本地验证：
 
 ```powershell
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
 npm.cmd --prefix apps/reflection-dashboard run build
 npm.cmd --prefix services/reflection-browser run check
 npm.cmd --prefix services/reflection-browser run build
 git diff --check
 ```
 
+本轮已按用户要求把 Rust 独立安装到 `D:\Software\Rust`，没有自动修改 PATH。
+本地验证使用：
+
+- `RUSTUP_HOME=D:\Software\Rust\rustup`
+- `CARGO_HOME=D:\Software\Rust\cargo`
+- `D:\Software\Rust\cargo\bin\cargo.exe`
+- `D:\Software\Microsoft Visual Studio\18\Community\Common7\Tools\VsDevCmd.bat`
+
+`scripts/check.ps1` 已更新为能自动发现上述本机 Rust 和 VS Community 路径。
+
 直接 sidecar smoke 使用临时 Profile 抓取 `https://example.com/`，确认 HTML、
 MHTML、HAR 均返回且 warnings 为空。临时 Profile 已清理。
 
 未完成验证：
 
-- 当前 Windows 本机没有 `cargo`、`rustc`、Docker、Bash、WSL，因此未能本地运行
-  Rust fmt/clippy/test、Docker build 或 Compose health。
-- 下一位 Agent 必须优先在有 Rust 工具链的环境跑：
+- 当前 Windows 本机仍没有 Docker、Bash、WSL，因此未能本地运行 Docker build 或
+  Compose health。
+- 下一位 Agent 若要复验本轮代码，可直接运行：
 
 ```powershell
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+.\scripts\check.ps1
 ```
 
 ### 后端
@@ -475,7 +486,8 @@ SQLite、storage 或 SSH 私密信息。
 如果改代码，跑 cargo fmt/test/clippy、browser npm check、dashboard npm build。
 如果改部署，跑 shell 语法和部署验证。若改平台解析，必须跑 live_smoke 和
 vrchat_raw_url_check，并更新 evidence。
-如果继续本轮网页归档/缓存工作，优先验证 Rust fmt/clippy/test，因为上一轮本机没有 cargo。
+如果继续本轮网页归档/缓存工作，先运行 `.\scripts\check.ps1`；当前本机 Rust 在
+`D:\Software\Rust`，但 Docker 验证仍需要有 Docker 的环境。
 
 禁区：不绕过 DRM、验证码、付费墙、登录墙、年龄门槛、区域限制或访问控制；
 不把浏览器看到的 URL 当成可播放成功；不让 failed/DRM/region_blocked/ad-risk 候选进入转码队列。

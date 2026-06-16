@@ -40,6 +40,27 @@ pub struct ProbeRequest {
     pub cdp_body_total_bytes: u64,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct ProbeSessionOptions {
+    pub capture_cdp: bool,
+    pub save_mhtml: bool,
+    pub save_har: bool,
+    pub cdp_body_max_bytes: u64,
+    pub cdp_body_total_bytes: u64,
+}
+
+impl Default for ProbeSessionOptions {
+    fn default() -> Self {
+        Self {
+            capture_cdp: true,
+            save_mhtml: true,
+            save_har: true,
+            cdp_body_max_bytes: 2 * 1024 * 1024,
+            cdp_body_total_bytes: 64 * 1024 * 1024,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ProbeResponse {
     #[serde(rename = "finalUrl")]
@@ -315,11 +336,7 @@ impl BrowserProbeClient {
                 profile_id,
                 platform_hint,
                 outputs,
-                true,
-                true,
-                true,
-                2 * 1024 * 1024,
-                64 * 1024 * 1024,
+                ProbeSessionOptions::default(),
             )
             .await?
             .candidates)
@@ -335,22 +352,18 @@ impl BrowserProbeClient {
         profile_id: &str,
         platform_hint: PlatformHint,
         outputs: &[String],
-        capture_cdp: bool,
-        save_mhtml: bool,
-        save_har: bool,
-        cdp_body_max_bytes: u64,
-        cdp_body_total_bytes: u64,
+        options: ProbeSessionOptions,
     ) -> Result<BrowserProbeOutcome> {
         let request = ProbeRequest {
             url: url.to_string(),
             profile_id: profile_id.to_string(),
             platform_hint: platform_hint.as_str().to_string(),
             outputs: outputs.to_vec(),
-            capture_cdp,
-            save_mhtml,
-            save_har,
-            cdp_body_max_bytes,
-            cdp_body_total_bytes,
+            capture_cdp: options.capture_cdp,
+            save_mhtml: options.save_mhtml,
+            save_har: options.save_har,
+            cdp_body_max_bytes: options.cdp_body_max_bytes,
+            cdp_body_total_bytes: options.cdp_body_total_bytes,
         };
         let response = self
             .request(reqwest::Method::POST, format!("{}/probe", self.base_url))

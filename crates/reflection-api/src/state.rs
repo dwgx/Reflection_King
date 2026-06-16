@@ -694,7 +694,11 @@ impl AppState {
         self.job_store.list_artifacts(id).await
     }
 
-    pub async fn archive_tree(&self, job_id: Uuid, public_base_url: &str) -> Result<ArchiveTreeView> {
+    pub async fn archive_tree(
+        &self,
+        job_id: Uuid,
+        public_base_url: &str,
+    ) -> Result<ArchiveTreeView> {
         let page_dir = self.paths.public_job_dir(job_id).join("page");
         let public_base_url = public_base_url.trim_end_matches('/');
         let files = archive_file_list(&page_dir, job_id, public_base_url).await?;
@@ -2125,12 +2129,8 @@ impl AppState {
         }
 
         let archive_tree_path = metadata_dir.join("archive-tree.json");
-        let archive_tree = archive_file_list(
-            &page_dir,
-            job.id,
-            settings.public_base_url.as_str(),
-        )
-        .await?;
+        let archive_tree =
+            archive_file_list(&page_dir, job.id, settings.public_base_url.as_str()).await?;
         tokio::fs::write(
             &archive_tree_path,
             serde_json::to_vec_pretty(&archive_tree)?,
@@ -4416,7 +4416,10 @@ fn write_warc_response_record<W: Write>(
             ("WARC-Target-URI", resource.url.clone()),
             ("WARC-Date", captured_at.to_string()),
             ("WARC-Record-ID", format!("<urn:uuid:{}>", Uuid::new_v4())),
-            ("Content-Type", "application/http; msgtype=response".to_string()),
+            (
+                "Content-Type",
+                "application/http; msgtype=response".to_string(),
+            ),
             ("Content-Length", http.len().to_string()),
         ],
         &http,
@@ -4532,10 +4535,7 @@ fn collect_archive_files_blocking(
             name,
             content_type,
             bytes: metadata.len(),
-            modified_at: metadata
-                .modified()
-                .ok()
-                .map(system_time_to_offset_datetime),
+            modified_at: metadata.modified().ok().map(system_time_to_offset_datetime),
         });
     }
     Ok(())
@@ -4576,7 +4576,9 @@ fn normalize_archive_relative_path(value: &str) -> Result<PathBuf> {
 async fn canonical_existing_dir_async(path: &Path) -> Result<PathBuf> {
     let canonical = tokio::fs::canonicalize(path).await?;
     if !tokio::fs::metadata(&canonical).await?.is_dir() {
-        return Err(RkError::BadRequest("archive directory is missing".to_string()));
+        return Err(RkError::BadRequest(
+            "archive directory is missing".to_string(),
+        ));
     }
     Ok(canonical)
 }
@@ -5233,8 +5235,7 @@ impl EffectiveRuntimeSettings {
         );
         let page_archive_max_resource_mb = setting_u64(values, "page_archive_max_resource_mb", 16);
         let page_archive_max_total_mb = setting_u64(values, "page_archive_max_total_mb", 200);
-        let page_archive_cdp_body_max_mb =
-            setting_u64(values, "page_archive_cdp_body_max_mb", 2);
+        let page_archive_cdp_body_max_mb = setting_u64(values, "page_archive_cdp_body_max_mb", 2);
         let page_archive_cdp_body_total_mb =
             setting_u64(values, "page_archive_cdp_body_total_mb", 64);
         Self {
@@ -5264,7 +5265,11 @@ impl EffectiveRuntimeSettings {
                 "page_archive_save_mhtml_enabled",
                 true,
             ),
-            page_archive_save_har_enabled: setting_bool(values, "page_archive_save_har_enabled", true),
+            page_archive_save_har_enabled: setting_bool(
+                values,
+                "page_archive_save_har_enabled",
+                true,
+            ),
             page_archive_save_warc_enabled: setting_bool(
                 values,
                 "page_archive_save_warc_enabled",
@@ -6420,8 +6425,11 @@ mod tests {
         let orphan_public_job = Uuid::new_v4().to_string();
 
         std::fs::create_dir_all(paths.tmp_dir().join(&active_job)).unwrap();
-        std::fs::write(paths.tmp_dir().join(&active_job).join("input.media"), b"active")
-            .unwrap();
+        std::fs::write(
+            paths.tmp_dir().join(&active_job).join("input.media"),
+            b"active",
+        )
+        .unwrap();
         std::fs::create_dir_all(paths.tmp_dir().join(&finished_job)).unwrap();
         std::fs::write(
             paths.tmp_dir().join(&finished_job).join("input.media"),

@@ -8,8 +8,8 @@ HTML preview into an inspectable frontend package with resource provenance and
 admin cache cleanup controls.
 
 The change is not a platform-smoke result. It is implementation evidence plus
-local TypeScript/browser-sidecar verification. Rust verification is still
-required in CI or on a host with `cargo`.
+local Rust, TypeScript, and browser-sidecar verification. Docker verification is
+still required on a host with Docker.
 
 ## Implemented Behavior
 
@@ -54,34 +54,40 @@ Two P2 review findings were fixed before handoff:
 Commands that passed locally:
 
 ```powershell
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
 npm.cmd --prefix apps/reflection-dashboard run build
 npm.cmd --prefix services/reflection-browser run check
 npm.cmd --prefix services/reflection-browser run build
 git diff --check
 ```
 
+Rust was installed locally for this verification under `D:\Software\Rust`
+without auto-modifying PATH. The checks used `RUSTUP_HOME=D:\Software\Rust\rustup`,
+`CARGO_HOME=D:\Software\Rust\cargo`, and the existing Visual Studio Community
+MSVC toolchain under `D:\Software\Microsoft Visual Studio\18\Community`.
+
+The Rust pass also fixed two verification findings:
+
+- `BrowserProbeClient::probe_session` exceeded clippy's argument limit after
+  adding CDP/MHTML/HAR budget controls. The archive capture controls are now
+  grouped in `ProbeSessionOptions`.
+- `GET /api/jobs/{id}/archive/file` opened its file handle as mutable even
+  though it was only used for metadata and streaming construction; the unused
+  `mut` was removed.
+
 Direct sidecar smoke also passed against `https://example.com/` using a
 temporary browser profile. The probe returned HTML, MHTML, HAR, one page
 resource, and no warnings. The temporary profile directory was removed after
 the smoke.
 
-`git diff --check` only reported the existing CRLF/LF normalization warning for
-`apps/reflection-dashboard/src/main.tsx`.
+`git diff --check` passed.
 
 ## Verification Not Performed
 
-Rust checks were not run locally because this Windows host does not have
-`cargo`, `rustc`, Docker, Bash, or WSL installed.
-
-Required follow-up checks:
-
-```powershell
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-```
-
-If Docker is available:
+Docker checks were not run locally because this Windows host does not have
+Docker installed. Required follow-up checks on a Docker host:
 
 ```powershell
 docker build --progress=plain -t reflection-king:ci .
