@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     ffi::OsStr,
     io::{Seek, Write},
     path::{Path, PathBuf},
@@ -18,10 +18,12 @@ use reflection_core::{
     extractors::{ExtractContext, SourceResolver},
     job_store::JobStore,
     models::{
-        ApiKeyRecord, ApiKeyView, ArtifactView, AuthMode, CandidateKind, CandidateProtection,
-        CandidateValidationState, ClearJobsResponse, CreateUserKeyRequest, CreatedUserKeyResponse,
-        DiscoveryMode, HiddenJobBatchView, JobRecord, JobStatus, JobView, MediaCandidate,
-        OutputKind, RestoreJobsResponse, RotatedAdminKeyResponse, RuntimeSettingsView,
+        ApiKeyRecord, ApiKeyView, ArchiveFileView, ArchiveTreeView, ArtifactView, AuthMode,
+        CacheCategoryView, CacheCleanupEntryView, CacheCleanupRequest, CacheCleanupView,
+        CacheInventoryView, CandidateKind, CandidateProtection, CandidateValidationState,
+        ClearJobsResponse, CreateUserKeyRequest, CreatedUserKeyResponse, DiscoveryMode,
+        HiddenJobBatchView, JobRecord, JobStatus, JobView, MediaCandidate, OutputKind,
+        RestoreJobsResponse, RotatedAdminKeyResponse, RuntimeSettingsView,
         UpdateRuntimeSettingsRequest,
     },
     observability::{ErrorClass, JobTrace, PipelineEvent, PipelineEventType},
@@ -692,6 +694,89 @@ impl AppState {
         self.job_store.list_artifacts(id).await
     }
 
+    pub async fn archive_tree(&self, job_id: Uuid, public_base_url: &str) -> Result<ArchiveTreeView> {
+        let page_dir = self.paths.public_job_dir(job_id).join("page");
+        let public_base_url = public_base_url.trim_end_matches('/');
+        let files = archive_file_list(&page_dir, job_id, public_base_url).await?;
+        Ok(ArchiveTreeView {
+            job_id,
+            base_url: format!("{}/api/jobs/{job_id}/archive/file", public_base_url),
+            files,
+        })
+    }
+
+    pub async fn archive_file_path(&self, job_id: Uuid, relative_path: &str) -> Result<PathBuf> {
+        let page_dir = self.paths.public_job_dir(job_id).join("page");
+        safe_archive_file_path(&page_dir, relative_path).await
+    }
+
+    pub async fn cache_inventory(&self) -> Result<CacheInventoryView> {
+        cache_inventory_for_paths(&self.paths).await
+    }
+
+    pub async fn cache_cleanup_preview(
+        &self,
+        request: CacheCleanupRequest,
+    ) -> Result<CacheCleanupView> {
+        self.cache_cleanup_inner(request, true).await
+    }
+
+    pub async fn cache_cleanup(&self, request: CacheCleanupRequest) -> Result<CacheCleanupView> {
+        if !request.confirm {
+            return Err(RkError::BadRequest(
+                "cache cleanup requires confirm=true".to_string(),
+            ));
+        }
+        self.cache_cleanup_inner(request, false).await
+    }
+
+    async fn cache_cleanup_inner(
+        &self,
+        request: CacheCleanupRequest,
+        dry_run: bool,
+    ) -> Result<CacheCleanupView> {
+        let settings = self.runtime_settings().await?;
+        let min_age_hours = request
+            .min_age_hours
+            .unwrap_or(settings.cache_cleanup_min_age_hours);
+        validate_cache_cleanup_min_age(min_age_hours)?;
+        let known_job_ids = self.job_store.all_job_id_strings().await?;
+        let active_job_ids = self.job_store.active_job_id_strings().await?;
+        let entries =
+            cache_cleanup_candidates(&self.paths, min_age_hours, known_job_ids, active_job_ids)
+                .await?;
+        let total_bytes = entries.iter().map(|entry| entry.bytes).sum::<u64>();
+        let mut out = Vec::with_capacity(entries.len());
+        let mut deleted_bytes = 0u64;
+        for entry in entries {
+            let mut deleted = false;
+            if !dry_run {
+                if let Err(error) = tokio::fs::remove_dir_all(&entry.path).await {
+                    warn!(
+                        path = %entry.path.display(),
+                        "cache cleanup failed to remove directory: {error}"
+                    );
+                } else {
+                    deleted = true;
+                    deleted_bytes = deleted_bytes.saturating_add(entry.bytes);
+                }
+            }
+            out.push(CacheCleanupEntryView {
+                path: entry.path.display().to_string(),
+                bytes: entry.bytes,
+                reason: entry.reason,
+                deleted,
+            });
+        }
+        Ok(CacheCleanupView {
+            dry_run,
+            min_age_hours,
+            total_bytes,
+            deleted_bytes,
+            entries: out,
+        })
+    }
+
     pub async fn select_candidates(
         &self,
         job_id: Uuid,
@@ -873,6 +958,11 @@ impl AppState {
             discovery: job.discovery,
             platform_hint: job.platform_hint,
             auth_mode: job.auth_mode,
+            page_archive_capture_cdp_enabled: settings.page_archive_capture_cdp_enabled,
+            page_archive_save_mhtml_enabled: settings.page_archive_save_mhtml_enabled,
+            page_archive_save_har_enabled: settings.page_archive_save_har_enabled,
+            page_archive_cdp_body_max_bytes: settings.page_archive_cdp_body_max_bytes,
+            page_archive_cdp_body_total_bytes: settings.page_archive_cdp_body_total_bytes,
             yt_dlp: self.yt_dlp_probe_for_settings(&settings),
             external_tools: self.external_tool_probes_for_settings(&settings),
             browser: self.browser_probe.clone(),
@@ -1903,17 +1993,29 @@ impl AppState {
         rewrite_archived_text_files(&archive.archived_resources, &archive.rewrites).await?;
 
         let html = rewrite_page_html(&snapshot.html, &archive.rewrites);
-        let html_path = job_dir.join("page.html");
-        tokio::fs::write(&html_path, html).await?;
-        tokio::fs::copy(&html_path, page_dir.join("index.html")).await?;
+        let index_path = page_dir.join("index.html");
+        tokio::fs::write(&index_path, html).await?;
         let inline_html =
             inline_page_html_assets(&page_dir.join("index.html"), &page_dir, &snapshot.final_url)
                 .await?;
-        tokio::fs::write(page_dir.join("index.inline.html"), inline_html).await?;
+        let inline_path = page_dir.join("index.inline.html");
+        tokio::fs::write(&inline_path, inline_html).await?;
+        let html_path = job_dir.join("page.html");
+        tokio::fs::copy(&inline_path, &html_path).await?;
         self.insert_artifact(
             job.id,
             OutputKind::PageHtml,
             html_path.clone(),
+            "text/html; charset=utf-8",
+            settings,
+        )
+        .await?;
+        let raw_html_path = job_dir.join("index.html");
+        tokio::fs::copy(&index_path, &raw_html_path).await?;
+        self.insert_artifact(
+            job.id,
+            OutputKind::PageHtml,
+            raw_html_path,
             "text/html; charset=utf-8",
             settings,
         )
@@ -1963,6 +2065,75 @@ impl AppState {
             metadata_path.clone(),
             "application/json",
             settings,
+        )
+        .await?;
+
+        if settings.page_archive_save_mhtml_enabled {
+            if let Some(mhtml) = decode_mhtml_snapshot(snapshot)? {
+                let mhtml_path = job_dir.join("archive.mhtml");
+                tokio::fs::write(&mhtml_path, &mhtml).await?;
+                tokio::fs::copy(&mhtml_path, metadata_dir.join("archive.mhtml")).await?;
+                self.insert_artifact(
+                    job.id,
+                    OutputKind::PageHtml,
+                    mhtml_path,
+                    "multipart/related",
+                    settings,
+                )
+                .await?;
+            }
+        }
+
+        if settings.page_archive_save_har_enabled {
+            if let Some(har) = &snapshot.har_json {
+                let har_path = job_dir.join("archive.har");
+                tokio::fs::write(&har_path, serde_json::to_vec_pretty(har)?).await?;
+                tokio::fs::copy(&har_path, metadata_dir.join("archive.har")).await?;
+                self.insert_artifact(
+                    job.id,
+                    OutputKind::PageHtml,
+                    har_path,
+                    "application/json",
+                    settings,
+                )
+                .await?;
+            }
+        }
+
+        if settings.page_archive_save_warc_enabled {
+            let warc_path = job_dir.join("archive.warc");
+            let warc_bytes = write_warc_archive(
+                &snapshot.final_url,
+                &snapshot.captured_at,
+                &archive.archived_resources,
+                &warc_path,
+            )
+            .await?;
+            if warc_bytes > 0 {
+                tokio::fs::copy(&warc_path, metadata_dir.join("archive.warc")).await?;
+                self.insert_artifact(
+                    job.id,
+                    OutputKind::PageHtml,
+                    warc_path,
+                    "application/warc",
+                    settings,
+                )
+                .await?;
+            } else {
+                tokio::fs::remove_file(&warc_path).await.ok();
+            }
+        }
+
+        let archive_tree_path = metadata_dir.join("archive-tree.json");
+        let archive_tree = archive_file_list(
+            &page_dir,
+            job.id,
+            settings.public_base_url.as_str(),
+        )
+        .await?;
+        tokio::fs::write(
+            &archive_tree_path,
+            serde_json::to_vec_pretty(&archive_tree)?,
         )
         .await?;
 
@@ -2746,8 +2917,14 @@ fn css_dependency_resource(
         content_length: None,
         resource_type: Some(resource_type_hint_for_url(url).to_string()),
         initiator_url: Some(initiator_url.to_string()),
+        initiator_type: Some("css".to_string()),
+        frame_url: Some(initiator_url.to_string()),
+        redirect_chain: Vec::new(),
+        served_from_cache: false,
+        from_service_worker: false,
         request_headers: initiator_headers.clone(),
         body_base64: None,
+        body_source: None,
         source: "css".to_string(),
     }
 }
@@ -2766,8 +2943,14 @@ fn text_dependency_resource(
         content_length: None,
         resource_type: Some(resource_type_hint_for_url(url).to_string()),
         initiator_url: Some(initiator_url.to_string()),
+        initiator_type: Some(source.to_string()),
+        frame_url: Some(initiator_url.to_string()),
+        redirect_chain: Vec::new(),
+        served_from_cache: false,
+        from_service_worker: false,
         request_headers: initiator_headers.clone(),
         body_base64: None,
+        body_source: None,
         source: source.to_string(),
     }
 }
@@ -4097,22 +4280,185 @@ fn page_resource_record(
     bytes: u64,
     skipped_reason: Option<&str>,
 ) -> serde_json::Value {
+    let document_origin = resource
+        .initiator_url
+        .as_deref()
+        .and_then(url_origin)
+        .or_else(|| resource.frame_url.as_deref().and_then(url_origin));
+    let resource_origin = url_origin(&resource.url);
+    let same_origin = document_origin
+        .as_deref()
+        .zip(resource_origin.as_deref())
+        .map(|(left, right)| left == right)
+        .unwrap_or(false);
     serde_json::json!({
         "url": &resource.url,
+        "original_url": &resource.url,
+        "final_url": &resource.url,
+        "document_origin": document_origin,
+        "resource_origin": resource_origin,
+        "same_origin": same_origin,
         "method": &resource.method,
         "status": resource.status,
         "content_type": &resource.content_type,
         "content_length": resource.content_length,
         "resource_type": &resource.resource_type,
+        "initiator_type": &resource.initiator_type,
         "initiator_url": &resource.initiator_url,
+        "frame_url": &resource.frame_url,
+        "redirect_chain": &resource.redirect_chain,
+        "served_from_cache": resource.served_from_cache,
+        "from_service_worker": resource.from_service_worker,
         "source": &resource.source,
+        "capture_sources": resource.source.split(',').map(str::trim).filter(|value| !value.is_empty()).collect::<Vec<_>>(),
         "request_headers": &resource.request_headers,
         "body_cached": resource.body_base64.is_some(),
+        "body_source": &resource.body_source,
         "local_path": local_path,
         "bytes": bytes,
         "skipped": skipped_reason.is_some(),
         "reason": skipped_reason,
     })
+}
+
+fn url_origin(value: &str) -> Option<String> {
+    let url = url::Url::parse(value).ok()?;
+    let host = url.host_str()?;
+    Some(match url.port() {
+        Some(port) => format!("{}://{}:{}", url.scheme(), host, port),
+        None => format!("{}://{}", url.scheme(), host),
+    })
+}
+
+fn decode_mhtml_snapshot(snapshot: &PageSnapshot) -> Result<Option<Vec<u8>>> {
+    let Some(value) = &snapshot.mhtml_base64 else {
+        return Ok(None);
+    };
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(value)
+        .map_err(|error| RkError::Source(format!("invalid mhtml data: {error}")))?;
+    Ok(Some(bytes))
+}
+
+async fn write_warc_archive(
+    final_url: &str,
+    captured_at: &str,
+    archived_resources: &[ArchivedPageResource],
+    path: &Path,
+) -> Result<u64> {
+    let final_url = final_url.to_string();
+    let captured_at = captured_at.to_string();
+    let resources = archived_resources.to_vec();
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || -> Result<u64> {
+        let file = std::fs::File::create(&path)?;
+        let mut writer = std::io::BufWriter::new(file);
+        let mut count = 0u64;
+        write_warc_info_record(&mut writer, &final_url, &captured_at)?;
+        for resource in resources {
+            let bytes = std::fs::read(&resource.asset_path)?;
+            write_warc_response_record(&mut writer, &resource.resource, &bytes, &captured_at)?;
+            count = count.saturating_add(1);
+        }
+        writer.flush()?;
+        Ok(count)
+    })
+    .await
+    .map_err(|error| RkError::Source(format!("warc task failed: {error}")))?
+}
+
+fn write_warc_info_record<W: Write>(
+    writer: &mut W,
+    final_url: &str,
+    captured_at: &str,
+) -> Result<()> {
+    let mut fields = BTreeMap::new();
+    fields.insert("software".to_string(), "Reflection King".to_string());
+    fields.insert("format".to_string(), "WARC File Format 1.1".to_string());
+    fields.insert("final-url".to_string(), final_url.to_string());
+    let payload = serde_json::to_vec_pretty(&fields)?;
+    write_warc_record(
+        writer,
+        &[
+            ("WARC-Type", "warcinfo".to_string()),
+            ("WARC-Date", captured_at.to_string()),
+            ("WARC-Record-ID", format!("<urn:uuid:{}>", Uuid::new_v4())),
+            ("Content-Type", "application/json".to_string()),
+            ("Content-Length", payload.len().to_string()),
+        ],
+        &payload,
+    )
+}
+
+fn write_warc_response_record<W: Write>(
+    writer: &mut W,
+    resource: &PageResource,
+    body: &[u8],
+    captured_at: &str,
+) -> Result<()> {
+    let status = resource.status.unwrap_or(200);
+    let reason = http_reason_phrase(status);
+    let mut http = Vec::new();
+    write!(
+        http,
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: {}\r\nContent-Length: {}\r\n\r\n",
+        resource
+            .content_type
+            .as_deref()
+            .unwrap_or("application/octet-stream"),
+        body.len()
+    )?;
+    http.extend_from_slice(body);
+    write_warc_record(
+        writer,
+        &[
+            ("WARC-Type", "response".to_string()),
+            ("WARC-Target-URI", resource.url.clone()),
+            ("WARC-Date", captured_at.to_string()),
+            ("WARC-Record-ID", format!("<urn:uuid:{}>", Uuid::new_v4())),
+            ("Content-Type", "application/http; msgtype=response".to_string()),
+            ("Content-Length", http.len().to_string()),
+        ],
+        &http,
+    )
+}
+
+fn write_warc_record<W: Write>(
+    writer: &mut W,
+    headers: &[(&str, String)],
+    payload: &[u8],
+) -> Result<()> {
+    writer.write_all(b"WARC/1.1\r\n")?;
+    for (name, value) in headers {
+        writer.write_all(name.as_bytes())?;
+        writer.write_all(b": ")?;
+        writer.write_all(value.as_bytes())?;
+        writer.write_all(b"\r\n")?;
+    }
+    writer.write_all(b"\r\n")?;
+    writer.write_all(payload)?;
+    writer.write_all(b"\r\n\r\n")?;
+    Ok(())
+}
+
+fn http_reason_phrase(status: u16) -> &'static str {
+    match status {
+        200 => "OK",
+        201 => "Created",
+        204 => "No Content",
+        206 => "Partial Content",
+        301 => "Moved Permanently",
+        302 => "Found",
+        304 => "Not Modified",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        404 => "Not Found",
+        500 => "Internal Server Error",
+        502 => "Bad Gateway",
+        503 => "Service Unavailable",
+        _ => "OK",
+    }
 }
 
 fn decode_data_url(value: &Option<String>) -> Result<Option<Vec<u8>>> {
@@ -4129,6 +4475,408 @@ fn decode_data_url(value: &Option<String>) -> Result<Option<Vec<u8>>> {
         .decode(payload)
         .map_err(|error| RkError::Source(format!("invalid screenshot data url: {error}")))?;
     Ok(Some(bytes))
+}
+
+async fn archive_file_list(
+    page_dir: &Path,
+    job_id: Uuid,
+    public_base_url: &str,
+) -> Result<Vec<ArchiveFileView>> {
+    let page_dir = page_dir.to_path_buf();
+    let public_base_url = public_base_url.trim_end_matches('/').to_string();
+    tokio::task::spawn_blocking(move || -> Result<Vec<ArchiveFileView>> {
+        let root = canonical_existing_dir(&page_dir)?;
+        let mut files = Vec::new();
+        collect_archive_files_blocking(&root, &root, job_id, &public_base_url, &mut files)?;
+        files.sort_by(|left, right| left.path.cmp(&right.path));
+        Ok(files)
+    })
+    .await
+    .map_err(|error| RkError::Source(format!("archive tree task failed: {error}")))?
+}
+
+fn collect_archive_files_blocking(
+    root: &Path,
+    dir: &Path,
+    job_id: Uuid,
+    public_base_url: &str,
+    out: &mut Vec<ArchiveFileView>,
+) -> Result<()> {
+    let mut entries = std::fs::read_dir(dir)?
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .collect::<Vec<_>>();
+    entries.sort();
+    for path in entries {
+        if path.is_dir() {
+            collect_archive_files_blocking(root, &path, job_id, public_base_url, out)?;
+            continue;
+        }
+        let relative = path
+            .strip_prefix(root)
+            .map_err(|error| RkError::Source(format!("archive path error: {error}")))?;
+        let relative_path = relative.to_string_lossy().replace('\\', "/");
+        let metadata = std::fs::metadata(&path)?;
+        let name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or(&relative_path)
+            .to_string();
+        let content_type = content_type_for_path(&relative_path).to_string();
+        out.push(ArchiveFileView {
+            media_url: format!(
+                "{public_base_url}/api/jobs/{job_id}/archive/file?path={}",
+                percent_encode_archive_path(&relative_path)
+            ),
+            previewable: archive_file_previewable(&content_type),
+            path: relative_path,
+            name,
+            content_type,
+            bytes: metadata.len(),
+            modified_at: metadata
+                .modified()
+                .ok()
+                .map(system_time_to_offset_datetime),
+        });
+    }
+    Ok(())
+}
+
+async fn safe_archive_file_path(page_dir: &Path, relative_path: &str) -> Result<PathBuf> {
+    let relative_path = normalize_archive_relative_path(relative_path)?;
+    let root = canonical_existing_dir_async(page_dir).await?;
+    let target = root.join(relative_path);
+    let canonical = tokio::fs::canonicalize(&target)
+        .await
+        .map_err(|_| RkError::BadRequest("invalid archive file path".to_string()))?;
+    if !canonical.starts_with(&root) || !tokio::fs::metadata(&canonical).await?.is_file() {
+        return Err(RkError::BadRequest("invalid archive file path".to_string()));
+    }
+    Ok(canonical)
+}
+
+fn normalize_archive_relative_path(value: &str) -> Result<PathBuf> {
+    if value.trim().is_empty()
+        || value.contains('\\')
+        || value.starts_with('/')
+        || value.starts_with('.')
+        || value.contains("..")
+    {
+        return Err(RkError::BadRequest("invalid archive file path".to_string()));
+    }
+    let path = PathBuf::from(value);
+    if path
+        .components()
+        .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err(RkError::BadRequest("invalid archive file path".to_string()));
+    }
+    Ok(path)
+}
+
+async fn canonical_existing_dir_async(path: &Path) -> Result<PathBuf> {
+    let canonical = tokio::fs::canonicalize(path).await?;
+    if !tokio::fs::metadata(&canonical).await?.is_dir() {
+        return Err(RkError::BadRequest("archive directory is missing".to_string()));
+    }
+    Ok(canonical)
+}
+
+fn canonical_existing_dir(path: &Path) -> Result<PathBuf> {
+    let canonical = std::fs::canonicalize(path)?;
+    if !std::fs::metadata(&canonical)?.is_dir() {
+        return Err(RkError::BadRequest("directory is missing".to_string()));
+    }
+    Ok(canonical)
+}
+
+fn percent_encode_archive_path(value: &str) -> String {
+    value
+        .bytes()
+        .flat_map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'/' => {
+                vec![byte as char]
+            }
+            _ => format!("%{byte:02X}").chars().collect::<Vec<_>>(),
+        })
+        .collect()
+}
+
+fn archive_file_previewable(content_type: &str) -> bool {
+    content_type.starts_with("text/")
+        || content_type.starts_with("image/")
+        || content_type == "application/json"
+        || content_type == "application/javascript"
+}
+
+fn content_type_for_path(path: &str) -> &'static str {
+    let lower = path.to_ascii_lowercase();
+    if lower.ends_with(".mhtml") || lower.ends_with(".mht") {
+        "multipart/related"
+    } else if lower.ends_with(".har") {
+        "application/json"
+    } else if lower.ends_with(".warc") {
+        "application/warc"
+    } else if lower.ends_with(".svg") {
+        "image/svg+xml"
+    } else if lower.ends_with(".ico") {
+        "image/x-icon"
+    } else if lower.ends_with(".avif") {
+        "image/avif"
+    } else if lower.ends_with(".webmanifest") {
+        "application/manifest+json"
+    } else if lower.ends_with(".woff2") {
+        "font/woff2"
+    } else if lower.ends_with(".woff") {
+        "font/woff"
+    } else if lower.ends_with(".ttf") {
+        "font/ttf"
+    } else if lower.ends_with(".otf") {
+        "font/otf"
+    } else if lower.ends_with(".wasm") {
+        "application/wasm"
+    } else if lower.ends_with(".js") || lower.ends_with(".mjs") {
+        "text/javascript; charset=utf-8"
+    } else if lower.ends_with(".css") {
+        "text/css; charset=utf-8"
+    } else if lower.ends_with(".html") {
+        "text/html; charset=utf-8"
+    } else if lower.ends_with(".txt") {
+        "text/plain; charset=utf-8"
+    } else if lower.ends_with(".json") {
+        "application/json"
+    } else if lower.ends_with(".png") {
+        "image/png"
+    } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
+        "image/jpeg"
+    } else if lower.ends_with(".webp") {
+        "image/webp"
+    } else if lower.ends_with(".gif") {
+        "image/gif"
+    } else if lower.ends_with(".mp4") {
+        "video/mp4"
+    } else if lower.ends_with(".mp3") {
+        "audio/mpeg"
+    } else {
+        "application/octet-stream"
+    }
+}
+
+async fn cache_inventory_for_paths(paths: &StoragePaths) -> Result<CacheInventoryView> {
+    let root = paths.root().to_path_buf();
+    let public_dir = paths.public_dir();
+    let tmp_dir = paths.tmp_dir();
+    let profile_dir = root.join("browser-profiles");
+    let categories = tokio::task::spawn_blocking(move || -> Result<Vec<CacheCategoryView>> {
+        Ok(vec![
+            cache_category("public_artifacts", public_dir, true)?,
+            cache_category("temporary_jobs", tmp_dir, true)?,
+            cache_category("browser_profiles", profile_dir, false)?,
+        ])
+    })
+    .await
+    .map_err(|error| RkError::Source(format!("cache inventory task failed: {error}")))??;
+    let total_bytes = categories
+        .iter()
+        .map(|category| category.bytes)
+        .sum::<u64>();
+    Ok(CacheInventoryView {
+        storage_root: paths.root().display().to_string(),
+        total_bytes,
+        categories,
+    })
+}
+
+fn cache_category(name: &str, path: PathBuf, cleanup_allowed: bool) -> Result<CacheCategoryView> {
+    let stats = dir_stats_blocking(&path)?;
+    Ok(CacheCategoryView {
+        name: name.to_string(),
+        path: path.display().to_string(),
+        bytes: stats.bytes,
+        files: stats.files,
+        directories: stats.directories,
+        cleanup_allowed,
+    })
+}
+
+#[derive(Default)]
+struct DirStats {
+    bytes: u64,
+    files: u64,
+    directories: u64,
+}
+
+fn dir_stats_blocking(path: &Path) -> Result<DirStats> {
+    let mut stats = DirStats::default();
+    if !path.exists() {
+        return Ok(stats);
+    }
+    collect_dir_stats(path, &mut stats)?;
+    Ok(stats)
+}
+
+fn collect_dir_stats(path: &Path, stats: &mut DirStats) -> Result<()> {
+    if path.is_dir() {
+        stats.directories = stats.directories.saturating_add(1);
+        for entry in std::fs::read_dir(path)? {
+            let entry = entry?;
+            collect_dir_stats(&entry.path(), stats)?;
+        }
+    } else if path.is_file() {
+        stats.files = stats.files.saturating_add(1);
+        stats.bytes = stats.bytes.saturating_add(std::fs::metadata(path)?.len());
+    }
+    Ok(())
+}
+
+struct CacheCleanupCandidate {
+    path: PathBuf,
+    bytes: u64,
+    reason: String,
+}
+
+async fn cache_cleanup_candidates(
+    paths: &StoragePaths,
+    min_age_hours: u64,
+    known_job_ids: Vec<String>,
+    active_job_ids: Vec<String>,
+) -> Result<Vec<CacheCleanupCandidate>> {
+    let storage_root = paths.root().to_path_buf();
+    let public_dir = paths.public_dir();
+    let tmp_dir = paths.tmp_dir();
+    tokio::task::spawn_blocking(move || -> Result<Vec<CacheCleanupCandidate>> {
+        let root = canonical_existing_dir(&storage_root)?;
+        let cutoff = std::time::SystemTime::now()
+            - std::time::Duration::from_secs(min_age_hours.saturating_mul(3600));
+        let mut out = Vec::new();
+        let active = active_job_ids.into_iter().collect::<HashSet<_>>();
+        collect_old_child_dirs(
+            &root,
+            &tmp_dir,
+            cutoff,
+            "old temporary job directory",
+            &active,
+            &mut out,
+        )?;
+        let known = known_job_ids.into_iter().collect::<HashSet<_>>();
+        collect_orphan_public_dirs(&root, &public_dir, cutoff, &known, &mut out)?;
+        out.sort_by(|left, right| left.path.cmp(&right.path));
+        Ok(out)
+    })
+    .await
+    .map_err(|error| RkError::Source(format!("cache cleanup scan failed: {error}")))?
+}
+
+fn collect_orphan_public_dirs(
+    storage_root: &Path,
+    parent: &Path,
+    cutoff: std::time::SystemTime,
+    known_job_ids: &HashSet<String>,
+    out: &mut Vec<CacheCleanupCandidate>,
+) -> Result<()> {
+    if !parent.exists() {
+        return Ok(());
+    }
+    let parent = std::fs::canonicalize(parent)?;
+    if !parent.starts_with(storage_root) {
+        return Err(RkError::BadRequest(
+            "cache path escaped storage root".to_string(),
+        ));
+    }
+    for entry in std::fs::read_dir(&parent)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if known_job_ids.contains(name) {
+            continue;
+        }
+        let canonical = std::fs::canonicalize(&path)?;
+        if !canonical.starts_with(&parent) || !canonical.starts_with(storage_root) {
+            continue;
+        }
+        let modified = std::fs::metadata(&canonical)?
+            .modified()
+            .unwrap_or(std::time::SystemTime::now());
+        if modified > cutoff {
+            continue;
+        }
+        let stats = dir_stats_blocking(&canonical)?;
+        out.push(CacheCleanupCandidate {
+            path: canonical,
+            bytes: stats.bytes,
+            reason: "orphan public artifact directory".to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn collect_old_child_dirs(
+    storage_root: &Path,
+    parent: &Path,
+    cutoff: std::time::SystemTime,
+    reason: &str,
+    protected_names: &HashSet<String>,
+    out: &mut Vec<CacheCleanupCandidate>,
+) -> Result<()> {
+    if !parent.exists() {
+        return Ok(());
+    }
+    let parent = std::fs::canonicalize(parent)?;
+    if !parent.starts_with(storage_root) {
+        return Err(RkError::BadRequest(
+            "cache path escaped storage root".to_string(),
+        ));
+    }
+    for entry in std::fs::read_dir(&parent)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if protected_names.contains(name) {
+            continue;
+        }
+        let canonical = std::fs::canonicalize(&path)?;
+        if !canonical.starts_with(&parent) || !canonical.starts_with(storage_root) {
+            continue;
+        }
+        let metadata = std::fs::metadata(&canonical)?;
+        let modified = metadata.modified().unwrap_or(std::time::SystemTime::now());
+        if modified > cutoff {
+            continue;
+        }
+        let stats = dir_stats_blocking(&canonical)?;
+        out.push(CacheCleanupCandidate {
+            path: canonical,
+            bytes: stats.bytes,
+            reason: reason.to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_cache_cleanup_min_age(value: u64) -> Result<()> {
+    if !(1..=8_760).contains(&value) {
+        return Err(RkError::BadRequest(
+            "cache_cleanup_min_age_hours must be between 1 and 8760".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn system_time_to_offset_datetime(value: std::time::SystemTime) -> OffsetDateTime {
+    let duration = value
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    OffsetDateTime::from_unix_timestamp(duration.as_secs() as i64)
+        .unwrap_or(OffsetDateTime::UNIX_EPOCH)
 }
 
 async fn write_zip_archive(source_dir: &Path, archive_path: &Path) -> Result<()> {
@@ -4452,6 +5200,13 @@ struct EffectiveRuntimeSettings {
     page_archive_max_resources: usize,
     page_archive_max_resource_bytes: u64,
     page_archive_max_total_bytes: u64,
+    page_archive_capture_cdp_enabled: bool,
+    page_archive_save_mhtml_enabled: bool,
+    page_archive_save_har_enabled: bool,
+    page_archive_save_warc_enabled: bool,
+    page_archive_cdp_body_max_bytes: u64,
+    page_archive_cdp_body_total_bytes: u64,
+    cache_cleanup_min_age_hours: u64,
 }
 
 impl EffectiveRuntimeSettings {
@@ -4478,6 +5233,10 @@ impl EffectiveRuntimeSettings {
         );
         let page_archive_max_resource_mb = setting_u64(values, "page_archive_max_resource_mb", 16);
         let page_archive_max_total_mb = setting_u64(values, "page_archive_max_total_mb", 200);
+        let page_archive_cdp_body_max_mb =
+            setting_u64(values, "page_archive_cdp_body_max_mb", 2);
+        let page_archive_cdp_body_total_mb =
+            setting_u64(values, "page_archive_cdp_body_total_mb", 64);
         Self {
             public_base_url: values
                 .get("public_base_url")
@@ -4495,6 +5254,29 @@ impl EffectiveRuntimeSettings {
             page_archive_max_total_bytes: page_archive_max_total_mb
                 .saturating_mul(1024)
                 .saturating_mul(1024),
+            page_archive_capture_cdp_enabled: setting_bool(
+                values,
+                "page_archive_capture_cdp_enabled",
+                true,
+            ),
+            page_archive_save_mhtml_enabled: setting_bool(
+                values,
+                "page_archive_save_mhtml_enabled",
+                true,
+            ),
+            page_archive_save_har_enabled: setting_bool(values, "page_archive_save_har_enabled", true),
+            page_archive_save_warc_enabled: setting_bool(
+                values,
+                "page_archive_save_warc_enabled",
+                true,
+            ),
+            page_archive_cdp_body_max_bytes: page_archive_cdp_body_max_mb
+                .saturating_mul(1024)
+                .saturating_mul(1024),
+            page_archive_cdp_body_total_bytes: page_archive_cdp_body_total_mb
+                .saturating_mul(1024)
+                .saturating_mul(1024),
+            cache_cleanup_min_age_hours: setting_u64(values, "cache_cleanup_min_age_hours", 24),
         }
     }
 
@@ -4511,6 +5293,13 @@ impl EffectiveRuntimeSettings {
             page_archive_max_resources: self.page_archive_max_resources,
             page_archive_max_resource_bytes: self.page_archive_max_resource_bytes,
             page_archive_max_total_bytes: self.page_archive_max_total_bytes,
+            page_archive_capture_cdp_enabled: self.page_archive_capture_cdp_enabled,
+            page_archive_save_mhtml_enabled: self.page_archive_save_mhtml_enabled,
+            page_archive_save_har_enabled: self.page_archive_save_har_enabled,
+            page_archive_save_warc_enabled: self.page_archive_save_warc_enabled,
+            page_archive_cdp_body_max_bytes: self.page_archive_cdp_body_max_bytes,
+            page_archive_cdp_body_total_bytes: self.page_archive_cdp_body_total_bytes,
+            cache_cleanup_min_age_hours: self.cache_cleanup_min_age_hours,
             ffmpeg_path: config.ffmpeg_path.display().to_string(),
             browser_probe_url: config.browser_probe_url.clone(),
             yt_dlp_path: config
@@ -4553,6 +5342,17 @@ fn setting_usize(
     values
         .get(key)
         .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(fallback)
+}
+
+fn setting_bool(
+    values: &std::collections::HashMap<String, String>,
+    key: &str,
+    fallback: bool,
+) -> bool {
+    values
+        .get(key)
+        .map(|value| matches!(value.as_str(), "1" | "true" | "yes" | "on"))
         .unwrap_or(fallback)
 }
 
@@ -5217,8 +6017,14 @@ mod tests {
             content_length: Some(128),
             resource_type: Some("stylesheet".to_string()),
             initiator_url: Some("https://neverlose.cc/".to_string()),
+            initiator_type: Some("parser".to_string()),
+            frame_url: Some("https://neverlose.cc/".to_string()),
+            redirect_chain: Vec::new(),
+            served_from_cache: false,
+            from_service_worker: false,
             request_headers: HashMap::new(),
             body_base64: None,
+            body_source: None,
             source: "network".to_string(),
         };
         insert_page_rewrites(
@@ -5507,6 +6313,11 @@ mod tests {
             content_length: Some(128),
             resource_type: Some("stylesheet".to_string()),
             initiator_url: Some("https://example.com/".to_string()),
+            initiator_type: Some("parser".to_string()),
+            frame_url: Some("https://example.com/".to_string()),
+            redirect_chain: Vec::new(),
+            served_from_cache: false,
+            from_service_worker: false,
             request_headers: HashMap::from([
                 ("user-agent".to_string(), "Mozilla/5.0".to_string()),
                 ("accept-encoding".to_string(), "gzip, br, zstd".to_string()),
@@ -5515,6 +6326,7 @@ mod tests {
                 ("referer".to_string(), "https://example.com/".to_string()),
             ]),
             body_base64: None,
+            body_source: None,
             source: "network".to_string(),
         };
 
@@ -5559,6 +6371,8 @@ mod tests {
                 text: "Sign in".to_string(),
                 screenshot: None,
                 resources: Vec::new(),
+                mhtml_base64: None,
+                har_json: None,
                 captured_at: "2026-06-15T00:00:00Z".to_string(),
                 requires_interaction: true,
                 interaction_reason: Some(
@@ -5591,6 +6405,67 @@ mod tests {
             page_archive_total_resource_timeout(Duration::from_secs(12)),
             Duration::from_secs(12)
         );
+    }
+
+    #[tokio::test]
+    async fn cache_cleanup_skips_active_tmp_dirs_but_keeps_orphan_public_cleanup() {
+        let root = std::env::temp_dir().join(format!("rk-cache-cleanup-{}", Uuid::new_v4()));
+        let paths = StoragePaths::new(root.clone());
+        tokio::fs::create_dir_all(paths.tmp_dir()).await.unwrap();
+        tokio::fs::create_dir_all(paths.public_dir()).await.unwrap();
+
+        let active_job = Uuid::new_v4().to_string();
+        let finished_job = Uuid::new_v4().to_string();
+        let known_public_job = Uuid::new_v4().to_string();
+        let orphan_public_job = Uuid::new_v4().to_string();
+
+        std::fs::create_dir_all(paths.tmp_dir().join(&active_job)).unwrap();
+        std::fs::write(paths.tmp_dir().join(&active_job).join("input.media"), b"active")
+            .unwrap();
+        std::fs::create_dir_all(paths.tmp_dir().join(&finished_job)).unwrap();
+        std::fs::write(
+            paths.tmp_dir().join(&finished_job).join("input.media"),
+            b"finished",
+        )
+        .unwrap();
+        std::fs::create_dir_all(paths.public_dir().join(&known_public_job)).unwrap();
+        std::fs::write(
+            paths
+                .public_dir()
+                .join(&known_public_job)
+                .join("archive.zip"),
+            b"known",
+        )
+        .unwrap();
+        std::fs::create_dir_all(paths.public_dir().join(&orphan_public_job)).unwrap();
+        std::fs::write(
+            paths
+                .public_dir()
+                .join(&orphan_public_job)
+                .join("archive.zip"),
+            b"orphan",
+        )
+        .unwrap();
+
+        let entries = cache_cleanup_candidates(
+            &paths,
+            0,
+            vec![known_public_job.clone()],
+            vec![active_job.clone()],
+        )
+        .await
+        .unwrap();
+        let paths = entries
+            .iter()
+            .map(|entry| entry.path.display().to_string())
+            .collect::<Vec<_>>();
+
+        assert!(!paths.iter().any(|path| path.contains(&active_job)));
+        assert!(paths.iter().any(|path| path.contains(&finished_job)));
+        assert!(!paths.iter().any(|path| path.contains(&known_public_job)));
+        assert!(paths.iter().any(|path| path.contains(&orphan_public_job)));
+
+        std::fs::remove_dir_all(root).ok();
     }
 
     #[test]

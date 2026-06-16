@@ -1036,6 +1036,89 @@
     gap: 10px;
   }
 
+  .archive-browser,
+  .cache-panel,
+  .cache-category-list,
+  .cache-cleanup-list {
+    display: grid;
+    gap: 10px;
+    min-width: 0;
+  }
+
+  .archive-browser {
+    border: 1px solid #242a34;
+    border-radius: 8px;
+    background: #080a0e;
+    padding: 10px;
+  }
+
+  .archive-browser-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    color: #8d98a8;
+    font-size: 12px;
+  }
+
+  .archive-browser-head strong {
+    color: #eef4fb;
+    font-size: 13px;
+  }
+
+  .archive-file-list {
+    display: grid;
+    gap: 6px;
+    max-height: 260px;
+    overflow: auto;
+    padding-right: 4px;
+  }
+
+  .archive-file-row,
+  .cache-category-row,
+  .cache-cleanup-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px;
+    align-items: center;
+    min-height: 48px;
+    border: 1px solid #202733;
+    border-radius: 7px;
+    background: #0b0e13;
+    padding: 8px 10px;
+  }
+
+  .archive-file-row div:first-child,
+  .cache-category-row div:first-child,
+  .cache-cleanup-row div:first-child {
+    display: grid;
+    min-width: 0;
+    gap: 2px;
+  }
+
+  .archive-file-row strong,
+  .cache-category-row strong,
+  .cache-cleanup-row strong {
+    color: #eef4fb;
+    font-size: 12px;
+    overflow-wrap: anywhere;
+  }
+
+  .archive-file-row span,
+  .cache-category-row span,
+  .cache-cleanup-row span {
+    color: #778394;
+    font-size: 11px;
+    overflow-wrap: anywhere;
+  }
+
+  .cache-cleanup-row em {
+    color: #9aa7b8;
+    font-size: 11px;
+    font-style: normal;
+    font-weight: 750;
+  }
+
   .artifact-item {
     border: 1px solid #242a34;
     border-radius: 8px;
@@ -1789,7 +1872,10 @@
     .settings-readonly-grid,
     .permission-grid,
     .meta-list,
-    .key-row {
+    .key-row,
+    .archive-file-row,
+    .cache-category-row,
+    .cache-cleanup-row {
       grid-template-columns: 1fr;
     }
 
@@ -1807,7 +1893,8 @@
     }
 
     .remote-browser-toolbar,
-    .remote-input-controls {
+    .remote-input-controls,
+    .archive-file-row .panel-actions {
       grid-template-columns: 1fr;
     }
 

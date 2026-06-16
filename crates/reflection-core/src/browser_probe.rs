@@ -28,6 +28,16 @@ pub struct ProbeRequest {
     #[serde(rename = "platformHint")]
     pub platform_hint: String,
     pub outputs: Vec<String>,
+    #[serde(rename = "captureCdp")]
+    pub capture_cdp: bool,
+    #[serde(rename = "saveMhtml")]
+    pub save_mhtml: bool,
+    #[serde(rename = "saveHar")]
+    pub save_har: bool,
+    #[serde(rename = "cdpBodyMaxBytes")]
+    pub cdp_body_max_bytes: u64,
+    #[serde(rename = "cdpBodyTotalBytes")]
+    pub cdp_body_total_bytes: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -83,6 +93,10 @@ pub struct PageSnapshot {
     pub text: String,
     pub screenshot: Option<String>,
     pub resources: Vec<PageResource>,
+    #[serde(rename = "mhtmlBase64", default)]
+    pub mhtml_base64: Option<String>,
+    #[serde(rename = "harJson", default)]
+    pub har_json: Option<serde_json::Value>,
     #[serde(rename = "capturedAt")]
     pub captured_at: String,
     #[serde(rename = "requiresInteraction", default)]
@@ -104,10 +118,22 @@ pub struct PageResource {
     pub resource_type: Option<String>,
     #[serde(rename = "initiatorUrl")]
     pub initiator_url: Option<String>,
+    #[serde(rename = "initiatorType", default)]
+    pub initiator_type: Option<String>,
+    #[serde(rename = "frameUrl", default)]
+    pub frame_url: Option<String>,
+    #[serde(rename = "redirectChain", default)]
+    pub redirect_chain: Vec<String>,
+    #[serde(rename = "servedFromCache", default)]
+    pub served_from_cache: bool,
+    #[serde(rename = "fromServiceWorker", default)]
+    pub from_service_worker: bool,
     #[serde(rename = "requestHeaders", default)]
     pub request_headers: HashMap<String, String>,
     #[serde(rename = "bodyBase64", default)]
     pub body_base64: Option<String>,
+    #[serde(rename = "bodySource", default)]
+    pub body_source: Option<String>,
     pub source: String,
 }
 
@@ -283,7 +309,18 @@ impl BrowserProbeClient {
         outputs: &[String],
     ) -> Result<Vec<MediaCandidate>> {
         Ok(self
-            .probe_session(job_id, url, profile_id, platform_hint, outputs)
+            .probe_session(
+                job_id,
+                url,
+                profile_id,
+                platform_hint,
+                outputs,
+                true,
+                true,
+                true,
+                2 * 1024 * 1024,
+                64 * 1024 * 1024,
+            )
             .await?
             .candidates)
     }
@@ -298,12 +335,22 @@ impl BrowserProbeClient {
         profile_id: &str,
         platform_hint: PlatformHint,
         outputs: &[String],
+        capture_cdp: bool,
+        save_mhtml: bool,
+        save_har: bool,
+        cdp_body_max_bytes: u64,
+        cdp_body_total_bytes: u64,
     ) -> Result<BrowserProbeOutcome> {
         let request = ProbeRequest {
             url: url.to_string(),
             profile_id: profile_id.to_string(),
             platform_hint: platform_hint.as_str().to_string(),
             outputs: outputs.to_vec(),
+            capture_cdp,
+            save_mhtml,
+            save_har,
+            cdp_body_max_bytes,
+            cdp_body_total_bytes,
         };
         let response = self
             .request(reqwest::Method::POST, format!("{}/probe", self.base_url))

@@ -13,6 +13,11 @@ const probeSchema = z.object({
   maxEvents: z.number().int().positive().optional(),
   maxCandidates: z.number().int().positive().optional(),
   headed: z.boolean().optional(),
+  captureCdp: z.boolean().optional(),
+  saveMhtml: z.boolean().optional(),
+  saveHar: z.boolean().optional(),
+  cdpBodyMaxBytes: z.number().int().positive().optional(),
+  cdpBodyTotalBytes: z.number().int().positive().optional(),
 });
 
 const cookiesSchema = z.object({

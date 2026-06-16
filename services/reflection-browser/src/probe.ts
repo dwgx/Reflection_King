@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
-import { chromium, type BrowserContext, type Page, type Request, type Response } from "playwright";
+import { chromium, type BrowserContext, type CDPSession, type Page, type Request, type Response } from "playwright";
 import type {
   BrowserCandidate,
   CandidateKind,
@@ -20,7 +20,6 @@ const MANIFEST_EXTENSIONS = [".m3u8", ".mpd"];
 const MEDIA_EXTENSIONS = [".mp4", ".m4s", ".m4a", ".mp3", ".aac", ".wav", ".webm", ".flv", ".mov", ".mkv"];
 const IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif"];
 const ARCHIVE_RESPONSE_BODY_MAX_BYTES = 2 * 1024 * 1024;
-const ARCHIVE_RESPONSE_BODY_TOTAL_MAX_BYTES = 24 * 1024 * 1024;
 const BILIBILI_AUDIO_QUALITY_IDS = new Set(["30216", "30232", "30280"]);
 const URL_PATTERN = /https?:\/\/[^\s"'<>\\]+|(?:\/|\.\.?\/)[^\s"'<>\\]+\.(?:m3u8|mpd|mp4|m4s|m4a|mp3|aac|wav|webm|flv|mov|mkv)(?:\?[^\s"'<>\\]*)?/gi;
 const AD_HOST_PARTS = [
@@ -68,6 +67,38 @@ interface DiscoveredUrl {
   scoreBoost?: number;
 }
 
+interface CdpResourceRecord {
+  requestId: string;
+  url: string;
+  method?: string;
+  status?: number;
+  contentType?: string;
+  contentLength?: number;
+  resourceType?: string;
+  initiatorUrl?: string;
+  initiatorType?: string;
+  frameUrl?: string;
+  redirectChain: string[];
+  requestHeaders?: Record<string, string>;
+  responseHeaders?: Record<string, string>;
+  servedFromCache?: boolean;
+  fromServiceWorker?: boolean;
+  bodyBase64?: string;
+  bodySource?: string;
+  startedAt?: number;
+  endedAt?: number;
+}
+
+interface CdpCapture {
+  session: CDPSession;
+  resources: Map<string, CdpResourceRecord>;
+  pendingBodies: Set<Promise<void>>;
+  warnings: string[];
+  bodyBytes: number;
+  bodyMaxBytes: number;
+  bodyTotalBytes: number;
+}
+
 export class BrowserProbeService {
   private readonly contexts = new Map<string, ContextEntry>();
   private readonly loginSessions = new Map<string, LoginSessionEntry>();
@@ -92,11 +123,28 @@ export class BrowserProbeService {
     const candidates = new Map<string, BrowserCandidate>();
     const pageResources = new Map<string, PageResource>();
     const pendingPageResourceTasks = new Set<Promise<void>>();
-    let archivedResponseBodyBytes = 0;
     const acceptedKinds = requestedCandidateKinds(request.outputs);
     const capturePageSnapshot = request.outputs?.includes("page_html") ?? false;
     const warnings: string[] = [];
     const consoleErrors: string[] = [];
+    const cdpCaptureEnabled = Boolean(capturePageSnapshot && (request.captureCdp ?? true));
+    const cdpBodyMaxBytes = clamp(
+      request.cdpBodyMaxBytes ?? ARCHIVE_RESPONSE_BODY_MAX_BYTES,
+      64 * 1024,
+      256 * 1024 * 1024,
+    );
+    const cdpBodyTotalBytes = clamp(
+      request.cdpBodyTotalBytes ?? 64 * 1024 * 1024,
+      64 * 1024,
+      4 * 1024 * 1024 * 1024,
+    );
+    const cdpCapture = cdpCaptureEnabled
+      ? await startCdpCapture(page, cdpBodyMaxBytes, cdpBodyTotalBytes).catch((error) => {
+          warnings.push(`cdp capture failed: ${error instanceof Error ? error.message : String(error)}`);
+          return undefined;
+        })
+      : undefined;
+    let archivedResponseBodyBytes = 0;
     let eventCount = 0;
     let timedOut = false;
     let playbackTriggered = false;
@@ -138,11 +186,12 @@ export class BrowserProbeService {
         const resource = await pageResourceFromResponse(
           response,
           capturePageSnapshot,
-          ARCHIVE_RESPONSE_BODY_TOTAL_MAX_BYTES - archivedResponseBodyBytes,
+          cdpBodyMaxBytes,
+          cdpBodyTotalBytes - archivedResponseBodyBytes,
         );
         if (resource?.bodyBase64) {
           const bytes = Buffer.byteLength(resource.bodyBase64, "base64");
-          if (archivedResponseBodyBytes + bytes <= ARCHIVE_RESPONSE_BODY_TOTAL_MAX_BYTES) {
+          if (archivedResponseBodyBytes + bytes <= cdpBodyTotalBytes) {
             archivedResponseBodyBytes += bytes;
           } else {
             delete resource.bodyBase64;
@@ -215,6 +264,17 @@ export class BrowserProbeService {
     await withTimeout(Promise.allSettled([...pendingPageResourceTasks]), 3_000).catch(() => {
       warnings.push("page resource body capture timeout");
     });
+    if (cdpCapture) {
+      await withTimeout(Promise.allSettled([...cdpCapture.pendingBodies]), 3_000).catch(() => {
+        warnings.push("cdp response body capture timeout");
+      });
+      for (const warning of cdpCapture.warnings) {
+        warnings.push(warning);
+      }
+      for (const resource of cdpResourcesToPageResources(cdpCapture)) {
+        addPageResource(pageResources, resource);
+      }
+    }
     if (capturePageSnapshot) {
       for (const resource of await genericPageResourcesFromPage(page, finalUrl).catch((error) => {
         warnings.push(`page resource scan failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -222,16 +282,23 @@ export class BrowserProbeService {
       })) {
         addPageResource(pageResources, resource);
       }
-      await enrichPageResourcesFromBrowser(page, pageResources, warnings);
+      await enrichPageResourcesFromBrowser(page, pageResources, warnings, cdpBodyMaxBytes, cdpBodyTotalBytes);
     }
+    const mhtmlBase64 = capturePageSnapshot && (request.saveMhtml ?? true)
+      ? await captureMhtmlSnapshot(page, warnings)
+      : undefined;
+    const harJson = capturePageSnapshot && (request.saveHar ?? true) && cdpCapture
+      ? buildHarFromCdp(cdpCapture, page.url(), title)
+      : undefined;
     const pageSnapshot = await captureSnapshot(
       page,
       finalUrl,
       title,
       [...pageResources.values()],
       warnings,
-      { includeScreenshot: capturePageSnapshot },
+      { includeScreenshot: capturePageSnapshot, mhtmlBase64, harJson },
     );
+    await cdpCapture?.session.detach().catch(() => undefined);
     const userAgent = await contextUserAgent(context).catch(() => undefined);
     await page.close().catch(() => undefined);
 
@@ -1165,6 +1232,7 @@ function candidateFromDiscoveredUrl(discovered: DiscoveredUrl, pageUrl: string):
 async function pageResourceFromResponse(
   response: Response,
   includeBody: boolean,
+  maxBodyBytes: number,
   remainingBodyBudget: number,
 ): Promise<PageResource | undefined> {
   const request = response.request();
@@ -1181,7 +1249,14 @@ async function pageResourceFromResponse(
   const contentLength = parseContentLength(headers["content-length"]);
   const resourceType = request.resourceType();
   const bodyBase64 = includeBody
-    ? await safeArchiveResponseBodyBase64(response, resourceType, contentType, contentLength, remainingBodyBudget)
+    ? await safeArchiveResponseBodyBase64(
+        response,
+        resourceType,
+        contentType,
+        contentLength,
+        maxBodyBytes,
+        remainingBodyBudget,
+      )
     : undefined;
   return {
     url,
@@ -1193,6 +1268,7 @@ async function pageResourceFromResponse(
     initiatorUrl: safeRequestFrameUrl(request),
     requestHeaders: safeArchiveRequestHeaders(request),
     bodyBase64,
+    bodySource: bodyBase64 ? "network" : undefined,
     source: "network",
   };
 }
@@ -1202,16 +1278,17 @@ async function safeArchiveResponseBodyBase64(
   resourceType: string,
   contentType: string | undefined,
   contentLength: number | undefined,
+  maxBodyBytes: number,
   remainingBudget: number,
 ): Promise<string | undefined> {
   if (
     remainingBudget <= 0 ||
-    !archiveResponseBodyAllowed(response, resourceType, contentType, contentLength, remainingBudget)
+    !archiveResponseBodyAllowed(response, resourceType, contentType, contentLength, maxBodyBytes, remainingBudget)
   ) {
     return undefined;
   }
   const buffer = await withTimeout(response.body(), 2_000).catch(() => undefined);
-  if (!buffer || buffer.length > ARCHIVE_RESPONSE_BODY_MAX_BYTES || buffer.length > remainingBudget) {
+  if (!buffer || buffer.length > maxBodyBytes || buffer.length > remainingBudget) {
     return undefined;
   }
   return buffer.toString("base64");
@@ -1222,12 +1299,13 @@ function archiveResponseBodyAllowed(
   resourceType: string,
   contentType: string | undefined,
   contentLength: number | undefined,
+  maxBodyBytes: number,
   remainingBudget: number,
 ): boolean {
   if (!response.ok()) {
     return false;
   }
-  if (contentLength !== undefined && (contentLength > ARCHIVE_RESPONSE_BODY_MAX_BYTES || contentLength > remainingBudget)) {
+  if (contentLength !== undefined && (contentLength > maxBodyBytes || contentLength > remainingBudget)) {
     return false;
   }
   const loweredType = (contentType ?? "").toLowerCase();
@@ -1313,6 +1391,7 @@ function addPageResource(resources: Map<string, PageResource>, resource: PageRes
       Object.entries(resource).filter(([, value]) => value !== undefined && value !== ""),
     ),
     bodyBase64: existing.bodyBase64 ?? resource.bodyBase64,
+    bodySource: existing.bodySource ?? resource.bodySource,
     source: existing.source === resource.source ? existing.source : `${existing.source},${resource.source}`,
   });
 }
@@ -1321,12 +1400,14 @@ async function enrichPageResourcesFromBrowser(
   page: Page,
   resources: Map<string, PageResource>,
   warnings: string[],
+  maxBodyBytes: number,
+  totalBodyBytes: number,
 ): Promise<void> {
   const candidates = prioritizeBrowserFetchResources(
     [...resources.values()].filter((resource) => (
       !resource.bodyBase64 &&
       resource.source.toLowerCase().includes("network") &&
-      browserFetchResourceAllowed(resource)
+      browserFetchResourceAllowed(resource, maxBodyBytes)
     )),
   ).slice(0, 24);
   if (!candidates.length) {
@@ -1337,10 +1418,10 @@ async function enrichPageResourcesFromBrowser(
     return total + (resource.bodyBase64 ? Buffer.byteLength(resource.bodyBase64, "base64") : 0);
   }, 0);
   for (const batch of chunk(candidates, 4)) {
-    if (cachedBytes >= ARCHIVE_RESPONSE_BODY_TOTAL_MAX_BYTES) {
+    if (cachedBytes >= totalBodyBytes) {
       break;
     }
-    const remainingBudget = ARCHIVE_RESPONSE_BODY_TOTAL_MAX_BYTES - cachedBytes;
+    const remainingBudget = totalBodyBytes - cachedBytes;
     const fetched = await withTimeout(
       page.evaluate(
         async ({ items, maxBytes, totalBudget }) => {
@@ -1423,7 +1504,7 @@ async function enrichPageResourcesFromBrowser(
             url: resource.url,
             resourceType: resource.resourceType,
           })),
-          maxBytes: ARCHIVE_RESPONSE_BODY_MAX_BYTES,
+          maxBytes: maxBodyBytes,
           totalBudget: remainingBudget,
         },
       ),
@@ -1440,7 +1521,7 @@ async function enrichPageResourcesFromBrowser(
       }
       if (item.bodyBase64) {
         const bytes = Buffer.byteLength(item.bodyBase64, "base64");
-        if (cachedBytes + bytes > ARCHIVE_RESPONSE_BODY_TOTAL_MAX_BYTES) {
+        if (cachedBytes + bytes > totalBodyBytes) {
           continue;
         }
         cachedBytes += bytes;
@@ -1451,6 +1532,7 @@ async function enrichPageResourcesFromBrowser(
         contentType: item.contentType ?? resource.contentType,
         contentLength: item.contentLength ?? resource.contentLength,
         bodyBase64: item.bodyBase64 ?? resource.bodyBase64,
+        bodySource: item.bodyBase64 ? "browser_fetch" : resource.bodySource,
         source: "browser_fetch",
       });
     }
@@ -1479,12 +1561,12 @@ function browserFetchPriority(resource: PageResource): number {
   return score;
 }
 
-function browserFetchResourceAllowed(resource: PageResource): boolean {
+function browserFetchResourceAllowed(resource: PageResource, maxBodyBytes: number): boolean {
   if (!isHttpUrl(resource.url)) {
     return false;
   }
   const contentLength = resource.contentLength;
-  if (contentLength !== undefined && contentLength > ARCHIVE_RESPONSE_BODY_MAX_BYTES) {
+  if (contentLength !== undefined && contentLength > maxBodyBytes) {
     return false;
   }
   const loweredType = (resource.contentType ?? "").toLowerCase();
@@ -1500,6 +1582,286 @@ function browserFetchResourceAllowed(resource: PageResource): boolean {
     loweredType === "image/svg+xml" ||
     ["stylesheet", "script", "image", "font", "manifest"].includes(loweredResource) ||
     /\.(css|js|mjs|png|jpe?g|webp|gif|avif|svg|ico|woff2?|ttf|otf|eot|webmanifest)(?:$|[?#])/i.test(path);
+}
+
+async function startCdpCapture(
+  page: Page,
+  bodyMaxBytes: number,
+  bodyTotalBytes: number,
+): Promise<CdpCapture> {
+  const session = await page.context().newCDPSession(page);
+  const capture: CdpCapture = {
+    session,
+    resources: new Map(),
+    pendingBodies: new Set(),
+    warnings: [],
+    bodyBytes: 0,
+    bodyMaxBytes,
+    bodyTotalBytes,
+  };
+  await session.send("Network.enable", {
+    maxTotalBufferSize: Math.min(bodyTotalBytes * 2, 256 * 1024 * 1024),
+    maxResourceBufferSize: Math.min(bodyMaxBytes * 2, 64 * 1024 * 1024),
+  });
+
+  session.on("Network.requestWillBeSent", (event: any) => {
+    if (!isHttpUrl(event.request?.url)) return;
+    const requestId = String(event.requestId);
+    const existing = capture.resources.get(requestId);
+    const redirectChain = existing?.redirectChain ?? [];
+    if (event.redirectResponse?.url) {
+      redirectChain.push(event.redirectResponse.url);
+    }
+    capture.resources.set(requestId, {
+      ...existing,
+      requestId,
+      url: event.request.url,
+      method: event.request.method,
+      requestHeaders: safeCdpHeaders(event.request.headers),
+      initiatorType: event.initiator?.type,
+      initiatorUrl: cdpInitiatorUrl(event.initiator),
+      frameUrl: event.documentURL,
+      redirectChain,
+      startedAt: event.timestamp,
+    });
+  });
+
+  session.on("Network.responseReceived", (event: any) => {
+    const requestId = String(event.requestId);
+    const existing = capture.resources.get(requestId);
+    if (!existing || !isHttpUrl(existing.url)) return;
+    const response = event.response ?? {};
+    capture.resources.set(requestId, {
+      ...existing,
+      status: response.status,
+      contentType: headerValue(response.headers, "content-type"),
+      contentLength: parseContentLength(headerValue(response.headers, "content-length")),
+      resourceType: String(event.type ?? "").toLowerCase(),
+      responseHeaders: safeCdpHeaders(response.headers),
+      servedFromCache: Boolean(response.fromDiskCache || response.fromPrefetchCache),
+      fromServiceWorker: Boolean(response.fromServiceWorker),
+    });
+  });
+
+  session.on("Network.loadingFinished", (event: any) => {
+    const requestId = String(event.requestId);
+    const resource = capture.resources.get(requestId);
+    if (!resource || !cdpBodyAllowed(resource, capture)) return;
+    const task = (async () => {
+      try {
+        const body = await session.send("Network.getResponseBody", { requestId });
+        const raw = String((body as { body?: string }).body ?? "");
+        const encoded = Boolean((body as { base64Encoded?: boolean }).base64Encoded);
+        const bytes = encoded ? Buffer.byteLength(raw, "base64") : Buffer.byteLength(raw, "utf8");
+        if (bytes > capture.bodyMaxBytes || capture.bodyBytes + bytes > capture.bodyTotalBytes) {
+          return;
+        }
+        capture.bodyBytes += bytes;
+        resource.bodyBase64 = encoded ? raw : Buffer.from(raw, "utf8").toString("base64");
+        resource.bodySource = "cdp";
+        resource.endedAt = event.timestamp;
+      } catch (error) {
+        if (capture.warnings.length < 25) {
+          capture.warnings.push(`cdp getResponseBody failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+    })();
+    capture.pendingBodies.add(task);
+    task.finally(() => capture.pendingBodies.delete(task)).catch(() => undefined);
+  });
+
+  session.on("Network.loadingFailed", (event: any) => {
+    const requestId = String(event.requestId);
+    const existing = capture.resources.get(requestId);
+    if (!existing) return;
+    capture.resources.set(requestId, {
+      ...existing,
+      endedAt: event.timestamp,
+    });
+  });
+
+  return capture;
+}
+
+function cdpResourcesToPageResources(capture: CdpCapture): PageResource[] {
+  return [...capture.resources.values()]
+    .filter((resource) => isHttpUrl(resource.url))
+    .map((resource) => ({
+      url: resource.url,
+      method: resource.method,
+      status: resource.status,
+      contentType: resource.contentType,
+      contentLength: resource.contentLength,
+      resourceType: resource.resourceType,
+      initiatorUrl: resource.initiatorUrl,
+      initiatorType: resource.initiatorType,
+      frameUrl: resource.frameUrl,
+      redirectChain: resource.redirectChain,
+      servedFromCache: resource.servedFromCache,
+      fromServiceWorker: resource.fromServiceWorker,
+      requestHeaders: resource.requestHeaders,
+      bodyBase64: resource.bodyBase64,
+      bodySource: resource.bodySource,
+      source: "cdp",
+    }));
+}
+
+async function captureMhtmlSnapshot(page: Page, warnings: string[]): Promise<string | undefined> {
+  try {
+    const session = await page.context().newCDPSession(page);
+    try {
+      const result = await session.send("Page.captureSnapshot", { format: "mhtml" });
+      const data = String((result as { data?: string }).data ?? "");
+      return data ? Buffer.from(data, "utf8").toString("base64") : undefined;
+    } finally {
+      await session.detach().catch(() => undefined);
+    }
+  } catch (error) {
+    warnings.push(`mhtml capture failed: ${error instanceof Error ? error.message : String(error)}`);
+    return undefined;
+  }
+}
+
+function buildHarFromCdp(
+  capture: CdpCapture,
+  pageUrl: string,
+  title: string | undefined,
+): Record<string, unknown> {
+  const entries = [...capture.resources.values()]
+    .filter((resource) => isHttpUrl(resource.url))
+    .map((resource) => {
+      const bodySize = resource.bodyBase64 ? Buffer.byteLength(resource.bodyBase64, "base64") : -1;
+      return {
+        startedDateTime: new Date().toISOString(),
+        time: resource.startedAt && resource.endedAt
+          ? Math.max(0, (resource.endedAt - resource.startedAt) * 1000)
+          : 0,
+        request: {
+          method: resource.method ?? "GET",
+          url: resource.url,
+          httpVersion: "HTTP/1.1",
+          headers: objectHeadersToHar(resource.requestHeaders),
+          queryString: urlQueryToHar(resource.url),
+          cookies: [],
+          headersSize: -1,
+          bodySize: 0,
+        },
+        response: {
+          status: resource.status ?? 0,
+          statusText: "",
+          httpVersion: "HTTP/1.1",
+          headers: objectHeadersToHar(resource.responseHeaders),
+          cookies: [],
+          content: {
+            size: Math.max(bodySize, 0),
+            mimeType: resource.contentType ?? "application/octet-stream",
+            text: resource.bodyBase64,
+            encoding: resource.bodyBase64 ? "base64" : undefined,
+          },
+          redirectURL: "",
+          headersSize: -1,
+          bodySize,
+        },
+        cache: {},
+        timings: { send: 0, wait: 0, receive: 0 },
+        _resourceType: resource.resourceType,
+        _initiatorType: resource.initiatorType,
+        _initiatorUrl: resource.initiatorUrl,
+        _frameUrl: resource.frameUrl,
+        _redirectChain: resource.redirectChain,
+        _bodySource: resource.bodySource,
+      };
+    });
+  return {
+    log: {
+      version: "1.2",
+      creator: { name: "Reflection King", version: "0.1.0" },
+      pages: [{ id: "page_0", startedDateTime: new Date().toISOString(), title: title ?? pageUrl, pageTimings: {} }],
+      entries,
+    },
+  };
+}
+
+function cdpBodyAllowed(resource: CdpResourceRecord, capture: CdpCapture): boolean {
+  if (!resource.status || resource.status < 200 || resource.status >= 400) return false;
+  if (capture.bodyBytes >= capture.bodyTotalBytes) return false;
+  if (resource.contentLength !== undefined && resource.contentLength > capture.bodyMaxBytes) return false;
+  const contentType = (resource.contentType ?? "").toLowerCase();
+  const resourceType = (resource.resourceType ?? "").toLowerCase();
+  const path = urlPath(resource.url).toLowerCase();
+  return contentType.startsWith("text/css") ||
+    contentType.includes("javascript") ||
+    contentType.startsWith("image/") ||
+    contentType.startsWith("font/") ||
+    contentType === "application/font-woff" ||
+    contentType === "application/manifest+json" ||
+    contentType === "application/wasm" ||
+    contentType === "image/svg+xml" ||
+    ["stylesheet", "script", "image", "font", "manifest"].includes(resourceType) ||
+    /\.(css|js|mjs|png|jpe?g|webp|gif|avif|svg|ico|woff2?|ttf|otf|webmanifest|wasm)(?:$|[?#])/i.test(path);
+}
+
+function cdpInitiatorUrl(initiator: any): string | undefined {
+  if (!initiator) return undefined;
+  if (typeof initiator.url === "string") return initiator.url;
+  const stack = initiator.stack?.callFrames ?? initiator.stack?.parent?.callFrames;
+  if (Array.isArray(stack)) {
+    const frame = stack.find((item) => typeof item.url === "string" && item.url);
+    return frame?.url;
+  }
+  return undefined;
+}
+
+function safeCdpHeaders(headers: unknown): Record<string, string> | undefined {
+  if (!headers || typeof headers !== "object") return undefined;
+  const out: Record<string, string> = {};
+  for (const [name, value] of Object.entries(headers as Record<string, unknown>)) {
+    const lowered = name.toLowerCase();
+    if (!pageArchiveHeaderAllowed(lowered)) continue;
+    out[lowered] = Array.isArray(value) ? value.join(", ") : String(value);
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+function pageArchiveHeaderAllowed(name: string): boolean {
+  return [
+    "user-agent",
+    "accept",
+    "accept-language",
+    "referer",
+    "origin",
+    "content-type",
+    "content-length",
+    "sec-fetch-dest",
+    "sec-fetch-mode",
+    "sec-fetch-site",
+    "sec-ch-ua",
+    "sec-ch-ua-mobile",
+    "sec-ch-ua-platform",
+  ].includes(name);
+}
+
+function headerValue(headers: unknown, name: string): string | undefined {
+  if (!headers || typeof headers !== "object") return undefined;
+  const wanted = name.toLowerCase();
+  for (const [key, value] of Object.entries(headers as Record<string, unknown>)) {
+    if (key.toLowerCase() === wanted) {
+      return Array.isArray(value) ? value.join(", ") : String(value);
+    }
+  }
+  return undefined;
+}
+
+function objectHeadersToHar(headers: Record<string, string> | undefined): Array<{ name: string; value: string }> {
+  return Object.entries(headers ?? {}).map(([name, value]) => ({ name, value }));
+}
+
+function urlQueryToHar(value: string): Array<{ name: string; value: string }> {
+  try {
+    return [...new URL(value).searchParams.entries()].map(([name, value]) => ({ name, value }));
+  } catch {
+    return [];
+  }
 }
 
 function chunk<T>(items: T[], size: number): T[][] {
@@ -1563,9 +1925,15 @@ async function genericPageResourcesFromPage(page: Page, pageUrl: string): Promis
           contentType: existing?.contentType,
           contentLength: existing?.contentLength,
           resourceType: existing?.resourceType,
-          initiatorUrl: existing?.initiatorUrl,
+          initiatorUrl: existing?.initiatorUrl ?? baseUrl,
+          initiatorType: existing?.initiatorType ?? source,
+          frameUrl: existing?.frameUrl ?? baseUrl,
+          redirectChain: existing?.redirectChain ?? [],
+          servedFromCache: existing?.servedFromCache,
+          fromServiceWorker: existing?.fromServiceWorker,
           requestHeaders: existing?.requestHeaders,
           bodyBase64: existing?.bodyBase64,
+          bodySource: existing?.bodySource,
           status: existing?.status,
           source: existing ? `${existing.source},${source}` : source,
         });
@@ -1652,7 +2020,11 @@ async function captureSnapshot(
   title: string | undefined,
   resources: PageResource[],
   warnings: string[],
-  options: { includeScreenshot?: boolean } = {},
+  options: {
+    includeScreenshot?: boolean;
+    mhtmlBase64?: string;
+    harJson?: Record<string, unknown>;
+  } = {},
 ): Promise<PageSnapshot> {
   const html = await page
     .evaluate(() => document.documentElement.outerHTML)
@@ -1683,6 +2055,8 @@ async function captureSnapshot(
     text,
     screenshot: screenshotBuffer ? `data:image/png;base64,${screenshotBuffer.toString("base64")}` : undefined,
     resources,
+    mhtmlBase64: options.mhtmlBase64,
+    harJson: options.harJson,
     capturedAt: new Date().toISOString(),
     requiresInteraction: interaction.requiresInteraction,
     interactionReason: interaction.reason,

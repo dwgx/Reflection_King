@@ -45,6 +45,11 @@ Reflection King 是一个受策略约束的媒体抓取、候选选择、转码�
 - discovery 只生成候选；下载、合并和转码由 Rust 后端统一执行。
 - 每个候选 URL 必须通过和用户输入 URL 同等级别的安全策略。
 - 浏览器 sidecar 不得通过公开任务或候选 API 返回 Cookie/Auth header 明文。
+- 需要鉴权的归档或管理 API 不得在前端用裸链接打开；应使用带 `x-api-key`
+  的 `fetch`、后端签名 URL，或明确保持公开 `/media` artifact 边界。
+- 缓存清理不得删除活跃任务目录。清理逻辑必须先排除 queued、resolving、
+  candidate_selected、downloading、capturing、probing、transcoding 和 remuxing
+  等正在运行或可恢复状态对应的 `storage/tmp/<job_id>`。
 - `node_modules`、`target`、`storage`、浏览器 Profile、Cookie、日志和生成媒体不得提交。
 - 行为变化要同步更新 README、部署文档、API 示例或证据文档。
 
@@ -131,7 +136,7 @@ docker compose --env-file .env.docker up -d --build
 ## 下一批里程碑
 
 1. 为通用未知网页 discovery 增加自动 fixture：DOM media、metadata、preload、performance resources、inline JSON、script URL、manifest。
-2. 增加 CDP 网络捕获，记录重定向链、initiator 和受限体积的 JSON/manifest 片段。
+2. 为网页归档能力补 Rust 端 CI 验证、受控 fixture 和 dashboard 归档浏览回归测试。
 3. 增加 HLS/DASH manifest 解析器，包含子 URL SSRF 校验、variant 元数据、保护标记和分片/时长硬限制。
 4. 持续完善站点专项适配器，并把失败分类写入 evidence 文档。
 5. 为候选选择、Range 媒体响应、Docker 启动和 VPS 一键部署增加更强回归测试。

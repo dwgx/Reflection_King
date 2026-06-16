@@ -9,6 +9,11 @@ export interface ProbeRequest {
   maxEvents?: number;
   maxCandidates?: number;
   headed?: boolean;
+  captureCdp?: boolean;
+  saveMhtml?: boolean;
+  saveHar?: boolean;
+  cdpBodyMaxBytes?: number;
+  cdpBodyTotalBytes?: number;
 }
 
 export interface BrowserCandidate {
@@ -36,8 +41,14 @@ export interface PageResource {
   contentLength?: number;
   resourceType?: string;
   initiatorUrl?: string;
+  initiatorType?: string;
+  frameUrl?: string;
+  redirectChain?: string[];
+  servedFromCache?: boolean;
+  fromServiceWorker?: boolean;
   requestHeaders?: Record<string, string>;
   bodyBase64?: string;
+  bodySource?: string;
   source: string;
 }
 
@@ -48,6 +59,8 @@ export interface PageSnapshot {
   text: string;
   screenshot?: string;
   resources: PageResource[];
+  mhtmlBase64?: string;
+  harJson?: Record<string, unknown>;
   capturedAt: string;
   requiresInteraction?: boolean;
   interactionReason?: string;

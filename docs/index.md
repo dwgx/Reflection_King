@@ -22,6 +22,7 @@
 - [SoundCloud / YouTube 公开探测证据](evidence/soundcloud-youtube-public-probe-2026-06-09.md)
 - [外部 yt-dlp 探测证据](evidence/external-yt-dlp-probe-2026-06-09.md)
 - [平台 smoke 证据](evidence/platform-smoke-2026-06-12.md)
+- [网页归档与缓存维护证据](evidence/page-archive-cache-2026-06-16.md)
 
 目录说明：
 

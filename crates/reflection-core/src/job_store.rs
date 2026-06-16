@@ -232,6 +232,40 @@ impl JobStore {
         rows.into_iter().map(row_to_job).collect()
     }
 
+    pub async fn all_job_id_strings(&self) -> Result<Vec<String>> {
+        let rows = sqlx::query("SELECT id FROM jobs")
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| row.get::<String, _>("id"))
+            .collect())
+    }
+
+    pub async fn active_job_id_strings(&self) -> Result<Vec<String>> {
+        let rows = sqlx::query(
+            r#"
+            SELECT id
+            FROM jobs
+            WHERE status IN (?, ?, ?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(JobStatus::Queued.as_str())
+        .bind(JobStatus::Resolving.as_str())
+        .bind(JobStatus::CandidateSelected.as_str())
+        .bind(JobStatus::Downloading.as_str())
+        .bind(JobStatus::Capturing.as_str())
+        .bind(JobStatus::Probing.as_str())
+        .bind(JobStatus::Transcoding.as_str())
+        .bind(JobStatus::Remuxing.as_str())
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| row.get::<String, _>("id"))
+            .collect())
+    }
+
     pub async fn hide_visible_jobs(
         &self,
         actor_key_id: Option<Uuid>,
@@ -941,6 +975,65 @@ impl JobStore {
             validate_range("page_archive_max_total_mb", value, 1, 4_000)?;
             upsert_runtime_setting(&mut tx, "page_archive_max_total_mb", &value.to_string())
                 .await?;
+        }
+        if let Some(value) = request.page_archive_capture_cdp_enabled {
+            upsert_runtime_setting(
+                &mut tx,
+                "page_archive_capture_cdp_enabled",
+                bool_setting(value),
+            )
+            .await?;
+        }
+        if let Some(value) = request.page_archive_save_mhtml_enabled {
+            upsert_runtime_setting(
+                &mut tx,
+                "page_archive_save_mhtml_enabled",
+                bool_setting(value),
+            )
+            .await?;
+        }
+        if let Some(value) = request.page_archive_save_har_enabled {
+            upsert_runtime_setting(
+                &mut tx,
+                "page_archive_save_har_enabled",
+                bool_setting(value),
+            )
+            .await?;
+        }
+        if let Some(value) = request.page_archive_save_warc_enabled {
+            upsert_runtime_setting(
+                &mut tx,
+                "page_archive_save_warc_enabled",
+                bool_setting(value),
+            )
+            .await?;
+        }
+        if let Some(value) = request.page_archive_cdp_body_max_mb {
+            validate_range("page_archive_cdp_body_max_mb", value, 1, 256)?;
+            upsert_runtime_setting(
+                &mut tx,
+                "page_archive_cdp_body_max_mb",
+                &value.to_string(),
+            )
+            .await?;
+        }
+        if let Some(value) = request.page_archive_cdp_body_total_mb {
+            validate_range("page_archive_cdp_body_total_mb", value, 1, 4_000)?;
+            upsert_runtime_setting(
+                &mut tx,
+                "page_archive_cdp_body_total_mb",
+                &value.to_string(),
+            )
+            .await?;
+        }
+        if let Some(value) = request.cache_cleanup_min_age_hours {
+            validate_range("cache_cleanup_min_age_hours", value, 1, 8_760)?;
+            upsert_runtime_setting(
+                &mut tx,
+                "cache_cleanup_min_age_hours",
+                &value.to_string(),
+            )
+            .await?;
         }
         tx.commit().await?;
         Ok(())
@@ -2854,6 +2947,14 @@ async fn upsert_runtime_setting(
     Ok(())
 }
 
+fn bool_setting(value: bool) -> &'static str {
+    if value {
+        "1"
+    } else {
+        "0"
+    }
+}
+
 fn normalize_api_key_label(value: Option<&str>) -> String {
     let label = value.unwrap_or("用户密钥").trim();
     if label.is_empty() {
@@ -3094,6 +3195,13 @@ mod tests {
                 page_archive_max_resources: Some(75),
                 page_archive_max_resource_mb: Some(8),
                 page_archive_max_total_mb: Some(64),
+                page_archive_capture_cdp_enabled: Some(true),
+                page_archive_save_mhtml_enabled: Some(false),
+                page_archive_save_har_enabled: Some(true),
+                page_archive_save_warc_enabled: Some(false),
+                page_archive_cdp_body_max_mb: Some(4),
+                page_archive_cdp_body_total_mb: Some(128),
+                cache_cleanup_min_age_hours: Some(48),
             })
             .await
             .unwrap();
@@ -3134,6 +3242,93 @@ mod tests {
             values.get("page_archive_max_total_mb").map(String::as_str),
             Some("64")
         );
+        assert_eq!(
+            values
+                .get("page_archive_capture_cdp_enabled")
+                .map(String::as_str),
+            Some("1")
+        );
+        assert_eq!(
+            values
+                .get("page_archive_save_mhtml_enabled")
+                .map(String::as_str),
+            Some("0")
+        );
+        assert_eq!(
+            values
+                .get("page_archive_save_har_enabled")
+                .map(String::as_str),
+            Some("1")
+        );
+        assert_eq!(
+            values
+                .get("page_archive_save_warc_enabled")
+                .map(String::as_str),
+            Some("0")
+        );
+        assert_eq!(
+            values
+                .get("page_archive_cdp_body_max_mb")
+                .map(String::as_str),
+            Some("4")
+        );
+        assert_eq!(
+            values
+                .get("page_archive_cdp_body_total_mb")
+                .map(String::as_str),
+            Some("128")
+        );
+        assert_eq!(
+            values
+                .get("cache_cleanup_min_age_hours")
+                .map(String::as_str),
+            Some("48")
+        );
+
+        drop(store);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[tokio::test]
+    async fn active_job_ids_include_only_in_flight_statuses() {
+        let path = temp_db_path();
+        let store = JobStore::connect(&path).await.unwrap();
+
+        let mut queued = JobRecord::new(
+            "https://example.com/queued".to_string(),
+            "auto".to_string(),
+            "http://localhost:8787",
+        );
+        queued.status = JobStatus::Queued;
+        let mut downloading = JobRecord::new(
+            "https://example.com/downloading".to_string(),
+            "auto".to_string(),
+            "http://localhost:8787",
+        );
+        downloading.status = JobStatus::Downloading;
+        let mut ready = JobRecord::new(
+            "https://example.com/ready".to_string(),
+            "auto".to_string(),
+            "http://localhost:8787",
+        );
+        ready.status = JobStatus::Ready;
+        let mut needs_profile = JobRecord::new(
+            "https://example.com/profile".to_string(),
+            "auto".to_string(),
+            "http://localhost:8787",
+        );
+        needs_profile.status = JobStatus::NeedsProfile;
+
+        store.insert(&queued).await.unwrap();
+        store.insert(&downloading).await.unwrap();
+        store.insert(&ready).await.unwrap();
+        store.insert(&needs_profile).await.unwrap();
+
+        let active = store.active_job_id_strings().await.unwrap();
+        assert!(active.contains(&queued.id.to_string()));
+        assert!(active.contains(&downloading.id.to_string()));
+        assert!(!active.contains(&ready.id.to_string()));
+        assert!(!active.contains(&needs_profile.id.to_string()));
 
         drop(store);
         std::fs::remove_file(&path).ok();

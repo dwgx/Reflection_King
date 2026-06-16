@@ -52,10 +52,16 @@ candidate IDs.
 
 `outputs: ["page_html"]` requires browser discovery and produces a webpage
 frontend package, not only a single HTML file. A successful job emits
-`page.html`, `page.txt`, `screenshot.png`, `resources.json`, and `archive.zip`.
-The archive contains `index.html`, downloaded CSS/JS/images/fonts/media under
-`assets/`, and metadata. Remote assets are still validated by the server URL
-policy and byte limits before they are fetched.
+`page.html`, `index.html`, `page.txt`, `screenshot.png`, `resources.json`,
+`archive.zip`, and, when enabled, `archive.har`, `archive.mhtml`, and
+`archive.warc`. `page.html` is the inline preview copied from the archive's
+`index.inline.html`; `index.html` is the raw relative-resource entry.
+
+The archive contains `index.html`, `index.inline.html`, downloaded
+CSS/JS/images/fonts/media under `assets/`, preview files, and metadata. Remote
+assets are still validated by the server URL policy and byte limits before they
+are fetched. `resources.json` records URL provenance such as origin, initiator,
+frame URL, redirect chain, capture source, local path, and skip reason.
 
 Jobs that need a login-capable browser profile return `status:
 needs_profile`, `issue_kind: needs_profile`, and `profile_action_url`.
@@ -106,6 +112,56 @@ Request:
 
 Returns generated files and public media URLs.
 
+## `GET /api/jobs/{id}/archive/tree`
+
+Returns the extracted webpage package tree under the job's `page/` directory.
+The response lists each file path, content type, size, preview URL, and modified
+time. Access uses the same job authorization rules as `GET /api/jobs/{id}`.
+
+## `GET /api/jobs/{id}/archive/file?path=<relative-path>`
+
+Streams one extracted archive file. The path must be a normalized relative path
+inside the job's `page/` directory; absolute paths, backslashes, and `..` are
+rejected. This route exists so `/media/{id}/{filename}` can stay limited to
+single root artifacts. If API keys are enabled, clients must send `x-api-key`;
+dashboard archive previews use authenticated fetches rather than plain links.
+
 ## `GET /media/{id}/{filename}`
 
 Serves generated artifacts with single byte-range support.
+
+## `GET /api/admin/cache`
+
+Admin only. Returns storage usage grouped into public artifacts, temporary job
+directories, and browser profiles. Browser profiles are reported for visibility
+but are not part of the default cleanup boundary because they contain cookies
+and login state.
+
+## `POST /api/admin/cache/cleanup-preview`
+
+Admin only. Calculates removable cache entries without deleting them.
+
+Request:
+
+```json
+{
+  "min_age_hours": 24
+}
+```
+
+## `POST /api/admin/cache/cleanup`
+
+Admin only. Deletes only cleanup-eligible cache entries and requires
+`confirm: true`. The default cleanup removes old temporary job directories and
+orphaned public artifact directories; it does not delete database history,
+visible job records, known job artifact directories, active job temporary
+directories, or browser profiles.
+
+Request:
+
+```json
+{
+  "confirm": true,
+  "min_age_hours": 24
+}
+```

@@ -38,6 +38,11 @@ impl SourceExtractor for BrowserExtractor {
                 &ctx.profile_id,
                 ctx.platform_hint,
                 &ctx.output_names(),
+                ctx.page_archive_capture_cdp_enabled,
+                ctx.page_archive_save_mhtml_enabled,
+                ctx.page_archive_save_har_enabled,
+                ctx.page_archive_cdp_body_max_bytes,
+                ctx.page_archive_cdp_body_total_bytes,
             )
             .await?;
 

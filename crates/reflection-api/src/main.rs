@@ -12,11 +12,12 @@ use axum::{
 };
 use reflection_core::{
     models::{
+        ArchiveTreeView,
         normalize_bitrate, normalize_outputs, normalize_profile_id, ApiKeyRecord, ApiKeyRole,
-        ApiKeyView, AuthMode, ClearJobsResponse, CreateJobRequest, CreateUserKeyRequest,
-        CreatedUserKeyResponse, DiscoveryMode, HiddenJobBatchView, JobCreateOptions, JobRecord,
-        JobView, OutputKind, PlatformHint, RestoreJobsResponse, SelectCandidatesRequest,
-        UpdateRuntimeSettingsRequest,
+        ApiKeyView, AuthMode, CacheCleanupRequest, CacheCleanupView, CacheInventoryView,
+        ClearJobsResponse, CreateJobRequest, CreateUserKeyRequest, CreatedUserKeyResponse,
+        DiscoveryMode, HiddenJobBatchView, JobCreateOptions, JobRecord, JobView, OutputKind,
+        PlatformHint, RestoreJobsResponse, SelectCandidatesRequest, UpdateRuntimeSettingsRequest,
     },
     AppConfig, RkError,
 };
@@ -74,6 +75,8 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/jobs/{id}/candidates", get(list_candidates))
         .route("/api/jobs/{id}/select-candidates", post(select_candidates))
         .route("/api/jobs/{id}/artifacts", get(list_artifacts))
+        .route("/api/jobs/{id}/archive/tree", get(get_archive_tree))
+        .route("/api/jobs/{id}/archive/file", get(get_archive_file))
         .route("/api/jobs/{id}/trace", get(get_trace))
         .route(
             "/api/jobs/{id}/browser-login-session",
@@ -145,6 +148,12 @@ fn build_router(state: Arc<AppState>) -> Router {
             "/api/admin/settings",
             get(get_admin_settings).patch(update_admin_settings),
         )
+        .route("/api/admin/cache", get(get_admin_cache))
+        .route(
+            "/api/admin/cache/cleanup-preview",
+            post(preview_admin_cache_cleanup),
+        )
+        .route("/api/admin/cache/cleanup", post(run_admin_cache_cleanup))
         .route(
             "/api/admin/browser-profiles/{profile_id}/cookies/import",
             post(import_profile_cookies),
@@ -498,6 +507,51 @@ async fn list_artifacts(
     Ok(Json(state.list_artifacts(id).await?))
 }
 
+#[derive(Debug, Deserialize)]
+struct ArchiveFileQuery {
+    path: String,
+}
+
+async fn get_archive_tree(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<ArchiveTreeView>, ApiError> {
+    let principal = authorize(&state, &headers).await?;
+    ensure_job_access(&state, &principal, id).await?;
+    let settings = state.runtime_settings_view().await?;
+    Ok(Json(state.archive_tree(id, &settings.public_base_url).await?))
+}
+
+async fn get_archive_file(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Query(query): Query<ArchiveFileQuery>,
+) -> Result<Response, ApiError> {
+    let principal = authorize(&state, &headers).await?;
+    ensure_job_access(&state, &principal, id).await?;
+    let path = state.archive_file_path(id, &query.path).await?;
+    let mut file = File::open(&path).await?;
+    let file_len = file.metadata().await?.len();
+    if file_len == 0 {
+        return Err(RkError::Source("archive file is empty".to_string()).into());
+    }
+    let content_type = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .map(content_type_for)
+        .unwrap_or("application/octet-stream");
+    let stream = ReaderStream::new(file);
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, content_type)
+        .header(header::CONTENT_LENGTH, file_len.to_string())
+        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+        .body(Body::from_stream(stream))
+        .map_err(|error| RkError::Source(format!("failed to build response: {error}")))?)
+}
+
 /// Full observability timeline for a job: every step, outbound request, browser
 /// session, ffprobe, and ffmpeg run.
 async fn get_trace(
@@ -835,6 +889,35 @@ async fn update_admin_settings(
     let principal = authorize(&state, &headers).await?;
     ensure_admin(&principal)?;
     Ok(Json(state.update_runtime_settings(request).await?))
+}
+
+async fn get_admin_cache(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<CacheInventoryView>, ApiError> {
+    let principal = authorize(&state, &headers).await?;
+    ensure_admin(&principal)?;
+    Ok(Json(state.cache_inventory().await?))
+}
+
+async fn preview_admin_cache_cleanup(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<CacheCleanupRequest>,
+) -> Result<Json<CacheCleanupView>, ApiError> {
+    let principal = authorize(&state, &headers).await?;
+    ensure_admin(&principal)?;
+    Ok(Json(state.cache_cleanup_preview(request).await?))
+}
+
+async fn run_admin_cache_cleanup(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<CacheCleanupRequest>,
+) -> Result<Json<CacheCleanupView>, ApiError> {
+    let principal = authorize(&state, &headers).await?;
+    ensure_admin(&principal)?;
+    Ok(Json(state.cache_cleanup(request).await?))
 }
 
 #[derive(Debug, Deserialize)]
@@ -1509,6 +1592,8 @@ fn content_type_for(filename: &str) -> &'static str {
         "image/png"
     } else if filename.ends_with(".webp") {
         "image/webp"
+    } else if filename.ends_with(".gif") {
+        "image/gif"
     } else if filename.ends_with(".html") {
         "text/html; charset=utf-8"
     } else if filename.ends_with(".txt") {
@@ -1517,10 +1602,30 @@ fn content_type_for(filename: &str) -> &'static str {
         "application/json"
     } else if filename.ends_with(".zip") {
         "application/zip"
+    } else if filename.ends_with(".har") {
+        "application/json"
+    } else if filename.ends_with(".mhtml") || filename.ends_with(".mht") {
+        "multipart/related"
+    } else if filename.ends_with(".warc") {
+        "application/warc"
+    } else if filename.ends_with(".svg") {
+        "image/svg+xml"
+    } else if filename.ends_with(".ico") {
+        "image/x-icon"
+    } else if filename.ends_with(".avif") {
+        "image/avif"
+    } else if filename.ends_with(".webmanifest") {
+        "application/manifest+json"
     } else if filename.ends_with(".woff2") {
         "font/woff2"
     } else if filename.ends_with(".woff") {
         "font/woff"
+    } else if filename.ends_with(".ttf") {
+        "font/ttf"
+    } else if filename.ends_with(".otf") {
+        "font/otf"
+    } else if filename.ends_with(".wasm") {
+        "application/wasm"
     } else {
         "application/octet-stream"
     }

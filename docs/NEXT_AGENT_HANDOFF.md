@@ -1,6 +1,6 @@
 # 下一个 Agent 交接文档
 
-更新时间：2026-06-13  
+更新时间：2026-06-16<br>
 仓库：`https://github.com/dwgx/Reflection_King`  
 当前主分支：`master`  
 当前公网服务：按部署环境设置 `RK_BASE_URL` 或 `--base-url`，不要依赖历史 IP。
@@ -18,6 +18,8 @@
 - VPS 当前 `/api/health`。
 - `docs/evidence/platform-smoke-2026-06-12.md` 里的真实 smoke 记录。
 - 子代理只读审查结果。
+- 2026-06-16 网页归档、后台解压浏览、缓存清理和 review 修复记录：
+  `docs/evidence/page-archive-cache-2026-06-16.md`。
 
 用户曾提到一个长聊天记录文件：
 
@@ -61,6 +63,61 @@ raw URL，例如 VRChat 视频播放器。
 - 失败、待适配、实验性平台要明确标注，不要装作成功。
 
 ## 当前已经做到什么
+
+### 2026-06-16 新增：网页归档、后台浏览和缓存维护
+
+本轮完成的核心工作：
+
+- `outputs: ["page_html"]` 不再只是单 HTML 预览，而是网页前端包：
+  `index.html`、`index.inline.html`、`page.html`、`page.txt`、
+  `screenshot.png`、`resources.json`、`archive.zip`，并可选保存
+  `archive.mhtml`、`archive.har`、`archive.warc`。
+- Playwright sidecar 增加 CDP 网络捕获，记录 request/response、initiator、
+  frame URL、redirect chain、cache/service worker 标记，并在字节预算内缓存
+  CSS/JS/image/font/manifest/wasm 响应体。
+- `resources.json` 记录归档资源溯源：原始 URL、最终 URL、文档/资源 origin、
+  same-origin、method/status/content type、initiator、frame、redirect chain、
+  capture source、本地路径、跳过原因等。
+- 新增 `GET /api/jobs/{id}/archive/tree` 和
+  `GET /api/jobs/{id}/archive/file?path=<relative-path>`，用于后台查看解压后的
+  `page/` 目录。文件读取只允许规范化相对路径。
+- Dashboard 的归档资源“打开”使用带 `x-api-key` 的 authenticated fetch +
+  blob URL，不再用裸 `<a href>` 直接访问受鉴权 API。
+- 高级设置新增网页归档开关和预算：CDP 捕获、MHTML/HAR/WARC 保存、CDP 单响应
+  MB、CDP 总响应 MB、缓存清理最小小时。
+- 高级设置新增缓存面板：查看 public artifacts、temporary jobs、browser profiles
+  占用；支持 cleanup preview 和 confirm cleanup。
+- 缓存清理只删除旧临时目录和 orphan public artifact 目录；不会删除 browser
+  profiles、数据库历史、known job public artifacts 或活跃 job 的 tmp 目录。
+
+本轮 review 已修复两个 P2：
+
+- 归档资源裸链接不带 `x-api-key` 导致 authenticated dashboard 用户 401。
+- cache cleanup 会误删长时间运行中的 `storage/tmp/<job_id>`。
+
+本轮本地验证：
+
+```powershell
+npm.cmd --prefix apps/reflection-dashboard run build
+npm.cmd --prefix services/reflection-browser run check
+npm.cmd --prefix services/reflection-browser run build
+git diff --check
+```
+
+直接 sidecar smoke 使用临时 Profile 抓取 `https://example.com/`，确认 HTML、
+MHTML、HAR 均返回且 warnings 为空。临时 Profile 已清理。
+
+未完成验证：
+
+- 当前 Windows 本机没有 `cargo`、`rustc`、Docker、Bash、WSL，因此未能本地运行
+  Rust fmt/clippy/test、Docker build 或 Compose health。
+- 下一位 Agent 必须优先在有 Rust 工具链的环境跑：
+
+```powershell
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+```
 
 ### 后端
 
@@ -387,7 +444,8 @@ python scripts\smoke\vrchat_raw_url_check.py --url "<artifact-url>"
    记录路线、集数、候选来源、首段验证和地区阻断。不要把 403/404 CDN manifest 交给用户点。
 
 6. 通用网页 discovery fixture 和 CDP 捕获。  
-   用可控 fixture 覆盖未知站点，不要只靠真实站点临时结果。
+   CDP 捕获已有第一版，下一步要用可控 fixture 和 Rust/Playwright 测试覆盖，
+   不要只靠真实站点临时结果。
 
 7. UI 继续重做候选资源体验。  
    候选要让用户看懂：可用、需要授权、地区阻断、DRM、广告、过期、待适配，不能混在一起。
@@ -395,12 +453,17 @@ python scripts\smoke\vrchat_raw_url_check.py --url "<artifact-url>"
 8. 独立 worker / lease 队列。  
    当前 SQLite 已有基础，但多 worker 和崩溃恢复还不是最终生产形态。
 
+9. 网页归档回归测试。
+   给 archive tree/file API、authenticated blob 打开、WARC/HAR/MHTML 开关、
+   active tmp cleanup skip 增加 CI 覆盖。当前已有部分 Rust 单元测试草案，但本机未跑。
+
 ## 给下一个 Agent 的复制提示词
 
 ```text
 你接手 D:\Project\Reflection_King。先阅读 docs/NEXT_AGENT_HANDOFF.md、
-docs/WORKFLOW.md、docs/evidence/platform-smoke-2026-06-12.md、docs/DEPLOYMENT.md、
-docs/SECURITY.md。不要猜测平台支持；只有真实 URL、候选结构、转码产物、
+docs/WORKFLOW.md、docs/evidence/page-archive-cache-2026-06-16.md、
+docs/evidence/platform-smoke-2026-06-12.md、docs/DEPLOYMENT.md、docs/SECURITY.md。
+不要猜测平台支持；只有真实 URL、候选结构、转码产物、
 Range/VRChat 检查或 CI/VPS 证据支持时才能写“已完成”。
 
 当前目标是继续把 Reflection King 做成高质量的 Rust 媒体抓取、候选选择、
@@ -412,6 +475,7 @@ SQLite、storage 或 SSH 私密信息。
 如果改代码，跑 cargo fmt/test/clippy、browser npm check、dashboard npm build。
 如果改部署，跑 shell 语法和部署验证。若改平台解析，必须跑 live_smoke 和
 vrchat_raw_url_check，并更新 evidence。
+如果继续本轮网页归档/缓存工作，优先验证 Rust fmt/clippy/test，因为上一轮本机没有 cargo。
 
 禁区：不绕过 DRM、验证码、付费墙、登录墙、年龄门槛、区域限制或访问控制；
 不把浏览器看到的 URL 当成可播放成功；不让 failed/DRM/region_blocked/ad-risk 候选进入转码队列。

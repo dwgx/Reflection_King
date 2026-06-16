@@ -103,6 +103,13 @@ interface RuntimeSettingsView {
   page_archive_max_resources?: number;
   page_archive_max_resource_bytes?: number;
   page_archive_max_total_bytes?: number;
+  page_archive_capture_cdp_enabled?: boolean;
+  page_archive_save_mhtml_enabled?: boolean;
+  page_archive_save_har_enabled?: boolean;
+  page_archive_save_warc_enabled?: boolean;
+  page_archive_cdp_body_max_bytes?: number;
+  page_archive_cdp_body_total_bytes?: number;
+  cache_cleanup_min_age_hours?: number;
   ffmpeg_path: string;
   browser_probe_url: string | null;
   yt_dlp_path: string | null;
@@ -122,6 +129,13 @@ interface RuntimeSettingsForm {
   page_archive_max_resources: string;
   page_archive_max_resource_mb: string;
   page_archive_max_total_mb: string;
+  page_archive_capture_cdp_enabled: boolean;
+  page_archive_save_mhtml_enabled: boolean;
+  page_archive_save_har_enabled: boolean;
+  page_archive_save_warc_enabled: boolean;
+  page_archive_cdp_body_max_mb: string;
+  page_archive_cdp_body_total_mb: string;
+  cache_cleanup_min_age_hours: string;
 }
 
 interface JobView {
@@ -199,6 +213,52 @@ interface Artifact {
   content_type: string;
   bytes: number;
   created_at: string;
+}
+
+interface ArchiveFileView {
+  path: string;
+  name: string;
+  content_type: string;
+  bytes: number;
+  media_url: string;
+  previewable: boolean;
+  modified_at: string | null;
+}
+
+interface ArchiveTreeView {
+  job_id: string;
+  base_url: string;
+  files: ArchiveFileView[];
+}
+
+interface CacheCategoryView {
+  name: string;
+  path: string;
+  bytes: number;
+  files: number;
+  directories: number;
+  cleanup_allowed: boolean;
+}
+
+interface CacheInventoryView {
+  storage_root: string;
+  total_bytes: number;
+  categories: CacheCategoryView[];
+}
+
+interface CacheCleanupEntryView {
+  path: string;
+  bytes: number;
+  reason: string;
+  deleted: boolean;
+}
+
+interface CacheCleanupView {
+  dry_run: boolean;
+  min_age_hours: number;
+  total_bytes: number;
+  deleted_bytes: number;
+  entries: CacheCleanupEntryView[];
 }
 
 interface CreateJobPayload {
@@ -314,6 +374,13 @@ const EMPTY_RUNTIME_FORM: RuntimeSettingsForm = {
   page_archive_max_resources: "",
   page_archive_max_resource_mb: "",
   page_archive_max_total_mb: "",
+  page_archive_capture_cdp_enabled: true,
+  page_archive_save_mhtml_enabled: true,
+  page_archive_save_har_enabled: true,
+  page_archive_save_warc_enabled: true,
+  page_archive_cdp_body_max_mb: "",
+  page_archive_cdp_body_total_mb: "",
+  cache_cleanup_min_age_hours: "",
 };
 
 function App() {
@@ -325,6 +392,9 @@ function App() {
   const [selectedJob, setSelectedJob] = useState<JobView | null>(null);
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
+  const [archiveTree, setArchiveTree] = useState<ArchiveTreeView | null>(null);
+  const [cacheInventory, setCacheInventory] = useState<CacheInventoryView | null>(null);
+  const [cacheCleanupPreview, setCacheCleanupPreview] = useState<CacheCleanupView | null>(null);
   const [selectedCandidates, setSelectedCandidates] = useState<Set<string>>(new Set());
   const [showAllCandidates, setShowAllCandidates] = useState(false);
   const [jobPage, setJobPage] = useState(1);
@@ -506,6 +576,32 @@ function App() {
     return text ? (JSON.parse(text) as T) : (undefined as T);
   }
 
+  async function openArchiveFile(file: ArchiveFileView) {
+    try {
+      const response = await fetch(file.media_url, { headers });
+      if (!response.ok) {
+        const text = await response.text();
+        let error = text;
+        try {
+          error = JSON.parse(text).error ?? text;
+        } catch {
+          // Keep plain text.
+        }
+        throw new Error(error || `${response.status} ${response.statusText}`);
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const opened = window.open(url, "_blank", "noopener,noreferrer");
+      if (!opened) {
+        URL.revokeObjectURL(url);
+        throw new Error("浏览器拦截了新窗口，请允许弹窗后重试");
+      }
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (error) {
+      notify(errorMessage(error), "error");
+    }
+  }
+
   function notify(text: string, tone: NotificationItem["tone"] = "info") {
     setMessage(text);
     const id = ++notificationIdRef.current;
@@ -574,10 +670,20 @@ function App() {
     }
   }
 
+  async function refreshCacheInventory() {
+    try {
+      const data = await request<CacheInventoryView>("/api/admin/cache");
+      setCacheInventory(data);
+    } catch (error) {
+      notify(errorMessage(error), "error");
+    }
+  }
+
   async function refreshAdminPanel() {
     if (!isAdmin) return;
     await Promise.all([
       refreshRuntimeSettings(),
+      refreshCacheInventory(),
       refreshUserKeys(),
       refreshHiddenBatches(),
     ]);
@@ -597,6 +703,13 @@ function App() {
         page_archive_max_resources: parsePositiveInt(settingsForm.page_archive_max_resources, "网页资源数上限"),
         page_archive_max_resource_mb: parsePositiveInt(settingsForm.page_archive_max_resource_mb, "网页单资源上限"),
         page_archive_max_total_mb: parsePositiveInt(settingsForm.page_archive_max_total_mb, "网页资源包总上限"),
+        page_archive_capture_cdp_enabled: settingsForm.page_archive_capture_cdp_enabled,
+        page_archive_save_mhtml_enabled: settingsForm.page_archive_save_mhtml_enabled,
+        page_archive_save_har_enabled: settingsForm.page_archive_save_har_enabled,
+        page_archive_save_warc_enabled: settingsForm.page_archive_save_warc_enabled,
+        page_archive_cdp_body_max_mb: parsePositiveInt(settingsForm.page_archive_cdp_body_max_mb, "CDP 单响应上限"),
+        page_archive_cdp_body_total_mb: parsePositiveInt(settingsForm.page_archive_cdp_body_total_mb, "CDP 响应总上限"),
+        cache_cleanup_min_age_hours: parsePositiveInt(settingsForm.cache_cleanup_min_age_hours, "缓存清理最小小时"),
       };
       const data = await request<RuntimeSettingsView>("/api/admin/settings", {
         method: "PATCH",
@@ -624,6 +737,12 @@ function App() {
       ]);
       setCandidates(candidateData);
       setArtifacts(artifactData);
+      if (job.outputs.includes("page_html")) {
+        const tree = await request<ArchiveTreeView>(`/api/jobs/${id}/archive/tree`).catch(() => null);
+        setArchiveTree(tree);
+      } else {
+        setArchiveTree(null);
+      }
       if (!quiet) setMessage(`已载入任务 ${id}`);
       if (TERMINAL.has(job.status)) {
         await refreshJobs();
@@ -734,7 +853,54 @@ function App() {
     setSelectedJob(null);
     setCandidates([]);
     setArtifacts([]);
+    setArchiveTree(null);
     setSelectedCandidates(new Set());
+  }
+
+  async function previewCacheCleanup() {
+    setBusy(true);
+    try {
+      const data = await request<CacheCleanupView>("/api/admin/cache/cleanup-preview", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          min_age_hours: parsePositiveInt(settingsForm.cache_cleanup_min_age_hours, "缓存清理最小小时"),
+        }),
+      });
+      setCacheCleanupPreview(data);
+      notify(`预计可清理 ${formatBytes(data.total_bytes)}`, "info");
+    } catch (error) {
+      notify(errorMessage(error), "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function runCacheCleanup() {
+    const minAge = parsePositiveInt(settingsForm.cache_cleanup_min_age_hours, "缓存清理最小小时");
+    askConfirm({
+      title: "清理缓存",
+      message: `将清理超过 ${minAge} 小时的临时任务目录和公开产物目录。浏览器 Profile 和 Cookie 不会被删除。`,
+      confirmLabel: "清理缓存",
+      danger: true,
+      onConfirm: async () => {
+        setBusy(true);
+        try {
+          const data = await request<CacheCleanupView>("/api/admin/cache/cleanup", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ confirm: true, min_age_hours: minAge }),
+          });
+          setCacheCleanupPreview(data);
+          await refreshCacheInventory();
+          notify(`已清理 ${formatBytes(data.deleted_bytes)}`, "success");
+        } catch (error) {
+          notify(errorMessage(error), "error");
+        } finally {
+          setBusy(false);
+        }
+      },
+    });
   }
 
   async function selectCandidates() {
@@ -1606,6 +1772,39 @@ function App() {
         </Card>
 
         <Card title="产物" icon={<ExternalLink size={16} />} className="resource-panel" bodyClassName="resource-panel-body">
+          {archiveTree?.files.length ? (
+            <div className="archive-browser">
+              <div className="archive-browser-head">
+                <strong>归档资源</strong>
+                <span>{archiveTree.files.length} 个文件</span>
+              </div>
+              <div className="archive-file-list">
+                {archiveTree.files.slice(0, 80).map((file) => (
+                  <div key={file.path} className="archive-file-row">
+                    <div>
+                      <strong>{file.name}</strong>
+                      <span>{file.path} / {file.content_type} / {formatBytes(file.bytes)}</span>
+                    </div>
+                    <div className="panel-actions">
+                      <Button
+                        className="h-8"
+                        variant="secondary"
+                        onClick={async () => {
+                          await copy(file.media_url);
+                          notify("已复制归档接口地址；直接访问仍需要当前密钥", "info");
+                        }}
+                      >
+                        <Clipboard size={14} /> 复制
+                      </Button>
+                      <Button className="h-8" variant="secondary" onClick={() => void openArchiveFile(file)}>
+                        <ExternalLink size={14} /> 打开
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
           {artifacts.length ? (
             <div className="artifact-list">
               {artifacts.map((artifact) => (
@@ -1717,6 +1916,49 @@ function App() {
                 onChange={(event) => setSettingsForm({ ...settingsForm, page_archive_max_total_mb: event.target.value })}
               />
             </Field>
+            <Field label="CDP 单响应上限 MB">
+              <Input
+                inputMode="numeric"
+                value={settingsForm.page_archive_cdp_body_max_mb}
+                onChange={(event) => setSettingsForm({ ...settingsForm, page_archive_cdp_body_max_mb: event.target.value })}
+              />
+            </Field>
+            <Field label="CDP 响应总上限 MB">
+              <Input
+                inputMode="numeric"
+                value={settingsForm.page_archive_cdp_body_total_mb}
+                onChange={(event) => setSettingsForm({ ...settingsForm, page_archive_cdp_body_total_mb: event.target.value })}
+              />
+            </Field>
+            <Field label="缓存清理最小小时">
+              <Input
+                inputMode="numeric"
+                value={settingsForm.cache_cleanup_min_age_hours}
+                onChange={(event) => setSettingsForm({ ...settingsForm, cache_cleanup_min_age_hours: event.target.value })}
+              />
+            </Field>
+          </div>
+          <div className="permission-grid">
+            <Toggle
+              checked={settingsForm.page_archive_capture_cdp_enabled}
+              label="CDP 捕获"
+              onChange={(checked) => setSettingsForm({ ...settingsForm, page_archive_capture_cdp_enabled: checked })}
+            />
+            <Toggle
+              checked={settingsForm.page_archive_save_mhtml_enabled}
+              label="保存 MHTML"
+              onChange={(checked) => setSettingsForm({ ...settingsForm, page_archive_save_mhtml_enabled: checked })}
+            />
+            <Toggle
+              checked={settingsForm.page_archive_save_har_enabled}
+              label="保存 HAR"
+              onChange={(checked) => setSettingsForm({ ...settingsForm, page_archive_save_har_enabled: checked })}
+            />
+            <Toggle
+              checked={settingsForm.page_archive_save_warc_enabled}
+              label="保存 WARC"
+              onChange={(checked) => setSettingsForm({ ...settingsForm, page_archive_save_warc_enabled: checked })}
+            />
           </div>
           <div className="settings-readonly-grid">
             <MetaLine label="当前全局大小" value={formatBytes(runtimeSettings?.max_download_bytes ?? health?.max_download_bytes)} />
@@ -1734,8 +1976,72 @@ function App() {
             <MetaLine label="网页资源数" value={runtimeSettings?.page_archive_max_resources ?? "-"} />
             <MetaLine label="网页单资源" value={formatBytes(runtimeSettings?.page_archive_max_resource_bytes)} />
             <MetaLine label="网页资源包" value={formatBytes(runtimeSettings?.page_archive_max_total_bytes)} />
+            <MetaLine label="CDP 单响应" value={formatBytes(runtimeSettings?.page_archive_cdp_body_max_bytes)} />
+            <MetaLine label="CDP 响应总量" value={formatBytes(runtimeSettings?.page_archive_cdp_body_total_bytes)} />
+            <MetaLine label="缓存最小年龄" value={`${runtimeSettings?.cache_cleanup_min_age_hours ?? "-"} 小时`} />
           </div>
         </form>
+      </Card>
+
+      <Card
+        title="缓存与归档"
+        icon={<Database size={16} />}
+        action={
+          <div className="panel-actions">
+            <Button variant="secondary" onClick={refreshCacheInventory} disabled={busy || !isAdmin}>
+              <RefreshCw size={16} /> 刷新
+            </Button>
+            <Button variant="secondary" onClick={previewCacheCleanup} disabled={busy || !isAdmin}>
+              预览清理
+            </Button>
+            <Button variant="secondary" onClick={runCacheCleanup} disabled={busy || !isAdmin}>
+              清理缓存
+            </Button>
+          </div>
+        }
+      >
+        <div className="cache-panel">
+          <div className="settings-readonly-grid">
+            <MetaLine label="缓存总量" value={formatBytes(cacheInventory?.total_bytes)} />
+            <MetaLine label="存储根目录" value={cacheInventory?.storage_root ?? "-"} />
+            <MetaLine label="清理年龄" value={`${settingsForm.cache_cleanup_min_age_hours || "-"} 小时`} />
+          </div>
+          <div className="cache-category-list">
+            {cacheInventory?.categories.map((category) => (
+              <div key={category.name} className="cache-category-row">
+                <div>
+                  <strong>{cacheCategoryLabel(category.name)}</strong>
+                  <span>{category.path}</span>
+                </div>
+                <div className="key-flags">
+                  <em>{formatBytes(category.bytes)}</em>
+                  <em>{category.files} 文件</em>
+                  <em>{category.directories} 目录</em>
+                  <em>{category.cleanup_allowed ? "可清理" : "保留"}</em>
+                </div>
+              </div>
+            ))}
+            {!cacheInventory && <Empty label="尚未加载缓存统计" />}
+          </div>
+          {cacheCleanupPreview && (
+            <div className="cache-cleanup-list">
+              <div className="archive-browser-head">
+                <strong>{cacheCleanupPreview.dry_run ? "清理预览" : "清理结果"}</strong>
+                <span>{formatBytes(cacheCleanupPreview.dry_run ? cacheCleanupPreview.total_bytes : cacheCleanupPreview.deleted_bytes)}</span>
+              </div>
+              {cacheCleanupPreview.entries.slice(0, 50).map((entry) => (
+                <div key={entry.path} className="cache-cleanup-row">
+                  <div>
+                    <strong>{formatBytes(entry.bytes)}</strong>
+                    <span>{entry.path}</span>
+                  </div>
+                  <em>{entry.deleted ? "已删除" : entry.reason}</em>
+                </div>
+              ))}
+              {!cacheCleanupPreview.entries.length && <Empty label="没有可清理缓存" />}
+            </div>
+          )}
+        </div>
       </Card>
 
       <section className="admin-grid">
@@ -2346,8 +2652,8 @@ const Input = React.forwardRef<HTMLInputElement, React.InputHTMLAttributes<HTMLI
 });
 
 function Button(props: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: "primary" | "secondary" }) {
-  const { className = "", variant = "primary", ...rest } = props;
-  return <button className={`button ${variant} ${className}`} {...rest} />;
+  const { className = "", variant = "primary", type = "button", ...rest } = props;
+  return <button type={type} className={`button ${variant} ${className}`} {...rest} />;
 }
 
 function Dropdown(props: {
@@ -2732,6 +3038,13 @@ function runtimeSettingsToForm(settings: RuntimeSettingsView): RuntimeSettingsFo
     page_archive_max_resources: String(settings.page_archive_max_resources ?? 200),
     page_archive_max_resource_mb: String(bytesToMib(settings.page_archive_max_resource_bytes ?? 16 * 1024 * 1024)),
     page_archive_max_total_mb: String(bytesToMib(settings.page_archive_max_total_bytes ?? 200 * 1024 * 1024)),
+    page_archive_capture_cdp_enabled: settings.page_archive_capture_cdp_enabled ?? true,
+    page_archive_save_mhtml_enabled: settings.page_archive_save_mhtml_enabled ?? true,
+    page_archive_save_har_enabled: settings.page_archive_save_har_enabled ?? true,
+    page_archive_save_warc_enabled: settings.page_archive_save_warc_enabled ?? true,
+    page_archive_cdp_body_max_mb: String(bytesToMib(settings.page_archive_cdp_body_max_bytes ?? 2 * 1024 * 1024)),
+    page_archive_cdp_body_total_mb: String(bytesToMib(settings.page_archive_cdp_body_total_bytes ?? 64 * 1024 * 1024)),
+    cache_cleanup_min_age_hours: String(settings.cache_cleanup_min_age_hours ?? 24),
   };
 }
 
@@ -2862,11 +3175,23 @@ function outputModeLabel(value: string): string {
   } as Record<string, string>)[value] ?? value;
 }
 
+function cacheCategoryLabel(value: string): string {
+  return ({
+    public_artifacts: "公开产物",
+    temporary_jobs: "临时任务",
+    browser_profiles: "浏览器 Profile",
+  } as Record<string, string>)[value] ?? value;
+}
+
 function artifactLabel(artifact: Artifact): string {
   const url = artifact.media_url.toLowerCase();
   const contentType = artifact.content_type.toLowerCase();
   if (artifact.kind === "page_html") {
     if (url.endsWith("/archive.zip") || contentType.includes("zip")) return "网页前端包";
+    if (url.endsWith("/archive.har")) return "HAR 归档";
+    if (url.endsWith("/archive.mhtml")) return "MHTML 快照";
+    if (url.endsWith("/archive.warc")) return "WARC 归档";
+    if (url.endsWith("/index.html")) return "原始入口 HTML";
     if (url.endsWith("/page.html") || contentType.includes("html")) return "入口 HTML";
     if (url.endsWith("/resources.json") || contentType.includes("json")) return "资源清单";
     if (url.endsWith("/page.txt") || contentType.includes("text/plain")) return "页面文本";

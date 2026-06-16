@@ -127,6 +127,13 @@ pub struct RuntimeSettingsView {
     pub page_archive_max_resources: usize,
     pub page_archive_max_resource_bytes: u64,
     pub page_archive_max_total_bytes: u64,
+    pub page_archive_capture_cdp_enabled: bool,
+    pub page_archive_save_mhtml_enabled: bool,
+    pub page_archive_save_har_enabled: bool,
+    pub page_archive_save_warc_enabled: bool,
+    pub page_archive_cdp_body_max_bytes: u64,
+    pub page_archive_cdp_body_total_bytes: u64,
+    pub cache_cleanup_min_age_hours: u64,
     pub ffmpeg_path: String,
     pub browser_probe_url: Option<String>,
     pub yt_dlp_path: Option<String>,
@@ -147,6 +154,13 @@ pub struct UpdateRuntimeSettingsRequest {
     pub page_archive_max_resources: Option<usize>,
     pub page_archive_max_resource_mb: Option<u64>,
     pub page_archive_max_total_mb: Option<u64>,
+    pub page_archive_capture_cdp_enabled: Option<bool>,
+    pub page_archive_save_mhtml_enabled: Option<bool>,
+    pub page_archive_save_har_enabled: Option<bool>,
+    pub page_archive_save_warc_enabled: Option<bool>,
+    pub page_archive_cdp_body_max_mb: Option<u64>,
+    pub page_archive_cdp_body_total_mb: Option<u64>,
+    pub cache_cleanup_min_age_hours: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -849,6 +863,67 @@ pub struct ArtifactView {
     pub bytes: i64,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArchiveFileView {
+    pub path: String,
+    pub name: String,
+    pub content_type: String,
+    pub bytes: u64,
+    pub media_url: String,
+    pub previewable: bool,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub modified_at: Option<OffsetDateTime>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArchiveTreeView {
+    pub job_id: Uuid,
+    pub base_url: String,
+    pub files: Vec<ArchiveFileView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheCategoryView {
+    pub name: String,
+    pub path: String,
+    pub bytes: u64,
+    pub files: u64,
+    pub directories: u64,
+    pub cleanup_allowed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheInventoryView {
+    pub storage_root: String,
+    pub total_bytes: u64,
+    pub categories: Vec<CacheCategoryView>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CacheCleanupRequest {
+    #[serde(default)]
+    pub confirm: bool,
+    #[serde(default)]
+    pub min_age_hours: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheCleanupEntryView {
+    pub path: String,
+    pub bytes: u64,
+    pub reason: String,
+    pub deleted: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheCleanupView {
+    pub dry_run: bool,
+    pub min_age_hours: u64,
+    pub total_bytes: u64,
+    pub deleted_bytes: u64,
+    pub entries: Vec<CacheCleanupEntryView>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
