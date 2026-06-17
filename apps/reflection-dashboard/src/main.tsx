@@ -522,6 +522,14 @@ function App() {
     () => paginate(visibleCandidates, candidatePage, candidatePageSize),
     [visibleCandidates, candidatePage, candidatePageSize],
   );
+  const orderedArtifacts = useMemo(
+    () => artifacts.slice().sort(compareArtifacts),
+    [artifacts],
+  );
+  const orderedArchiveFiles = useMemo(
+    () => archiveTree?.files.slice().sort(compareArchiveFiles) ?? [],
+    [archiveTree],
+  );
 
   useEffect(() => {
     setJobPage((page) => clampPage(page, jobs.length, jobPageSize));
@@ -576,11 +584,34 @@ function App() {
     return text ? (JSON.parse(text) as T) : (undefined as T);
   }
 
-  async function openUrlWithAuth(url: string) {
-    const opened = window.open("about:blank", "_blank", "noopener,noreferrer");
+  function openDirectUrl(url: string) {
+    const opened = window.open(url, "_blank");
     if (!opened) {
       notify("浏览器拦截了新窗口，请允许弹窗后重试", "error");
       return;
+    }
+    try {
+      opened.opener = null;
+    } catch {
+      // Some browsers expose a read-only opener after navigation starts.
+    }
+  }
+
+  async function openUrlWithAuth(url: string) {
+    if (!requiresAuthenticatedOpen(url)) {
+      openDirectUrl(url);
+      return;
+    }
+
+    const opened = window.open("about:blank", "_blank");
+    if (!opened) {
+      notify("浏览器拦截了新窗口，请允许弹窗后重试", "error");
+      return;
+    }
+    try {
+      opened.opener = null;
+    } catch {
+      // Keep going; the file is still opened through a same-origin blob URL.
     }
     try {
       opened.document.title = "Reflection King";
@@ -1708,7 +1739,7 @@ function App() {
                   )}
                 </div>
               )}
-              {selectedJob.media_url && <Player url={selectedJob.media_url} />}
+              {selectedJob.media_url && <Player url={selectedJob.media_url} contentType={jobMediaContentType(selectedJob, artifacts)} />}
             </div>
           ) : (
             <Empty label="请选择一个任务" />
@@ -1780,17 +1811,42 @@ function App() {
         </Card>
 
         <Card title="产物" icon={<ExternalLink size={16} />} className="resource-panel" bodyClassName="resource-panel-body">
-          {archiveTree?.files.length ? (
+          {orderedArtifacts.length ? (
+            <div className="artifact-list">
+              {orderedArtifacts.map((artifact) => (
+                <div key={artifact.id} className="artifact-item">
+                  <div className="artifact-head">
+                    <div>
+                      <strong>{artifactLabel(artifact)}</strong>
+                      <span>{artifact.content_type} / {formatBytes(artifact.bytes)}</span>
+                    </div>
+                    <div className="panel-actions">
+                      <Button variant="secondary" onClick={() => copy(artifact.media_url)}>
+                        <Clipboard size={16} /> 复制
+                      </Button>
+                      <ActionLink href={artifact.media_url} variant="secondary">
+                        <ExternalLink size={16} /> {artifactOpenLabel(artifact)}
+                      </ActionLink>
+                    </div>
+                  </div>
+                  <Player url={artifact.media_url} contentType={artifact.content_type} />
+                </div>
+              ))}
+            </div>
+          ) : (
+            <Empty label="暂无产物" />
+          )}
+          {orderedArchiveFiles.length ? (
             <div className="archive-browser">
               <div className="archive-browser-head">
                 <strong>归档资源</strong>
-                <span>{archiveTree.files.length} 个文件</span>
+                <span>{orderedArchiveFiles.length} 个文件</span>
               </div>
               <div className="archive-file-list">
-                {archiveTree.files.slice(0, 80).map((file) => (
+                {orderedArchiveFiles.slice(0, 80).map((file) => (
                   <div key={file.path} className="archive-file-row">
                     <div>
-                      <strong>{file.name}</strong>
+                      <strong>{archiveFileLabel(file)}</strong>
                       <span>{file.path} / {file.content_type} / {formatBytes(file.bytes)}</span>
                     </div>
                     <div className="panel-actions">
@@ -1813,31 +1869,6 @@ function App() {
               </div>
             </div>
           ) : null}
-          {artifacts.length ? (
-            <div className="artifact-list">
-              {artifacts.map((artifact) => (
-                <div key={artifact.id} className="artifact-item">
-                  <div className="artifact-head">
-                    <div>
-                      <strong>{artifactLabel(artifact)}</strong>
-                      <span>{artifact.content_type} / {formatBytes(artifact.bytes)}</span>
-                    </div>
-                    <div className="panel-actions">
-                      <Button variant="secondary" onClick={() => copy(artifact.media_url)}>
-                        <Clipboard size={16} /> 复制
-                      </Button>
-                      <Button variant="secondary" onClick={() => void openUrlWithAuth(artifact.media_url)}>
-                        <ExternalLink size={16} /> 打开
-                      </Button>
-                    </div>
-                  </div>
-                  <Player url={artifact.media_url} />
-                </div>
-              ))}
-            </div>
-          ) : (
-            <Empty label="暂无产物" />
-          )}
         </Card>
       </section>
     </div>
@@ -2664,6 +2695,11 @@ function Button(props: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant
   return <button type={type} className={`button ${variant} ${className}`} {...rest} />;
 }
 
+function ActionLink(props: React.AnchorHTMLAttributes<HTMLAnchorElement> & { variant?: "primary" | "secondary" }) {
+  const { className = "", variant = "primary", target = "_blank", rel = "noopener noreferrer", ...rest } = props;
+  return <a target={target} rel={rel} className={`button ${variant} ${className}`} {...rest} />;
+}
+
 function Dropdown(props: {
   value: string;
   options: string[];
@@ -2992,18 +3028,19 @@ function Empty(props: { label: string }) {
   return <div className="empty-state">{props.label}</div>;
 }
 
-function Player(props: { url: string }) {
+function Player(props: { url: string; contentType?: string | null }) {
+  const contentType = props.contentType?.toLowerCase() ?? "";
   const lower = props.url.toLowerCase();
-  if (lower.endsWith(".mp4")) {
+  if (contentType.startsWith("video/") || /\.(mp4|webm|mov|m4v)(?:$|\?)/i.test(lower)) {
     return <video className="player" controls src={props.url} />;
   }
-  if (/\.(png|jpe?g|webp|gif|avif)(?:$|\?)/i.test(lower)) {
+  if (contentType.startsWith("image/") || /\.(png|jpe?g|webp|gif|avif)(?:$|\?)/i.test(lower)) {
     return <img className="player" src={props.url} alt="" />;
   }
-  if (/\.(html?|json|txt|zip)(?:$|\?)/i.test(lower)) {
-    return null;
+  if (contentType.startsWith("audio/") || /\.(mp3|m4a|aac|ogg|opus|wav|flac)(?:$|\?)/i.test(lower)) {
+    return <audio className="player" controls src={props.url} />;
   }
-  return <audio className="player" controls src={props.url} />;
+  return null;
 }
 
 function errorMessage(error: unknown): string {
@@ -3206,6 +3243,97 @@ function artifactLabel(artifact: Artifact): string {
     if (url.endsWith("/screenshot.png") || contentType.startsWith("image/")) return "页面截图";
   }
   return outputLabel(artifact.kind);
+}
+
+function artifactOpenLabel(artifact: Artifact): string {
+  if (isDownloadArtifact(artifact)) return "下载";
+  return "打开";
+}
+
+function archiveFileLabel(file: ArchiveFileView): string {
+  const normalized = file.path.toLowerCase();
+  if (normalized === "index.html") return "网页入口";
+  if (normalized === "index.inline.html") return "内联预览";
+  if (normalized === "page.html") return "原始页面";
+  if (normalized === "page.txt") return "页面文本";
+  if (normalized === "preview/screenshot.png" || normalized === "screenshot.png") return "页面截图";
+  if (normalized === "metadata/resources.json" || normalized === "resources.json") return "资源清单";
+  if (normalized === "metadata/archive.har" || normalized === "archive.har") return "HAR 归档";
+  if (normalized === "metadata/archive.mhtml" || normalized === "archive.mhtml") return "MHTML 快照";
+  if (normalized === "metadata/archive.warc" || normalized === "archive.warc") return "WARC 归档";
+  return file.name;
+}
+
+function compareArtifacts(left: Artifact, right: Artifact): number {
+  return artifactRank(left) - artifactRank(right)
+    || left.media_url.localeCompare(right.media_url);
+}
+
+function artifactRank(artifact: Artifact): number {
+  const url = artifact.media_url.toLowerCase();
+  const contentType = artifact.content_type.toLowerCase();
+  if (artifact.kind !== "page_html") return contentType.startsWith("video/") ? 10 : contentType.startsWith("audio/") ? 20 : 30;
+  if (url.endsWith("/archive.zip") || contentType.includes("zip")) return 0;
+  if (url.endsWith("/index.html")) return 1;
+  if (url.endsWith("/page.html") || contentType.includes("html")) return 2;
+  if (url.endsWith("/screenshot.png") || contentType.startsWith("image/")) return 3;
+  if (url.endsWith("/resources.json")) return 4;
+  if (url.endsWith("/page.txt") || contentType.includes("text/plain")) return 5;
+  if (url.endsWith("/archive.mhtml")) return 20;
+  if (url.endsWith("/archive.har")) return 21;
+  if (url.endsWith("/archive.warc")) return 22;
+  return 40;
+}
+
+function compareArchiveFiles(left: ArchiveFileView, right: ArchiveFileView): number {
+  return archiveFileRank(left) - archiveFileRank(right)
+    || left.path.localeCompare(right.path);
+}
+
+function archiveFileRank(file: ArchiveFileView): number {
+  const path = file.path.toLowerCase();
+  const contentType = file.content_type.toLowerCase();
+  if (path === "index.html") return 0;
+  if (path === "index.inline.html") return 1;
+  if (path === "page.html") return 2;
+  if (path === "preview/screenshot.png" || path === "screenshot.png") return 3;
+  if (path === "metadata/resources.json" || path === "resources.json") return 4;
+  if (path === "page.txt") return 5;
+  if (path.startsWith("assets/") && contentType.startsWith("text/css")) return 20;
+  if (path.startsWith("assets/") && (contentType.includes("javascript") || path.endsWith(".js"))) return 21;
+  if (path.startsWith("assets/") && contentType.startsWith("image/")) return 30;
+  if (path.startsWith("assets/") && contentType.startsWith("font/")) return 40;
+  if (path.startsWith("metadata/")) return 80;
+  return 60;
+}
+
+function isDownloadArtifact(artifact: Artifact): boolean {
+  const url = artifact.media_url.toLowerCase();
+  const contentType = artifact.content_type.toLowerCase();
+  return contentType.includes("zip")
+    || contentType.includes("warc")
+    || contentType.includes("multipart")
+    || url.endsWith(".zip")
+    || url.endsWith(".warc")
+    || url.endsWith(".mhtml")
+    || url.endsWith(".har");
+}
+
+function requiresAuthenticatedOpen(url: string): boolean {
+  try {
+    const parsed = new URL(url, window.location.href);
+    return parsed.pathname.includes("/api/jobs/") && parsed.pathname.includes("/archive/file");
+  } catch {
+    return url.includes("/api/jobs/") && url.includes("/archive/file");
+  }
+}
+
+function jobMediaContentType(job: JobView, artifacts: Artifact[]): string | null {
+  if (!job.media_url) return null;
+  const matching = artifacts.find((artifact) => artifact.media_url === job.media_url);
+  if (matching) return matching.content_type;
+  if (job.outputs.includes("page_html")) return "application/zip";
+  return null;
 }
 
 function outputsLabel(outputs: OutputKind[]): string {
@@ -3605,7 +3733,7 @@ function compactUrl(value: string): string {
   }
 }
 
-type JobIssueKind = "cookie" | "dependency" | "unsupported" | "profile" | "resolver" | "timeout" | "error";
+type JobIssueKind = "cookie" | "dependency" | "unsupported" | "profile" | "resolver" | "timeout" | "policy" | "error";
 
 interface JobIssue {
   kind: JobIssueKind;
@@ -3662,7 +3790,7 @@ function jobIssue(job: JobView | null): JobIssue | null {
       unsupported: { kind: "unsupported", label: "待适配", tone: "info" },
       too_large: { kind: "error", label: "过大", tone: "warn" },
       timeout: { kind: "timeout", label: "超时", tone: "warn" },
-      policy_blocked: { kind: "error", label: "策略阻止", tone: "warn" },
+      policy_blocked: { kind: "policy", label: "策略阻止", tone: "warn" },
     };
     return map[job.issue_kind];
   }
@@ -3691,6 +3819,9 @@ function jobIssue(job: JobView | null): JobIssue | null {
   if (lower.includes("timed out")) {
     return { kind: "timeout", label: "超时", tone: "warn" };
   }
+  if (lower.includes("url policy denied request")) {
+    return { kind: "policy", label: "策略阻止", tone: "warn" };
+  }
   if (lower.includes("yt-dlp probe exited") || lower.includes("external resolver")) {
     return { kind: "resolver", label: "解析器失败", tone: "error" };
   }
@@ -3701,6 +3832,12 @@ function friendlyError(value: string, job?: JobView | null): string {
   if (!value) return "-";
   const lower = `${job?.source_url ?? ""} ${value}`.toLowerCase();
 
+  if (lower.includes("url policy denied request") && lower.includes("blocked address")) {
+    return "URL 安全策略阻止了这个地址：目标解析到内网、localhost、保留地址或链路本地地址。请提交原始公网 URL，不要把本服务的 192.168/127.0.0.1 产物地址再作为解析来源。";
+  }
+  if (lower.includes("steam") && lower.includes("no media candidates")) {
+    return "Steam 商店页通常是网页内容，不是直连视频/音频媒体页。请选择 HTML/CSS/JS 输出保存网页前端包；如果要下载商店视频，需要页面里真实公开的媒体 URL 或后续专门适配。";
+  }
   if (lower.includes("fresh cookies")) {
     return "该链接需要 fresh cookies。请导入对应站点 Cookie/Profile 后重试；这不是媒体管线损坏。";
   }
