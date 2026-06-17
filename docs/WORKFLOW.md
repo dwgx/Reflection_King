@@ -61,6 +61,10 @@ Reflection King 是一个受策略约束的媒体抓取、候选选择、转码�
 .\scripts\check.ps1
 ```
 
+本地脚本会运行 Rust fmt/clippy/test、browser sidecar check/build、Dashboard
+build、PowerShell 语法检查、`git diff --check`，并在存在 Bash 时运行 shell
+语法检查。Docker build 和 Compose health 仍由 CI 或有 Docker 的本机环境覆盖。
+
 当前 CI 覆盖：
 
 - `bash -n install.sh scripts/deploy/*.sh`

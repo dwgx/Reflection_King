@@ -38,12 +38,12 @@ curl -fsSL https://raw.githubusercontent.com/dwgx/Reflection_King/master/install
   --public-base-url https://rk.example.com
 ```
 
-安装完成后控制台会打印：
+安装完成后控制台会打印 Dashboard 地址和管理密钥文件位置。默认不会把密钥
+明文打印到 stdout；如需查看初始密钥，在服务器上读取密钥文件。
 
 ```text
 Reflection King installed.
 Dashboard: http://你的服务器IP:8780
-Admin key: <初始管理密钥>
 Admin key file: /root/reflection-king-admin-key.txt
 ```
 
@@ -112,7 +112,7 @@ docker compose --env-file .env.docker up -d --build
 docker compose logs -f reflection-king
 ```
 
-默认启动日志不会打印管理员密钥。需要查看初始密钥时读取服务器/容器内的
+默认启动日志不会打印管理密钥。需要查看初始密钥时读取服务器/容器内的
 `admin-key.txt`；仅在一次性受控环境中可设置 `RK_PRINT_BOOTSTRAP_KEY=1`
 让脚本把密钥打印到 stdout。
 
@@ -122,12 +122,11 @@ docker compose logs -f reflection-king
 docker compose up -d --build
 ```
 
-第一次启动时容器日志会打印管理密钥：
+第一次启动时容器日志会显示密钥文件位置：
 
 ```text
 Reflection King starting.
 Dashboard: http://localhost:8780
-Admin key: <初始管理密钥>
 Admin key file: /data/admin-key.txt
 ```
 

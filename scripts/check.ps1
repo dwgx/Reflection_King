@@ -1,5 +1,23 @@
 $ErrorActionPreference = "Stop"
 
+function Invoke-CheckedNative {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [Parameter(ValueFromRemainingArguments = $true)][string[]]$ArgumentList
+    )
+
+    & $FilePath @ArgumentList
+    if ($LASTEXITCODE -ne 0) {
+        exit $LASTEXITCODE
+    }
+}
+
+function Ensure-NodeModules {
+    if (-not (Test-Path "node_modules")) {
+        Invoke-CheckedNative "npm" "ci"
+    }
+}
+
 $cargo = Get-Command cargo -ErrorAction SilentlyContinue
 if (-not $cargo) {
     $candidateCargoPaths = @(
@@ -58,17 +76,25 @@ if errorlevel 1 exit /b %errorlevel%
         exit $rustExit
     }
 } else {
-& $cargoPath fmt --all -- --check
-& $cargoPath clippy --workspace --all-targets -- -D warnings
-& $cargoPath test --workspace
+    Invoke-CheckedNative $cargoPath "fmt" "--all" "--" "--check"
+    Invoke-CheckedNative $cargoPath "clippy" "--workspace" "--all-targets" "--" "-D" "warnings"
+    Invoke-CheckedNative $cargoPath "test" "--workspace"
 }
 
 Push-Location (Join-Path $PSScriptRoot "..\services\reflection-browser")
 try {
-    if (-not (Test-Path "node_modules")) {
-        npm install
-    }
-    npm run check
+    Ensure-NodeModules
+    Invoke-CheckedNative "npm" "run" "check"
+    Invoke-CheckedNative "npm" "run" "build"
+}
+finally {
+    Pop-Location
+}
+
+Push-Location (Join-Path $PSScriptRoot "..\apps\reflection-dashboard")
+try {
+    Ensure-NodeModules
+    Invoke-CheckedNative "npm" "run" "build"
 }
 finally {
     Pop-Location
@@ -94,3 +120,16 @@ foreach ($path in $scriptPaths) {
         Write-Error "PowerShell syntax failed: $path"
     }
 }
+
+$bash = Get-Command bash -ErrorAction SilentlyContinue
+if ($bash) {
+    $root = Split-Path $PSScriptRoot -Parent
+    Invoke-CheckedNative $bash.Source "-n" (Join-Path $root "install.sh")
+    Get-ChildItem -LiteralPath (Join-Path $root "scripts\deploy") -Filter "*.sh" | ForEach-Object {
+        Invoke-CheckedNative $bash.Source "-n" $_.FullName
+    }
+} else {
+    Write-Host "bash was not found; skipping shell syntax check."
+}
+
+Invoke-CheckedNative "git" "diff" "--check"

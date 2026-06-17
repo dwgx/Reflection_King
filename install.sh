@@ -80,6 +80,27 @@ if [[ "${APP_DIR}" != /* ]] || [[ "${APP_DIR}" =~ [[:space:]] ]]; then
   echo "--app-dir must be an absolute path without whitespace." >&2
   exit 1
 fi
+APP_DIR="${APP_DIR%/}"
+if [[ -z "${APP_DIR}" ]]; then
+  APP_DIR="/"
+fi
+
+case "${APP_DIR}" in
+  "/"|"/bin"|"/boot"|"/dev"|"/etc"|"/home"|"/lib"|"/lib64"|"/media"|"/mnt"|"/opt"|"/proc"|"/root"|"/run"|"/sbin"|"/srv"|"/sys"|"/tmp"|"/usr"|"/var"|"/var/www")
+    echo "--app-dir points at a protected system or parent directory: ${APP_DIR}" >&2
+    echo "Choose a dedicated application directory such as /opt/reflection-king." >&2
+    exit 1
+    ;;
+  *"/.."*|*"../"*)
+    echo "--app-dir must not contain '..' path components: ${APP_DIR}" >&2
+    exit 1
+    ;;
+esac
+
+if [[ -L "${APP_DIR}" ]]; then
+  echo "--app-dir must not be a symlink: ${APP_DIR}" >&2
+  exit 1
+fi
 
 export RK_REPO_URL="${REPO_URL}"
 export RK_BRANCH="${BRANCH}"
@@ -100,9 +121,26 @@ apt-get install -y ca-certificates curl git
 
 if [[ -d "${APP_DIR}/.git" ]]; then
   git -C "${APP_DIR}" fetch origin "${BRANCH}"
-  git -C "${APP_DIR}" reset --hard "origin/${BRANCH}"
+  if ! git -C "${APP_DIR}" diff --quiet || ! git -C "${APP_DIR}" diff --cached --quiet; then
+    echo "--app-dir has local changes: ${APP_DIR}" >&2
+    echo "Commit, stash, or remove those changes before rerunning the installer." >&2
+    exit 1
+  fi
+  git -C "${APP_DIR}" merge --ff-only "origin/${BRANCH}"
 else
-  rm -rf "${APP_DIR}"
+  if [[ -e "${APP_DIR}" ]]; then
+    if [[ ! -d "${APP_DIR}" ]]; then
+      echo "--app-dir exists but is not a directory: ${APP_DIR}" >&2
+      exit 1
+    fi
+    if [[ -n "$(find "${APP_DIR}" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+      echo "--app-dir exists, is not a Git checkout, and is not empty: ${APP_DIR}" >&2
+      echo "Refusing to delete it. Move it aside or choose an empty dedicated directory." >&2
+      exit 1
+    fi
+  else
+    mkdir -p "$(dirname "${APP_DIR}")"
+  fi
   git clone --branch "${BRANCH}" "${REPO_URL}" "${APP_DIR}"
 fi
 

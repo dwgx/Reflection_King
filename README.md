@@ -45,11 +45,11 @@ curl -fsSL https://raw.githubusercontent.com/dwgx/Reflection_King/master/install
   --public-base-url http://你的服务器IP:8780
 ```
 
-安装完成后控制台会显示：
+安装完成后控制台会显示 Dashboard 地址和管理密钥文件位置。默认不会把密钥
+打印到日志；需要查看时在服务器上读取密钥文件。
 
 ```text
 Dashboard: http://你的服务器IP:8780
-Admin key: <初始管理密钥>
 Admin key file: /root/reflection-king-admin-key.txt
 ```
 
@@ -63,8 +63,12 @@ docker compose --env-file .env.docker up -d --build
 docker compose logs -f reflection-king
 ```
 
-第一次启动会在日志里打印管理密钥，并保存到 Docker volume 的
-`/data/admin-key.txt`。
+第一次启动会把管理密钥保存到 Docker volume 的 `/data/admin-key.txt`。
+默认日志只显示密钥文件位置；需要查看时运行：
+
+```bash
+docker compose exec reflection-king cat /data/admin-key.txt
+```
 
 更多部署细节见 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)。
 

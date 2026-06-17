@@ -115,16 +115,18 @@ git diff --check
 - `D:\Software\Rust\cargo\bin\cargo.exe`
 - `D:\Software\Microsoft Visual Studio\18\Community\Common7\Tools\VsDevCmd.bat`
 
-`scripts/check.ps1` 已更新为能自动发现上述本机 Rust 和 VS Community 路径。
+`scripts/check.ps1` 已更新为能自动发现上述本机 Rust 和 VS Community 路径，
+并补齐 sidecar build、dashboard build、shell 语法检查（存在 Bash 时）和
+`git diff --check`。
 
 直接 sidecar smoke 使用临时 Profile 抓取 `https://example.com/`，确认 HTML、
 MHTML、HAR 均返回且 warnings 为空。临时 Profile 已清理。
 
 未完成验证：
 
-- 当前 Windows 本机仍没有 Docker、Bash、WSL，因此未能本地运行 Docker build 或
+- 当前 Windows 本机仍没有 Docker、WSL，因此未能本地运行 Docker build 或
   Compose health。
-- 下一位 Agent 若要复验本轮代码，可直接运行：
+- 下一位 Agent 若要复验本轮本地代码，可直接运行：
 
 ```powershell
 .\scripts\check.ps1
@@ -240,11 +242,12 @@ docker compose --env-file .env.docker up -d --build
 
 - Docker 镜像内包含 Rust API、Dashboard 静态资源、Playwright sidecar、Chromium、
   ffmpeg、yt-dlp、you-get、streamlink、SQLite 存储目录。
-- VPS 安装脚本会显示初始管理密钥，并写入：
+- VPS 安装脚本默认隐藏初始管理密钥，并写入：
   - `/root/reflection-king-admin-key.txt`
   - `/etc/reflection-king/reflection.env`
-- Docker 首次启动会显示初始管理密钥，并写入：
+- Docker 首次启动默认隐藏初始管理密钥，并写入：
   - `/data/admin-key.txt`
+- 只有显式设置 `RK_PRINT_BOOTSTRAP_KEY=1` 时，脚本才会把密钥打印到 stdout。
 
 不要在聊天、提交、文档或日志摘录里公开真实管理密钥。
 
@@ -270,6 +273,14 @@ GitHub Actions run: 27457817046
 status: success
 ```
 
+当前本机最新已确认：
+
+```text
+commit: 04f4882
+GitHub Actions run: 27593628977
+status: success
+```
+
 本文档之后的纯文档提交不改变功能基线，但交接时仍要重新核对 `master` 最新 CI、
 远端 `origin/master` 和 VPS 当前 HEAD。
 
@@ -288,12 +299,12 @@ CI 覆盖：
 
 ### VPS
 
-当前 VPS 已确认：
+VPS 状态未在本轮重新验证。上次记录的 VPS 期望状态：
 
 ```text
 URL: set RK_BASE_URL or --base-url to the active host
 commit requirement: /opt/reflection-king must match origin/master
-last functional baseline: b3e4533
+last functional baseline in this document: b3e4533
 reflection-api: active
 reflection-browser: active
 nginx: active
