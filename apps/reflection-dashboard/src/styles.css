@@ -845,10 +845,15 @@
     overflow-wrap: anywhere;
   }
 
-  .meta-line button {
+  .meta-line button,
+  .meta-line a {
     margin-left: 6px;
     color: #59d9ea;
     font-size: 12px;
+  }
+
+  .meta-line a {
+    text-decoration: none;
   }
 
   .error-line {

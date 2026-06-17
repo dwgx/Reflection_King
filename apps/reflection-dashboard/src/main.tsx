@@ -142,6 +142,7 @@ interface JobView {
   id: string;
   status: string;
   source_url: string;
+  original_source_url?: string | null;
   bitrate: string;
   created_at: string;
   updated_at: string;
@@ -1684,6 +1685,10 @@ function App() {
                 </div>
               </div>
               <div className="meta-list">
+                {selectedJob.original_source_url && selectedJob.original_source_url !== selectedJob.source_url && (
+                  <MetaLine label="原始输入" value={selectedJob.original_source_url} copyable />
+                )}
+                <MetaLine label="来源 URL" value={selectedJob.source_url} copyable href={selectedJob.source_url} />
                 <MetaLine label="输出" value={outputsLabel(selectedJob.outputs)} />
                 <MetaLine label="解析" value={`${discoveryLabel(selectedJob.discovery)} / ${platformLabel(selectedJob.platform_hint)}`} />
                 <MetaLine label="清晰度" value={bitrateLabel(selectedJob.bitrate)} />
@@ -3037,6 +3042,7 @@ function MetaLine(props: {
   label: string;
   value: string | number | null | undefined;
   copyable?: boolean;
+  href?: string | null;
 }) {
   const value = String(props.value ?? "-");
   return (
@@ -3046,6 +3052,9 @@ function MetaLine(props: {
         {value}
         {props.copyable && value !== "-" && (
           <button onClick={() => copy(value)} type="button">复制</button>
+        )}
+        {props.href && value !== "-" && (
+          <a href={props.href} target="_blank" rel="noopener noreferrer">打开</a>
         )}
       </strong>
     </div>

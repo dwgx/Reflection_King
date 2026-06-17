@@ -410,11 +410,11 @@ async fn create_job(
 ) -> Result<(StatusCode, Json<JobView>), ApiError> {
     let principal = authorize(&state, &headers).await?;
 
-    let source_url = request.url.trim();
-    if source_url.is_empty() {
+    let original_source_url = request.url.trim();
+    if original_source_url.is_empty() {
         return Err(RkError::BadRequest("missing url".to_string()).into());
     }
-    let source_url: String = parse_and_validate_url(source_url)?.into();
+    let source_url: String = parse_and_validate_url(original_source_url)?.into();
 
     // Requester provenance ("who / what IP / what browser"): prefer a proxy's
     // forwarded client IP, fall back to the socket peer address.
@@ -451,6 +451,7 @@ async fn create_job(
             auth_mode,
         },
     )
+    .with_original_source_url(Some(original_source_url.to_string()))
     .with_requester(
         Some(requester_ip),
         requester_user_agent,

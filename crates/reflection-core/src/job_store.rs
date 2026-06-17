@@ -49,6 +49,7 @@ impl JobStore {
                 id,
                 status,
                 source_url,
+                original_source_url,
                 bitrate,
                 created_at,
                 updated_at,
@@ -71,12 +72,13 @@ impl JobStore {
                 started_at,
                 completed_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(record.id.to_string())
         .bind(record.status.as_str())
         .bind(&record.source_url)
+        .bind(&record.original_source_url)
         .bind(&record.bitrate)
         .bind(format_time(record.created_at)?)
         .bind(format_time(record.updated_at)?)
@@ -110,6 +112,7 @@ impl JobStore {
             SELECT id,
                    status,
                    source_url,
+                   original_source_url,
                    bitrate,
                    created_at,
                    updated_at,
@@ -152,6 +155,7 @@ impl JobStore {
             SELECT id,
                    status,
                    source_url,
+                   original_source_url,
                    bitrate,
                    created_at,
                    updated_at,
@@ -197,6 +201,7 @@ impl JobStore {
             SELECT id,
                    status,
                    source_url,
+                   original_source_url,
                    bitrate,
                    created_at,
                    updated_at,
@@ -1998,6 +2003,7 @@ impl JobStore {
                 id TEXT PRIMARY KEY NOT NULL,
                 status TEXT NOT NULL,
                 source_url TEXT NOT NULL,
+                original_source_url TEXT,
                 bitrate TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
@@ -2010,6 +2016,8 @@ impl JobStore {
         .execute(&self.pool)
         .await?;
 
+        self.add_column_if_missing("jobs", "original_source_url", "TEXT")
+            .await?;
         self.add_column_if_missing("jobs", "discovery", "TEXT NOT NULL DEFAULT 'direct'")
             .await?;
         self.add_column_if_missing("jobs", "platform_hint", "TEXT NOT NULL DEFAULT 'auto'")
@@ -2511,6 +2519,7 @@ fn row_to_job(row: sqlx::sqlite::SqliteRow) -> Result<JobRecord> {
         status: JobStatus::parse(&status)
             .ok_or_else(|| RkError::BadRequest(format!("invalid stored job status `{status}`")))?,
         source_url: row.get("source_url"),
+        original_source_url: row.get("original_source_url"),
         bitrate: row.get("bitrate"),
         created_at: parse_time(&created_at)?,
         updated_at: parse_time(&updated_at)?,
@@ -2977,6 +2986,9 @@ mod tests {
             "192k".to_string(),
             "http://localhost:8787",
         )
+        .with_original_source_url(Some(
+            "www.streetvoice.cn/SpaceStaion/songs/863335/".to_string(),
+        ))
         .with_requester(
             Some("203.0.113.7".to_string()),
             Some("Mozilla/5.0 ReflectionKing".to_string()),
@@ -3059,6 +3071,10 @@ mod tests {
 
         // Job round-trips with provenance + completion timestamp.
         let loaded = store.get(job_id).await.unwrap().unwrap();
+        assert_eq!(
+            loaded.original_source_url.as_deref(),
+            Some("www.streetvoice.cn/SpaceStaion/songs/863335/")
+        );
         assert_eq!(loaded.requester_ip.as_deref(), Some("203.0.113.7"));
         assert_eq!(loaded.status, JobStatus::Ready);
         assert_eq!(loaded.error_class, ErrorClass::None);

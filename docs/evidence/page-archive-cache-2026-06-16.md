@@ -79,6 +79,12 @@ Two user-visible archive opening regressions were fixed after VPS smoke:
   before policy validation. The dashboard no longer lets the browser's native
   URL input validation block this common paste form before application logic
   can normalize it.
+- Job detail responses now preserve `original_source_url` for newly created
+  jobs and still expose normalized `source_url` as the resolver input. The
+  dashboard task detail panel shows the original input when it differs from the
+  normalized URL and always shows the full source URL with copy/open actions.
+  Older jobs created before this field existed can only show the normalized
+  `source_url`.
 
 VPS verification after rebuilding the Docker service from `master`:
 

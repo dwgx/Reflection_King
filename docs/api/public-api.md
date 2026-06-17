@@ -34,6 +34,13 @@ Request:
 
 If `RK_API_KEY` is configured, send `x-api-key`.
 
+The job response exposes both URL forms:
+
+- `source_url`: normalized URL used by the resolver. Bare host input such as
+  `www.youtube.com/watch` is normalized to `https://www.youtube.com/watch`.
+- `original_source_url`: trimmed user input before normalization. This may be
+  `null` on jobs created before the field existed.
+
 Discovery modes:
 
 - `direct`: treat `url` as a direct downloadable media URL.

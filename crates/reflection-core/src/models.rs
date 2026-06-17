@@ -239,6 +239,7 @@ pub struct JobView {
     pub id: Uuid,
     pub status: JobStatus,
     pub source_url: String,
+    pub original_source_url: Option<String>,
     pub bitrate: String,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
@@ -277,6 +278,7 @@ pub struct JobRecord {
     pub id: Uuid,
     pub status: JobStatus,
     pub source_url: String,
+    pub original_source_url: Option<String>,
     pub bitrate: String,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
@@ -346,6 +348,7 @@ impl JobRecord {
             id,
             status: JobStatus::Queued,
             source_url,
+            original_source_url: None,
             bitrate,
             created_at: now,
             updated_at: now,
@@ -368,6 +371,13 @@ impl JobRecord {
             started_at: None,
             completed_at: None,
         }
+    }
+
+    /// Preserve the user-submitted source text after lightweight trimming,
+    /// before URL normalization adds a default scheme or canonical spelling.
+    pub fn with_original_source_url(mut self, source_url: Option<String>) -> Self {
+        self.original_source_url = source_url;
+        self
     }
 
     /// Attach requester provenance captured from the inbound HTTP request.
@@ -452,6 +462,7 @@ impl From<JobRecord> for JobView {
             id: value.id,
             status: value.status,
             source_url: value.source_url,
+            original_source_url: value.original_source_url,
             bitrate: value.bitrate,
             created_at: value.created_at,
             updated_at: value.updated_at,
