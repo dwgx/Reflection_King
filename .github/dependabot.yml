@@ -4,6 +4,17 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    groups:
+      rust-dependencies:
+        patterns:
+          - "*"
+    ignore:
+      - dependency-name: sha2
+        versions:
+          - "0.11.x"
+      - dependency-name: sqlx
+        versions:
+          - "0.9.x"
   - package-ecosystem: github-actions
     directory: /
     schedule:
