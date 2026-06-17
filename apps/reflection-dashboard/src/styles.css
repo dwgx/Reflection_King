@@ -1161,6 +1161,89 @@
     background: transparent;
   }
 
+  .file-preview-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 90;
+    display: grid;
+    place-items: center;
+    background: rgb(0 0 0 / 0.72);
+    padding: 22px;
+  }
+
+  .file-preview-modal {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    width: min(1120px, 96vw);
+    height: min(820px, 92vh);
+    overflow: hidden;
+    border: 1px solid #303948;
+    border-radius: 8px;
+    background: #090c12;
+    box-shadow: 0 24px 70px rgb(0 0 0 / 0.5);
+  }
+
+  .file-preview-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    border-bottom: 1px solid #242a34;
+    padding: 12px;
+  }
+
+  .file-preview-head > div:first-child {
+    display: grid;
+    min-width: 0;
+    gap: 3px;
+  }
+
+  .file-preview-head strong {
+    color: #eef4fb;
+    overflow-wrap: anywhere;
+  }
+
+  .file-preview-head span {
+    color: #8895a6;
+    font-size: 12px;
+    overflow-wrap: anywhere;
+  }
+
+  .file-preview-body {
+    min-height: 0;
+    overflow: auto;
+    background: #050608;
+  }
+
+  .file-preview-body iframe,
+  .file-preview-body img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    border: 0;
+    background: #fff;
+  }
+
+  .file-preview-body img {
+    height: auto;
+    min-height: 100%;
+    object-fit: contain;
+    background: #050608;
+  }
+
+  .file-preview-empty {
+    display: grid;
+    min-height: 100%;
+    place-content: center;
+    gap: 6px;
+    color: #8e9aab;
+    text-align: center;
+  }
+
+  .file-preview-empty strong {
+    color: #eef4fb;
+  }
+
   .pager {
     display: flex;
     align-items: center;

@@ -342,6 +342,14 @@ interface NotificationItem {
   text: string;
 }
 
+interface FilePreviewState {
+  title: string;
+  contentType: string;
+  bytes: number | null;
+  blobUrl: string;
+  sourceUrl: string;
+}
+
 interface ConfirmDialogState {
   title: string;
   message: string;
@@ -406,6 +414,7 @@ function App() {
   const [viewMode, setViewMode] = useState<ViewMode>("console");
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
+  const [filePreview, setFilePreview] = useState<FilePreviewState | null>(null);
   const notificationIdRef = useRef(0);
   const [userKeys, setUserKeys] = useState<UserKeyView[]>([]);
   const [newUserKey, setNewUserKey] = useState("");
@@ -584,38 +593,8 @@ function App() {
     return text ? (JSON.parse(text) as T) : (undefined as T);
   }
 
-  function openDirectUrl(url: string) {
-    const opened = window.open(url, "_blank");
-    if (!opened) {
-      notify("浏览器拦截了新窗口，请允许弹窗后重试", "error");
-      return;
-    }
+  async function openAuthenticatedPreview(url: string, title: string) {
     try {
-      opened.opener = null;
-    } catch {
-      // Some browsers expose a read-only opener after navigation starts.
-    }
-  }
-
-  async function openUrlWithAuth(url: string) {
-    if (!requiresAuthenticatedOpen(url)) {
-      openDirectUrl(url);
-      return;
-    }
-
-    const opened = window.open("about:blank", "_blank");
-    if (!opened) {
-      notify("浏览器拦截了新窗口，请允许弹窗后重试", "error");
-      return;
-    }
-    try {
-      opened.opener = null;
-    } catch {
-      // Keep going; the file is still opened through a same-origin blob URL.
-    }
-    try {
-      opened.document.title = "Reflection King";
-      opened.document.body.textContent = "Loading...";
       const response = await fetch(url, { headers });
       if (!response.ok) {
         const text = await response.text();
@@ -629,16 +608,30 @@ function App() {
       }
       const blob = await response.blob();
       const blobUrl = URL.createObjectURL(blob);
-      opened.location.replace(blobUrl);
-      window.setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
+      setFilePreview((current) => {
+        if (current) URL.revokeObjectURL(current.blobUrl);
+        return {
+          title,
+          contentType: response.headers.get("content-type") ?? blob.type,
+          bytes: Number(response.headers.get("content-length")) || blob.size || null,
+          blobUrl,
+          sourceUrl: url,
+        };
+      });
     } catch (error) {
-      opened.close();
       notify(errorMessage(error), "error");
     }
   }
 
   async function openArchiveFile(file: ArchiveFileView) {
-    await openUrlWithAuth(file.media_url);
+    await openAuthenticatedPreview(file.media_url, archiveFileLabel(file));
+  }
+
+  function closeFilePreview() {
+    setFilePreview((current) => {
+      if (current) URL.revokeObjectURL(current.blobUrl);
+      return null;
+    });
   }
 
   function notify(text: string, tone: NotificationItem["tone"] = "info") {
@@ -1768,7 +1761,7 @@ function App() {
           ) : undefined}
         >
           {isPageArchiveJob(selectedJob) ? (
-            <Empty label="当前任务是 HTML/CSS/JS 网页包；资源在产物里的网页前端包中下载。" />
+            <Empty label="当前任务是 HTML/CSS/JS 网页包；请在产物中下载网页前端包或打开入口 HTML，不会生成可转码媒体候选。" />
           ) : candidates.length ? (
             <div className="panel-scroll-layout">
               <div className="resource-toolbar">
@@ -2534,6 +2527,13 @@ function App() {
         </footer>
       </section>
       <NotificationStack items={notifications} onClose={(id) => setNotifications((items) => items.filter((item) => item.id !== id))} />
+      {filePreview && (
+        <FilePreviewModal
+          preview={filePreview}
+          onClose={closeFilePreview}
+          onCopy={() => copy(filePreview.sourceUrl)}
+        />
+      )}
       {activeLoginJobId && loginSnapshot && (
         <div className="remote-browser-overlay" role="dialog" aria-modal="true" aria-label="任务验证浏览器">
           <section className="remote-browser-modal">
@@ -2827,6 +2827,53 @@ function NotificationStack(props: { items: NotificationItem[]; onClose: (id: num
           </button>
         </div>
       ))}
+    </div>
+  );
+}
+
+function FilePreviewModal(props: { preview: FilePreviewState; onClose: () => void; onCopy: () => void }) {
+  const type = props.preview.contentType.toLowerCase();
+  const isFrame = type.includes("html")
+    || type.includes("json")
+    || type.includes("text/")
+    || type.includes("javascript")
+    || type.includes("css")
+    || type.includes("xml");
+  const isImage = type.startsWith("image/");
+
+  return (
+    <div className="file-preview-overlay" role="dialog" aria-modal="true" aria-label="文件预览">
+      <section className="file-preview-modal">
+        <div className="file-preview-head">
+          <div>
+            <strong>{props.preview.title}</strong>
+            <span>{props.preview.contentType || "application/octet-stream"} / {formatBytes(props.preview.bytes)}</span>
+          </div>
+          <div className="panel-actions">
+            <Button type="button" variant="secondary" onClick={props.onCopy}>
+              <Clipboard size={16} /> 复制接口
+            </Button>
+            <ActionLink href={props.preview.blobUrl} variant="secondary" download={props.preview.title}>
+              <ExternalLink size={16} /> 下载
+            </ActionLink>
+            <Button type="button" variant="secondary" onClick={props.onClose}>
+              <X size={16} /> 关闭
+            </Button>
+          </div>
+        </div>
+        <div className="file-preview-body">
+          {isImage ? (
+            <img src={props.preview.blobUrl} alt="" />
+          ) : isFrame ? (
+            <iframe title={props.preview.title} src={props.preview.blobUrl} />
+          ) : (
+            <div className="file-preview-empty">
+              <strong>此文件类型不适合内嵌预览</strong>
+              <span>使用下载按钮保存后用本地工具查看。</span>
+            </div>
+          )}
+        </div>
+      </section>
     </div>
   );
 }
