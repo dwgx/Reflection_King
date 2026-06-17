@@ -576,9 +576,16 @@ function App() {
     return text ? (JSON.parse(text) as T) : (undefined as T);
   }
 
-  async function openArchiveFile(file: ArchiveFileView) {
+  async function openUrlWithAuth(url: string) {
+    const opened = window.open("about:blank", "_blank", "noopener,noreferrer");
+    if (!opened) {
+      notify("浏览器拦截了新窗口，请允许弹窗后重试", "error");
+      return;
+    }
     try {
-      const response = await fetch(file.media_url, { headers });
+      opened.document.title = "Reflection King";
+      opened.document.body.textContent = "Loading...";
+      const response = await fetch(url, { headers });
       if (!response.ok) {
         const text = await response.text();
         let error = text;
@@ -590,16 +597,17 @@ function App() {
         throw new Error(error || `${response.status} ${response.statusText}`);
       }
       const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
-      const opened = window.open(url, "_blank", "noopener,noreferrer");
-      if (!opened) {
-        URL.revokeObjectURL(url);
-        throw new Error("浏览器拦截了新窗口，请允许弹窗后重试");
-      }
-      window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      const blobUrl = URL.createObjectURL(blob);
+      opened.location.replace(blobUrl);
+      window.setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
     } catch (error) {
+      opened.close();
       notify(errorMessage(error), "error");
     }
+  }
+
+  async function openArchiveFile(file: ArchiveFileView) {
+    await openUrlWithAuth(file.media_url);
   }
 
   function notify(text: string, tone: NotificationItem["tone"] = "info") {
@@ -1818,9 +1826,9 @@ function App() {
                       <Button variant="secondary" onClick={() => copy(artifact.media_url)}>
                         <Clipboard size={16} /> 复制
                       </Button>
-                      <a className="button secondary" href={artifact.media_url} target="_blank" rel="noreferrer">
+                      <Button variant="secondary" onClick={() => void openUrlWithAuth(artifact.media_url)}>
                         <ExternalLink size={16} /> 打开
-                      </a>
+                      </Button>
                     </div>
                   </div>
                   <Player url={artifact.media_url} />

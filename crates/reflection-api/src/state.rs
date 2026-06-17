@@ -281,7 +281,8 @@ impl AppState {
 
     pub async fn insert_and_enqueue(&self, record: JobRecord) -> Result<JobView> {
         let id = record.id;
-        let view = JobView::from(record.clone());
+        let settings = self.runtime_settings_view().await?;
+        let view = rewrite_job_view_urls(JobView::from(record.clone()), &settings.public_base_url);
         self.job_store.insert(&record).await?;
         self.enqueue(id).await?;
         Ok(view)
@@ -292,10 +293,13 @@ impl AppState {
     }
 
     pub async fn list_jobs(&self, limit: usize) -> Result<Vec<JobView>> {
-        self.job_store
-            .list_recent(limit)
-            .await
-            .map(|jobs| jobs.into_iter().map(JobView::from).collect())
+        let settings = self.runtime_settings_view().await?;
+        self.job_store.list_recent(limit).await.map(|jobs| {
+            jobs.into_iter()
+                .map(JobView::from)
+                .map(|job| rewrite_job_view_urls(job, &settings.public_base_url))
+                .collect()
+        })
     }
 
     pub async fn list_jobs_for_key(
@@ -303,10 +307,16 @@ impl AppState {
         requester_key_id: Uuid,
         limit: usize,
     ) -> Result<Vec<JobView>> {
+        let settings = self.runtime_settings_view().await?;
         self.job_store
             .list_recent_for_key(requester_key_id, limit)
             .await
-            .map(|jobs| jobs.into_iter().map(JobView::from).collect())
+            .map(|jobs| {
+                jobs.into_iter()
+                    .map(JobView::from)
+                    .map(|job| rewrite_job_view_urls(job, &settings.public_base_url))
+                    .collect()
+            })
     }
 
     pub async fn hide_visible_jobs(
@@ -691,7 +701,13 @@ impl AppState {
     }
 
     pub async fn list_artifacts(&self, id: Uuid) -> Result<Vec<ArtifactView>> {
-        self.job_store.list_artifacts(id).await
+        let settings = self.runtime_settings_view().await?;
+        self.job_store.list_artifacts(id).await.map(|artifacts| {
+            artifacts
+                .into_iter()
+                .map(|artifact| rewrite_artifact_view_url(artifact, &settings.public_base_url))
+                .collect()
+        })
     }
 
     pub async fn archive_tree(
@@ -4692,6 +4708,46 @@ fn content_type_for_path(path: &str) -> &'static str {
     }
 }
 
+fn rewrite_job_view_urls(mut job: JobView, public_base_url: &str) -> JobView {
+    job.media_url = job
+        .media_url
+        .map(|url| rewrite_public_media_url(&url, public_base_url));
+    job
+}
+
+fn rewrite_artifact_view_url(mut artifact: ArtifactView, public_base_url: &str) -> ArtifactView {
+    artifact.media_url = rewrite_public_media_url(&artifact.media_url, public_base_url);
+    artifact
+}
+
+fn rewrite_public_media_url(value: &str, public_base_url: &str) -> String {
+    let Ok(parsed) = url::Url::parse(value) else {
+        return value.to_string();
+    };
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return value.to_string();
+    }
+    let Some(host) = parsed.host_str() else {
+        return value.to_string();
+    };
+    if !matches!(host, "127.0.0.1" | "localhost" | "0.0.0.0") {
+        return value.to_string();
+    }
+    let path = parsed.path();
+    if !path.starts_with("/media/") {
+        return value.to_string();
+    }
+    format!(
+        "{}{}{}",
+        public_base_url.trim_end_matches('/'),
+        path,
+        parsed
+            .query()
+            .map(|query| format!("?{query}"))
+            .unwrap_or_default()
+    )
+}
+
 async fn cache_inventory_for_paths(paths: &StoragePaths) -> Result<CacheInventoryView> {
     let root = paths.root().to_path_buf();
     let public_dir = paths.public_dir();
@@ -5901,6 +5957,38 @@ mod tests {
         assert_eq!(
             shared_job_profile_id(&job, "shared_default"),
             "custom_profile"
+        );
+    }
+
+    #[test]
+    fn public_media_urls_are_rewritten_to_current_base_url() {
+        assert_eq!(
+            rewrite_public_media_url(
+                "http://127.0.0.1:8780/media/job/video.mp4",
+                "http://192.168.11.4:8780/"
+            ),
+            "http://192.168.11.4:8780/media/job/video.mp4"
+        );
+        assert_eq!(
+            rewrite_public_media_url(
+                "http://localhost:8780/media/job/video.mp4?download=1",
+                "https://rk.example.com"
+            ),
+            "https://rk.example.com/media/job/video.mp4?download=1"
+        );
+        assert_eq!(
+            rewrite_public_media_url(
+                "https://cdn.example.com/media/job/video.mp4",
+                "https://rk.example.com"
+            ),
+            "https://cdn.example.com/media/job/video.mp4"
+        );
+        assert_eq!(
+            rewrite_public_media_url(
+                "http://127.0.0.1:8780/api/jobs/job/archive/file?path=page.html",
+                "http://192.168.11.4:8780"
+            ),
+            "http://127.0.0.1:8780/api/jobs/job/archive/file?path=page.html"
         );
     }
 
