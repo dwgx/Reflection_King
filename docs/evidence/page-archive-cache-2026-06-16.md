@@ -49,6 +49,46 @@ Two P2 review findings were fixed before handoff:
   for queued, resolving, candidate-selected, downloading, capturing, probing,
   transcoding, and remuxing jobs.
 
+## 2026-06-17 Follow-up Fixes
+
+Two user-visible archive opening regressions were fixed after VPS smoke:
+
+- `3b124e2` changes dashboard artifact and archive opening from asynchronous
+  `window.open` after fetch to a synchronous blank popup followed by
+  authenticated `fetch` and blob URL navigation. This avoids browser popup
+  blocking while keeping `x-api-key` out of query strings.
+- `10fa337` rewrites legacy public `/media/...` URLs in job detail responses as
+  well as job lists and artifact lists. Old rows created with
+  `http://127.0.0.1:8780` are exposed through the current runtime
+  `public_base_url` when the target is a same-service media URL. External CDN
+  URLs and authenticated `/api/jobs/{id}/archive/file?...` URLs are not
+  rewritten.
+
+VPS verification after rebuilding the Docker service from `master`:
+
+- `/api/health` returned
+  `public_base_url: "http://192.168.11.4:8780"`.
+- Old MTR page archive job `5ba18559-afd1-4e81-9477-42547ab3cbab` returned
+  `media_url` as
+  `http://192.168.11.4:8780/media/5ba18559-afd1-4e81-9477-42547ab3cbab/archive.zip`
+  from `GET /api/jobs/{id}`.
+- The same job returned eight artifact URLs and none contained `127.0.0.1`,
+  `localhost`, or `0.0.0.0`.
+- `GET /media/5ba18559-afd1-4e81-9477-42547ab3cbab/page.html` returned
+  `200 OK`, `text/html`, and `content-length: 327`.
+- `GET /api/jobs/{id}/archive/file?path=index.html` without `x-api-key`
+  returned `401 Unauthorized`, confirming archive file auth is still enforced.
+- The same archive file request with `x-api-key` returned `200 OK` and
+  `text/html`.
+
+The old MTR archive content itself is an upstream Access Denied page returned by
+the target site. This verifies file delivery and auth behavior, not that the
+archived MTR page content is useful or playable.
+
+GitHub Actions run `27668778414` passed all jobs for `10fa337`, including Rust,
+dashboard, browser sidecar, Docker build, Compose config, Compose up, and health
+check.
+
 ## Verification Performed
 
 Commands that passed locally:
