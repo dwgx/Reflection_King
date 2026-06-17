@@ -468,10 +468,10 @@ async fn get_job(
     let principal = authorize(&state, &headers).await?;
     ensure_job_access(&state, &principal, id).await?;
     let job = state
-        .get_job(id)
+        .get_job_view(id)
         .await
         .and_then(|job| job.ok_or_else(|| RkError::NotFound(format!("job {id}"))))?;
-    Ok(Json(job.into()))
+    Ok(Json(job))
 }
 
 async fn list_candidates(

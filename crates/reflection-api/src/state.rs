@@ -292,6 +292,14 @@ impl AppState {
         self.job_store.get(id).await
     }
 
+    pub async fn get_job_view(&self, id: Uuid) -> Result<Option<JobView>> {
+        let settings = self.runtime_settings_view().await?;
+        self.job_store.get(id).await.map(|job| {
+            job.map(JobView::from)
+                .map(|job| rewrite_job_view_urls(job, &settings.public_base_url))
+        })
+    }
+
     pub async fn list_jobs(&self, limit: usize) -> Result<Vec<JobView>> {
         let settings = self.runtime_settings_view().await?;
         self.job_store.list_recent(limit).await.map(|jobs| {
@@ -481,9 +489,8 @@ impl AppState {
         ))
         .await;
         self.enqueue(job_id).await?;
-        self.get_job(job_id)
+        self.get_job_view(job_id)
             .await?
-            .map(JobView::from)
             .ok_or_else(|| RkError::NotFound(format!("job {job_id}")))
     }
 
@@ -519,9 +526,8 @@ impl AppState {
         ))
         .await;
         self.enqueue(job_id).await?;
-        self.get_job(job_id)
+        self.get_job_view(job_id)
             .await?
-            .map(JobView::from)
             .ok_or_else(|| RkError::NotFound(format!("job {job_id}")))
     }
 
@@ -841,9 +847,8 @@ impl AppState {
         self.update_status(job_id, JobStatus::CandidateSelected)
             .await?;
         self.enqueue(job_id).await?;
-        self.get_job(job_id)
+        self.get_job_view(job_id)
             .await?
-            .map(JobView::from)
             .ok_or_else(|| RkError::NotFound(format!("job {job_id}")))
     }
 
@@ -5990,6 +5995,21 @@ mod tests {
             ),
             "http://127.0.0.1:8780/api/jobs/job/archive/file?path=page.html"
         );
+
+        let mut job = JobRecord::new_with_options(
+            "https://example.com/watch".to_string(),
+            "auto".to_string(),
+            "http://127.0.0.1:8780",
+            JobCreateOptions::default(),
+        );
+        job.mark_ready(format!(
+            "http://127.0.0.1:8780/media/{}/archive.zip",
+            job.id
+        ));
+        let expected = format!("http://192.168.11.4:8780/media/{}/archive.zip", job.id);
+
+        let view = rewrite_job_view_urls(JobView::from(job), "http://192.168.11.4:8780");
+        assert_eq!(view.media_url.as_deref(), Some(expected.as_str()));
     }
 
     #[test]
