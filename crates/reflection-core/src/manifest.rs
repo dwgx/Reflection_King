@@ -178,10 +178,18 @@ fn hls_attribute(value: &str, name: &str) -> Option<String> {
 }
 
 fn manifest_kind(url: &str) -> Option<ManifestKind> {
+    let parsed = Url::parse(url).ok();
     let without_query = url.split(['?', '#']).next().unwrap_or(url);
-    if without_query.to_ascii_lowercase().ends_with(".m3u8") {
+    let path = parsed
+        .as_ref()
+        .map(Url::path)
+        .unwrap_or(without_query)
+        .to_ascii_lowercase();
+    let file_name = path.rsplit('/').next().unwrap_or(path.as_str());
+
+    if path.ends_with(".m3u8") || file_name == "m3u8" {
         Some(ManifestKind::Hls)
-    } else if without_query.to_ascii_lowercase().ends_with(".mpd") {
+    } else if path.ends_with(".mpd") || file_name == "mpd" {
         Some(ManifestKind::Dash)
     } else {
         None
@@ -219,5 +227,21 @@ seg-1.ts
         let error = hls_child_urls(&base, "http://127.0.0.1/private.ts").unwrap_err();
 
         assert!(error.to_string().contains("URL policy denied request"));
+    }
+
+    #[test]
+    fn manifest_kind_accepts_extensionless_hls_endpoints() {
+        assert_eq!(
+            manifest_kind("https://pl-ali.example.com/playlist/m3u8?vid=abc&type=hd3"),
+            Some(ManifestKind::Hls)
+        );
+        assert_eq!(
+            manifest_kind("https://cdn.example.com/path/master.m3u8?token=abc"),
+            Some(ManifestKind::Hls)
+        );
+        assert_eq!(
+            manifest_kind("https://cdn.example.com/path/manifest.mpd#x"),
+            Some(ManifestKind::Dash)
+        );
     }
 }

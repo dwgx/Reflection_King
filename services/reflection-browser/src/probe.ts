@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
+import os from "node:os";
 import { chromium, type BrowserContext, type CDPSession, type Page, type Request, type Response } from "playwright";
 import type {
   BrowserCandidate,
@@ -643,6 +644,7 @@ export class BrowserProbeService {
 
     const profileDir = path.join(this.config.profileRoot, profileId);
     await fs.mkdir(profileDir, { recursive: true });
+    await removeStaleChromiumSingletonLocks(profileDir);
     const context = await chromium.launchPersistentContext(profileDir, {
       channel: this.config.browserChannel,
       headless: !headed,
@@ -3153,6 +3155,66 @@ function asNumber(value: unknown): number | undefined {
 function sanitizeProfileId(value: string): string {
   const sanitized = value.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 64);
   return sanitized || "admin_default";
+}
+
+async function removeStaleChromiumSingletonLocks(profileDir: string): Promise<void> {
+  if (process.platform !== "linux") {
+    return;
+  }
+
+  const lockPath = path.join(profileDir, "SingletonLock");
+  const target = await fs.readlink(lockPath).catch(() => undefined);
+  const lock = parseChromiumSingletonLock(target);
+  if (!lock) {
+    return;
+  }
+
+  const currentHost = os.hostname();
+  const sameHost = lock.host === currentHost;
+  if (sameHost && isPidAlive(lock.pid)) {
+    return;
+  }
+  if (!sameHost && !(await isContainerRuntime())) {
+    return;
+  }
+
+  await Promise.all(
+    ["SingletonLock", "SingletonSocket", "SingletonCookie"].map((name) =>
+      fs.rm(path.join(profileDir, name), { force: true }),
+    ),
+  );
+}
+
+function parseChromiumSingletonLock(target: string | undefined): { host: string; pid: number } | undefined {
+  if (!target) {
+    return undefined;
+  }
+  const fileName = path.basename(target);
+  const separator = fileName.lastIndexOf("-");
+  if (separator <= 0 || separator === fileName.length - 1) {
+    return undefined;
+  }
+  const pid = Number.parseInt(fileName.slice(separator + 1), 10);
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return undefined;
+  }
+  return { host: fileName.slice(0, separator), pid };
+}
+
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function isContainerRuntime(): Promise<boolean> {
+  return await fs.stat("/.dockerenv").then(
+    () => true,
+    () => false,
+  );
 }
 
 function clamp(value: number, min: number, max: number): number {

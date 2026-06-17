@@ -1,0 +1,50 @@
+[
+  {
+    "level": "WARN",
+    "url": "http://127.0.0.1:8780/media/56417dc9-61d0-4df6-9b9f-ce954a7df6f8/video-97a7ede1-7ba6-421e-b0f6-8f935b99fb67.mp4",
+    "check": "https",
+    "detail": "PC can use untrusted HTTP URLs, but VRChat on Android/Quest requires HTTPS hosts"
+  },
+  {
+    "level": "OK",
+    "url": "http://127.0.0.1:8780/media/56417dc9-61d0-4df6-9b9f-ce954a7df6f8/video-97a7ede1-7ba6-421e-b0f6-8f935b99fb67.mp4",
+    "check": "head",
+    "detail": "HEAD returned HTTP 200"
+  },
+  {
+    "level": "OK",
+    "url": "http://127.0.0.1:8780/media/56417dc9-61d0-4df6-9b9f-ce954a7df6f8/video-97a7ede1-7ba6-421e-b0f6-8f935b99fb67.mp4",
+    "check": "content-type",
+    "detail": "video/mp4"
+  },
+  {
+    "level": "OK",
+    "url": "http://127.0.0.1:8780/media/56417dc9-61d0-4df6-9b9f-ce954a7df6f8/video-97a7ede1-7ba6-421e-b0f6-8f935b99fb67.mp4",
+    "check": "accept-ranges",
+    "detail": "bytes"
+  },
+  {
+    "level": "OK",
+    "url": "http://127.0.0.1:8780/media/56417dc9-61d0-4df6-9b9f-ce954a7df6f8/video-97a7ede1-7ba6-421e-b0f6-8f935b99fb67.mp4",
+    "check": "content-length",
+    "detail": "70173457"
+  },
+  {
+    "level": "OK",
+    "url": "http://127.0.0.1:8780/media/56417dc9-61d0-4df6-9b9f-ce954a7df6f8/video-97a7ede1-7ba6-421e-b0f6-8f935b99fb67.mp4",
+    "check": "range",
+    "detail": "bytes 0-511/70173457"
+  },
+  {
+    "level": "OK",
+    "url": "http://127.0.0.1:8780/media/56417dc9-61d0-4df6-9b9f-ce954a7df6f8/video-97a7ede1-7ba6-421e-b0f6-8f935b99fb67.mp4",
+    "check": "faststart",
+    "detail": "moov atom is before media data"
+  },
+  {
+    "level": "WARN",
+    "url": "http://127.0.0.1:8780/media/56417dc9-61d0-4df6-9b9f-ce954a7df6f8/video-97a7ede1-7ba6-421e-b0f6-8f935b99fb67.mp4",
+    "check": "ffprobe",
+    "detail": "ffprobe not found; codec checks skipped"
+  }
+]

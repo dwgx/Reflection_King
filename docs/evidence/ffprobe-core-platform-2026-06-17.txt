@@ -1,0 +1,267 @@
+
+=== /data/public/ec0834ab-789c-4aba-9fb3-c08ce32e7950/video-45dfb08f-c66d-43cc-920d-5010928a0be3.mp4 ===
+{
+    "programs": [
+
+    ],
+    "streams": [
+        {
+            "index": 0,
+            "codec_name": "h264",
+            "profile": "High",
+            "codec_type": "video",
+            "width": 960,
+            "height": 540,
+            "pix_fmt": "yuv420p"
+        },
+        {
+            "index": 1,
+            "codec_name": "aac",
+            "profile": "LC",
+            "codec_type": "audio",
+            "sample_rate": "44100",
+            "channels": 2
+        }
+    ],
+    "format": {
+        "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+        "duration": "5.079000",
+        "size": "329362"
+    }
+}
+
+=== /data/public/5736a204-26b1-4e02-a528-2729728fd317/audio-da134d2b-f93c-4210-af60-842ade1f8ae4.mp3 ===
+{
+    "programs": [
+
+    ],
+    "streams": [
+        {
+            "index": 0,
+            "codec_name": "mp3",
+            "codec_type": "audio",
+            "sample_rate": "44100",
+            "channels": 2
+        }
+    ],
+    "format": {
+        "format_name": "mp3",
+        "duration": "5.093878",
+        "size": "81964"
+    }
+}
+
+=== /data/public/24e95fd3-052d-456e-b51e-fd2874e24bc2/video-5a84bea5-102a-419b-a2a5-e2193ee0fe4f.mp4 ===
+{
+    "programs": [
+
+    ],
+    "streams": [
+        {
+            "index": 0,
+            "codec_name": "h264",
+            "profile": "Constrained Baseline",
+            "codec_type": "video",
+            "width": 320,
+            "height": 180,
+            "pix_fmt": "yuv420p"
+        },
+        {
+            "index": 1,
+            "codec_name": "aac",
+            "profile": "LC",
+            "codec_type": "audio",
+            "sample_rate": "48000",
+            "channels": 2
+        }
+    ],
+    "format": {
+        "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+        "duration": "596.459000",
+        "size": "64618768"
+    }
+}
+
+=== /data/public/da07c412-cc50-4db7-b344-c1f986a61fbe/audio-3f9da84f-123e-4323-9aa9-4be0eb7ccfc3.mp3 ===
+{
+    "programs": [
+
+    ],
+    "streams": [
+        {
+            "index": 0,
+            "codec_name": "mp3",
+            "codec_type": "audio",
+            "sample_rate": "44100",
+            "channels": 2
+        }
+    ],
+    "format": {
+        "format_name": "mp3",
+        "duration": "596.401633",
+        "size": "9542888"
+    }
+}
+
+=== /data/public/57afda8e-c63c-4f37-b6c5-b114c89a9e8a/video-1b05ca65-e7e6-405c-9c84-8462bc5881ba.mp4 ===
+{
+    "programs": [
+
+    ],
+    "streams": [
+        {
+            "index": 0,
+            "codec_name": "h264",
+            "profile": "Constrained Baseline",
+            "codec_type": "video",
+            "width": 320,
+            "height": 184,
+            "pix_fmt": "yuv420p"
+        },
+        {
+            "index": 1,
+            "codec_name": "aac",
+            "profile": "HE-AAC",
+            "codec_type": "audio",
+            "sample_rate": "44100",
+            "channels": 2
+        }
+    ],
+    "format": {
+        "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+        "duration": "10.032000",
+        "size": "236999"
+    }
+}
+
+=== /data/public/7966a0fc-d3f5-4544-9b49-f2b417c5c0d0/audio-bbb88a77-9826-4e8d-9a86-e7e2a664d33b.mp3 ===
+{
+    "programs": [
+
+    ],
+    "streams": [
+        {
+            "index": 0,
+            "codec_name": "mp3",
+            "codec_type": "audio",
+            "sample_rate": "44100",
+            "channels": 2
+        }
+    ],
+    "format": {
+        "format_name": "mp3",
+        "duration": "634.200816",
+        "size": "10147675"
+    }
+}
+
+=== /data/public/03c26811-7077-4a0b-826a-59ff8d33729b/video-ae86d156-98c2-4319-a469-9817336d4559.mp4 ===
+{
+    "programs": [
+
+    ],
+    "streams": [
+        {
+            "index": 0,
+            "codec_name": "h264",
+            "profile": "Main",
+            "codec_type": "video",
+            "width": 640,
+            "height": 360,
+            "pix_fmt": "yuv420p"
+        },
+        {
+            "index": 1,
+            "codec_name": "aac",
+            "profile": "LC",
+            "codec_type": "audio",
+            "sample_rate": "44100",
+            "channels": 2
+        }
+    ],
+    "format": {
+        "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+        "duration": "634.579000",
+        "size": "28863635"
+    }
+}
+
+=== /data/public/41594d1c-660f-4bd2-bde9-538b5da5d500/audio-4cdb939c-6efb-4902-9849-44c9670822ce.mp3 ===
+{
+    "programs": [
+
+    ],
+    "streams": [
+        {
+            "index": 0,
+            "codec_name": "mp3",
+            "codec_type": "audio",
+            "sample_rate": "44100",
+            "channels": 2,
+            "side_data_list": [
+                {
+
+                }
+            ]
+        }
+    ],
+    "format": {
+        "format_name": "mp3",
+        "duration": "13.557551",
+        "size": "217382"
+    }
+}
+
+=== /data/public/e18d0e97-2da4-4416-9135-5753e0dcd443/video-6ca725d2-607f-4ed5-9f43-8c41bece5b99.mp4 ===
+{
+    "programs": [
+
+    ],
+    "streams": [
+        {
+            "index": 0,
+            "codec_name": "h264",
+            "profile": "High",
+            "codec_type": "video",
+            "width": 852,
+            "height": 480,
+            "pix_fmt": "yuv420p"
+        }
+    ],
+    "format": {
+        "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+        "duration": "634.567000",
+        "size": "69741991"
+    }
+}
+
+=== /data/public/8f0bf21b-e87c-4758-a81e-d04f7ce70b24/video-d3a120e1-7a87-4372-a57b-9ca914a81579.mp4 ===
+{
+    "programs": [
+
+    ],
+    "streams": [
+        {
+            "index": 0,
+            "codec_name": "h264",
+            "profile": "High",
+            "codec_type": "video",
+            "width": 1440,
+            "height": 1080,
+            "pix_fmt": "yuv420p"
+        },
+        {
+            "index": 1,
+            "codec_name": "aac",
+            "profile": "HE-AAC",
+            "codec_type": "audio",
+            "sample_rate": "44100",
+            "channels": 2
+        }
+    ],
+    "format": {
+        "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+        "duration": "172.435000",
+        "size": "41925112"
+    }
+}

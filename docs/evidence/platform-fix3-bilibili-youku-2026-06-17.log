@@ -1,0 +1,86 @@
+
+=== bilibili-bbb-browser-video ===
+notes Browser/API probe public Bilibili video; quality may require profile login.
+job a5b7469e-190a-4476-9335-8bfb1a4ac919
+status resolving
+status candidates_ready
+candidates 18
+  cand video 480p score=222 route=browser_probe https://upos-sz-mirrorcosov.bilivideo.com/upgcxcode/27/71/76837127/76837127-1-30032.m4s?e=ig8euxZM2rNcNbdlhoNvNC8BqJIzNb
+  cand video 480p score=222 route=browser_probe https://upos-sz-mirrorcosov.bilivideo.com/upgcxcode/27/71/76837127/76837127-1-30033.m4s?e=ig8euxZM2rNcNbdlhoNvNC8BqJIzNb
+  cand video 480p score=214 route=browser_probe https://upos-sz-mirrorcosov.bilivideo.com/upgcxcode/27/71/76837127/76837127-1-30032.m4s?e=ig8euxZM2rNcNbdlhoNvNC8BqJIzNb
+  cand video 480p score=214 route=browser_probe https://upos-sz-mirrorcosov.bilivideo.com/upgcxcode/27/71/76837127/76837127-1-30033.m4s?e=ig8euxZM2rNcNbdlhoNvNC8BqJIzNb
+  cand video 360p score=216 route=browser_probe https://upos-sz-mirrorcosov.bilivideo.com/upgcxcode/27/71/76837127/76837127-1-30015.m4s?e=ig8euxZM2rNcNbdlhoNvNC8BqJIzNb
+  cand video 360p score=216 route=browser_probe https://upos-sz-mirrorcosov.bilivideo.com/upgcxcode/27/71/76837127/76837127-1-30011.m4s?e=ig8euxZM2rNcNbdlhoNvNC8BqJIzNb
+select 2 candidates
+status downloading
+status remuxing
+status downloading
+status remuxing
+status downloading
+status remuxing
+status ready
+artifact {"kind": "video", "status": 206, "content_type": "video/mp4", "content_range": "bytes 0-511/32301656", "bytes": 512, "url": "http://127.0.0.1:8780/media/a5b7469e-190a-4476-9335-8bfb1a4ac919/video-8ca08c0c-77b7-450f-a1e3-e916363a96c5.mp4"}
+
+=== youku-public-trailer-video ===
+notes yt-dlp/you-get public Youku trailer; signed HLS URLs may expire quickly.
+job b7ef86b2-6c20-46a3-a1f3-9d7cb37a4fa8
+status resolving
+status candidates_ready
+candidates 4
+  cand manifest 1080p score=162 route=external:yt_dlp http://pl-ali.youku.com/playlist/m3u8?vid=XNDgwODM0NjYwNA%3D%3D&type=hd3&ups_client_netip=3a0d4772&utid=YwG5IipPihQCAToN
+  cand manifest 720p score=152 route=external:yt_dlp http://pl-ali.youku.com/playlist/m3u8?vid=XNDgwODM0NjYwNA%3D%3D&type=hd2&ups_client_netip=3a0d4772&utid=YwG5IipPihQCAToN
+  cand manifest 540p score=147 route=external:yt_dlp http://pl-ali.youku.com/playlist/m3u8?vid=XNDgwODM0NjYwNA%3D%3D&type=hd&ups_client_netip=3a0d4772&utid=YwG5IipPihQCAToNR
+  cand manifest 360p score=142 route=external:yt_dlp http://pl-ali.youku.com/playlist/m3u8?vid=XNDgwODM0NjYwNA%3D%3D&type=flv&ups_client_netip=3a0d4772&utid=YwG5IipPihQCAToN
+select 1 candidates
+status candidate_selected
+status remuxing
+status ready
+artifact {"kind": "video", "status": 206, "content_type": "video/mp4", "content_range": "bytes 0-511/17337469", "bytes": 512, "url": "http://127.0.0.1:8780/media/b7ef86b2-6c20-46a3-a1f3-9d7cb37a4fa8/video-310fe1bf-90df-42bb-a6bf-f6169084e650.mp4"}
+
+SUMMARY
+[
+  {
+    "case": "bilibili-bbb-browser-video",
+    "tier": "platform",
+    "notes": "Browser/API probe public Bilibili video; quality may require profile login.",
+    "job_id": "a5b7469e-190a-4476-9335-8bfb1a4ac919",
+    "status": "ready",
+    "error": null,
+    "candidate_count": 18,
+    "artifact_count": 1,
+    "media_checks": [
+      {
+        "kind": "video",
+        "status": 206,
+        "content_type": "video/mp4",
+        "content_range": "bytes 0-511/32301656",
+        "bytes": 512,
+        "url": "http://127.0.0.1:8780/media/a5b7469e-190a-4476-9335-8bfb1a4ac919/video-8ca08c0c-77b7-450f-a1e3-e916363a96c5.mp4"
+      }
+    ],
+    "trace_events": 6,
+    "expect_success": true
+  },
+  {
+    "case": "youku-public-trailer-video",
+    "tier": "platform",
+    "notes": "yt-dlp/you-get public Youku trailer; signed HLS URLs may expire quickly.",
+    "job_id": "b7ef86b2-6c20-46a3-a1f3-9d7cb37a4fa8",
+    "status": "ready",
+    "error": null,
+    "candidate_count": 4,
+    "artifact_count": 1,
+    "media_checks": [
+      {
+        "kind": "video",
+        "status": 206,
+        "content_type": "video/mp4",
+        "content_range": "bytes 0-511/17337469",
+        "bytes": 512,
+        "url": "http://127.0.0.1:8780/media/b7ef86b2-6c20-46a3-a1f3-9d7cb37a4fa8/video-310fe1bf-90df-42bb-a6bf-f6169084e650.mp4"
+      }
+    ],
+    "trace_events": 6,
+    "expect_success": true
+  }
+]

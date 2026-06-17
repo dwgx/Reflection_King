@@ -101,6 +101,22 @@ impl Transcoder {
             .await
     }
 
+    pub async fn media_files_to_mp4(
+        &self,
+        video_input: &Path,
+        audio_input: &Path,
+        output: &Path,
+    ) -> Result<()> {
+        self.media_inputs_to_mp4(
+            video_input.as_os_str(),
+            &[],
+            audio_input.as_os_str(),
+            &[],
+            output,
+        )
+        .await
+    }
+
     pub async fn images_to_mp4(
         &self,
         concat_file: &Path,
@@ -338,20 +354,6 @@ impl Transcoder {
     ) -> Result<()> {
         let video_input = video_input.as_ref();
         let audio_input = audio_input.as_ref();
-        if self
-            .media_inputs_to_mp4_copy(
-                video_input,
-                video_input_args,
-                audio_input,
-                audio_input_args,
-                output,
-            )
-            .await
-            .is_ok()
-        {
-            return Ok(());
-        }
-        tokio::fs::remove_file(output).await.ok();
         self.media_inputs_to_mp4_transcode(
             video_input,
             video_input_args,
@@ -360,60 +362,6 @@ impl Transcoder {
             output,
         )
         .await
-    }
-
-    async fn media_inputs_to_mp4_copy(
-        &self,
-        video_input: &OsStr,
-        video_input_args: &[OsString],
-        audio_input: &OsStr,
-        audio_input_args: &[OsString],
-        output: &Path,
-    ) -> Result<()> {
-        let mut command = Command::new(&self.ffmpeg_path);
-        command
-            .arg("-y")
-            .arg("-hide_banner")
-            .arg("-loglevel")
-            .arg("error");
-
-        for arg in video_input_args {
-            command.arg(arg);
-        }
-        command.arg("-i").arg(video_input);
-
-        for arg in audio_input_args {
-            command.arg(arg);
-        }
-        command.arg("-i").arg(audio_input);
-
-        let output = run_process_with_timeout(
-            command
-                .arg("-map")
-                .arg("0:v:0")
-                .arg("-map")
-                .arg("1:a:0")
-                .arg("-c")
-                .arg("copy")
-                .arg("-shortest")
-                .arg("-movflags")
-                .arg("+faststart")
-                .arg(output),
-            self.timeout,
-            "ffmpeg multi-input copy remux",
-        )
-        .await?;
-
-        if output.status.success() {
-            return Ok(());
-        }
-
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        Err(RkError::Transcode(if stderr.is_empty() {
-            "ffmpeg copy remux exited with failure".to_string()
-        } else {
-            stderr
-        }))
     }
 
     async fn media_inputs_to_mp4_transcode(

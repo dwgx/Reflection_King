@@ -1,0 +1,190 @@
+[
+  {
+    "tier": "core",
+    "case": "mdn-page-browser-video",
+    "job_id": "ec0834ab-789c-4aba-9fb3-c08ce32e7950",
+    "status": "ready",
+    "error": null,
+    "artifact_count": 1,
+    "artifacts": [
+      {
+        "kind": "video",
+        "range_status": 206,
+        "content_type": "video/mp4",
+        "content_range": "bytes 0-511/329362",
+        "media_url": "http://127.0.0.1:8780/media/ec0834ab-789c-4aba-9fb3-c08ce32e7950/video-45dfb08f-c66d-43cc-920d-5010928a0be3.mp4"
+      }
+    ]
+  },
+  {
+    "tier": "core",
+    "case": "mdn-direct-audio",
+    "job_id": "5736a204-26b1-4e02-a528-2729728fd317",
+    "status": "ready",
+    "error": null,
+    "artifact_count": 1,
+    "artifacts": [
+      {
+        "kind": "audio",
+        "range_status": 206,
+        "content_type": "audio/mpeg",
+        "content_range": "bytes 0-511/81964",
+        "media_url": "http://127.0.0.1:8780/media/5736a204-26b1-4e02-a528-2729728fd317/audio-da134d2b-f93c-4210-af60-842ade1f8ae4.mp3"
+      }
+    ]
+  },
+  {
+    "tier": "core",
+    "case": "blender-bbb-auto-video",
+    "job_id": "24e95fd3-052d-456e-b51e-fd2874e24bc2",
+    "status": "ready",
+    "error": null,
+    "artifact_count": 1,
+    "artifacts": [
+      {
+        "kind": "video",
+        "range_status": 206,
+        "content_type": "video/mp4",
+        "content_range": "bytes 0-511/64618768",
+        "media_url": "http://127.0.0.1:8780/media/24e95fd3-052d-456e-b51e-fd2874e24bc2/video-5a84bea5-102a-419b-a2a5-e2193ee0fe4f.mp4"
+      }
+    ]
+  },
+  {
+    "tier": "core",
+    "case": "archive-bbb-auto-audio",
+    "job_id": "da07c412-cc50-4db7-b344-c1f986a61fbe",
+    "status": "ready",
+    "error": null,
+    "artifact_count": 1,
+    "artifacts": [
+      {
+        "kind": "audio",
+        "range_status": 206,
+        "content_type": "audio/mpeg",
+        "content_range": "bytes 0-511/9542888",
+        "media_url": "http://127.0.0.1:8780/media/da07c412-cc50-4db7-b344-c1f986a61fbe/audio-3f9da84f-123e-4323-9aa9-4be0eb7ccfc3.mp3"
+      }
+    ]
+  },
+  {
+    "tier": "core",
+    "case": "mux-hls-low-video",
+    "job_id": "57afda8e-c63c-4f37-b6c5-b114c89a9e8a",
+    "status": "ready",
+    "error": null,
+    "artifact_count": 1,
+    "artifacts": [
+      {
+        "kind": "video",
+        "range_status": 206,
+        "content_type": "video/mp4",
+        "content_range": "bytes 0-511/236999",
+        "media_url": "http://127.0.0.1:8780/media/57afda8e-c63c-4f37-b6c5-b114c89a9e8a/video-1b05ca65-e7e6-405c-9c84-8462bc5881ba.mp4"
+      }
+    ]
+  },
+  {
+    "tier": "core",
+    "case": "mux-hls-auto-audio",
+    "job_id": "7966a0fc-d3f5-4544-9b49-f2b417c5c0d0",
+    "status": "ready",
+    "error": null,
+    "artifact_count": 1,
+    "artifacts": [
+      {
+        "kind": "audio",
+        "range_status": 206,
+        "content_type": "audio/mpeg",
+        "content_range": "bytes 0-511/10147675",
+        "media_url": "http://127.0.0.1:8780/media/7966a0fc-d3f5-4544-9b49-f2b417c5c0d0/audio-bbb88a77-9826-4e8d-9a86-e7e2a664d33b.mp3"
+      }
+    ]
+  },
+  {
+    "tier": "platform",
+    "case": "youtube-bbb-external-video",
+    "job_id": "03c26811-7077-4a0b-826a-59ff8d33729b",
+    "status": "ready",
+    "error": null,
+    "artifact_count": 1,
+    "artifacts": [
+      {
+        "kind": "video",
+        "range_status": 206,
+        "content_type": "video/mp4",
+        "content_range": "bytes 0-511/28863635",
+        "media_url": "http://127.0.0.1:8780/media/03c26811-7077-4a0b-826a-59ff8d33729b/video-ae86d156-98c2-4319-a469-9817336d4559.mp4"
+      }
+    ]
+  },
+  {
+    "tier": "platform",
+    "case": "soundcloud-public-audio",
+    "job_id": "41594d1c-660f-4bd2-bde9-538b5da5d500",
+    "status": "ready",
+    "error": null,
+    "artifact_count": 1,
+    "artifacts": [
+      {
+        "kind": "audio",
+        "range_status": 206,
+        "content_type": "audio/mpeg",
+        "content_range": "bytes 0-511/217382",
+        "media_url": "http://127.0.0.1:8780/media/41594d1c-660f-4bd2-bde9-538b5da5d500/audio-4cdb939c-6efb-4902-9849-44c9670822ce.mp3"
+      }
+    ]
+  },
+  {
+    "tier": "platform",
+    "case": "bilibili-bbb-browser-video",
+    "job_id": "e18d0e97-2da4-4416-9135-5753e0dcd443",
+    "status": "ready",
+    "error": null,
+    "artifact_count": 1,
+    "artifacts": [
+      {
+        "kind": "video",
+        "range_status": 206,
+        "content_type": "video/mp4",
+        "content_range": "bytes 0-511/69741991",
+        "media_url": "http://127.0.0.1:8780/media/e18d0e97-2da4-4416-9135-5753e0dcd443/video-6ca725d2-607f-4ed5-9f43-8c41bece5b99.mp4"
+      }
+    ]
+  },
+  {
+    "tier": "platform",
+    "case": "acfun-public-external-video",
+    "job_id": "8f0bf21b-e87c-4758-a81e-d04f7ce70b24",
+    "status": "ready",
+    "error": null,
+    "artifact_count": 1,
+    "artifacts": [
+      {
+        "kind": "video",
+        "range_status": 206,
+        "content_type": "video/mp4",
+        "content_range": "bytes 0-511/41925112",
+        "media_url": "http://127.0.0.1:8780/media/8f0bf21b-e87c-4758-a81e-d04f7ce70b24/video-d3a120e1-7a87-4372-a57b-9ca914a81579.mp4"
+      }
+    ]
+  },
+  {
+    "tier": "platform",
+    "case": "youku-public-trailer-video",
+    "job_id": "63dbd82f-7505-4e6c-9855-6e29b5860816",
+    "status": "error",
+    "error": "remote source error: all selected candidates failed: manifest 1080p: remote source error: unsupported manifest URL | manifest 720p: remote source error: unsupported manifest URL | manifest 540p: remote source error: unsupported manifest URL | manifest 360p: remote source error: unsupported manifest URL",
+    "artifact_count": 0,
+    "artifacts": []
+  },
+  {
+    "tier": "platform",
+    "case": "tiktok-public-external-video",
+    "job_id": "3fb13d15-5203-4deb-a440-6ef3d6633cd5",
+    "status": "needs_profile",
+    "error": "remote source error: all selected candidates failed: video 576p: remote source error: remote returned HTTP 403 Forbidden | video 576p: remote source error: remote returned HTTP 403 Forbidden | video 576p: remote source error: remote returned HTTP 403 Forbidden | video 576p: remote source error: remote returned HTTP 403 Forbidden | video watermarked: remote source error: remote returned HTTP 403 Forbidden",
+    "artifact_count": 0,
+    "artifacts": []
+  }
+]

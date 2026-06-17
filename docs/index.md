@@ -24,6 +24,7 @@
 - [平台 smoke 证据](evidence/platform-smoke-2026-06-12.md)
 - [网页归档与缓存维护证据](evidence/page-archive-cache-2026-06-16.md)
 - [仓库与 Agent 工作痕迹审计 2026-06-17](evidence/repository-ai-audit-2026-06-17.md)
+- [VPS 临时 Docker smoke 2026-06-17](evidence/vps-smoke-2026-06-17.md)
 
 目录说明：
 

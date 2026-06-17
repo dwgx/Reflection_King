@@ -1542,10 +1542,39 @@ impl AppState {
                                 "candidate has no video stream".to_string(),
                             ));
                         }
+                        let audio_candidate = best_companion_audio(candidate, available_candidates);
+                        if job.outputs.contains(&OutputKind::Audio)
+                            && !stream_info.has_audio
+                            && audio_candidate.is_none()
+                        {
+                            return Err(RkError::Source(
+                                "candidate has no audio stream and no companion audio candidate"
+                                    .to_string(),
+                            ));
+                        }
                         self.update_status(job.id, JobStatus::Remuxing).await?;
-                        self.transcoder(settings)
-                            .media_to_mp4(&input_path, &output_path)
+                        if let Some(audio_candidate) = audio_candidate {
+                            let audio_path =
+                                temp_dir.join(format!("{}.audio.input", audio_candidate.id));
+                            let audio_headers = self.download_headers(job, audio_candidate).await?;
+                            Downloader::new(
+                                settings.download_timeout,
+                                settings.max_download_bytes,
+                            )?
+                            .download_to_file_with_headers(
+                                &audio_candidate.url,
+                                &audio_path,
+                                audio_headers,
+                            )
                             .await?;
+                            self.transcoder(settings)
+                                .media_files_to_mp4(&input_path, &audio_path, &output_path)
+                                .await?;
+                        } else {
+                            self.transcoder(settings)
+                                .media_to_mp4(&input_path, &output_path)
+                                .await?;
+                        }
                     }
                     self.insert_artifact(
                         job.id,
@@ -5366,21 +5395,57 @@ fn candidate_attempt_order<'a>(
     selected: &'a [MediaCandidate],
     all: &'a [MediaCandidate],
 ) -> Vec<&'a MediaCandidate> {
-    let mut out = selected.iter().collect::<Vec<_>>();
-    if selected.len() == 1 {
-        let selected_id = selected[0].id;
-        let selected_kind = selected[0].kind;
+    let mut out = primary_candidate_attempts(job, selected);
+    let selected_kind = if out.len() == 1 {
+        Some(out[0].kind)
+    } else {
+        None
+    };
+    if job.outputs.contains(&OutputKind::Video) || out.len() == 1 {
+        let primary_ids = out.iter().map(|candidate| candidate.id).collect::<Vec<_>>();
         out.extend(
             all.iter()
-                .filter(|candidate| candidate.id != selected_id)
+                .filter(|candidate| !primary_ids.contains(&candidate.id))
                 .filter(|candidate| candidate_not_selectable_reason(candidate).is_none())
                 .filter(|candidate| {
-                    candidate.kind == selected_kind || is_compatible_fallback(job, candidate)
+                    if job.outputs.contains(&OutputKind::Video) {
+                        matches!(
+                            candidate.kind,
+                            CandidateKind::Video | CandidateKind::Manifest
+                        )
+                    } else {
+                        selected_kind == Some(candidate.kind)
+                            || is_compatible_fallback(job, candidate)
+                    }
                 }),
         );
     }
     out.sort_by_key(|candidate| -candidate_attempt_rank(job, candidate));
     out
+}
+
+fn primary_candidate_attempts<'a>(
+    job: &JobRecord,
+    selected: &'a [MediaCandidate],
+) -> Vec<&'a MediaCandidate> {
+    if !job.outputs.contains(&OutputKind::Video) {
+        return selected.iter().collect();
+    }
+
+    let primary = selected
+        .iter()
+        .filter(|candidate| {
+            matches!(
+                candidate.kind,
+                CandidateKind::Video | CandidateKind::Manifest
+            )
+        })
+        .collect::<Vec<_>>();
+    if primary.is_empty() {
+        selected.iter().collect()
+    } else {
+        primary
+    }
 }
 
 fn is_compatible_fallback(job: &JobRecord, candidate: &MediaCandidate) -> bool {
@@ -5877,6 +5942,58 @@ mod tests {
         );
         assert_eq!(
             best_companion_audio(attempts[0], &all).map(|c| c.id),
+            Some(audio.id)
+        );
+    }
+
+    #[test]
+    fn selected_companion_audio_is_not_a_primary_video_attempt() {
+        let mut job = JobRecord::new_with_options(
+            "https://example.com/watch".to_string(),
+            "auto".to_string(),
+            "http://127.0.0.1:8787",
+            JobCreateOptions {
+                discovery: DiscoveryMode::External,
+                outputs: vec![OutputKind::Video, OutputKind::Audio],
+                ..JobCreateOptions::default()
+            },
+        );
+        let video = candidate(
+            job.id,
+            CandidateKind::Video,
+            "https://cdn.example.com/v1080.mp4",
+            "1080p",
+            json!({ "vcodec": "avc1.640028", "acodec": "none", "height": 1080 }),
+        );
+        let audio = candidate(
+            job.id,
+            CandidateKind::Audio,
+            "https://cdn.example.com/a.m4a",
+            "audio-140",
+            json!({ "vcodec": "none", "acodec": "mp4a.40.2", "abr": 128 }),
+        );
+        let fallback_video = candidate(
+            job.id,
+            CandidateKind::Video,
+            "https://cdn.example.com/v720.mp4",
+            "720p",
+            json!({ "vcodec": "avc1.64001f", "acodec": "none", "height": 720 }),
+        );
+        job.selected_candidate_ids = vec![video.id, audio.id];
+
+        let all = vec![video.clone(), audio.clone(), fallback_video.clone()];
+        let selected = vec![video.clone(), audio.clone()];
+        let attempts = candidate_attempt_order(&job, &selected, &all);
+        let attempt_ids = attempts
+            .iter()
+            .map(|candidate| candidate.id)
+            .collect::<Vec<_>>();
+
+        assert!(attempt_ids.contains(&video.id));
+        assert!(attempt_ids.contains(&fallback_video.id));
+        assert!(!attempt_ids.contains(&audio.id));
+        assert_eq!(
+            best_companion_audio(attempts[0], &all).map(|candidate| candidate.id),
             Some(audio.id)
         );
     }

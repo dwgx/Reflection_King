@@ -1,0 +1,44 @@
+
+=== bilibili-bbb-browser-video ===
+notes Browser/API probe public Bilibili video; quality may require profile login.
+job 56417dc9-61d0-4df6-9b9f-ce954a7df6f8
+status resolving
+status candidates_ready
+candidates 18
+  cand video 480p score=222 route=browser_probe https://upos-sz-mirrorcosov.bilivideo.com/upgcxcode/27/71/76837127/76837127-1-30032.m4s?e=ig8euxZM2rNcNbdlhoNvNC8BqJIzNb
+  cand video 480p score=222 route=browser_probe https://upos-sz-mirrorcosov.bilivideo.com/upgcxcode/27/71/76837127/76837127-1-30033.m4s?e=ig8euxZM2rNcNbdlhoNvNC8BqJIzNb
+  cand video 480p score=214 route=browser_probe https://upos-hz-mirrorakam.akamaized.net/upgcxcode/27/71/76837127/76837127-1-30032.m4s?e=ig8euxZM2rNcNbdlhoNvNC8BqJIzNbf
+  cand video 480p score=214 route=browser_probe https://upos-sz-mirrorcosov.bilivideo.com/upgcxcode/27/71/76837127/76837127-1-30033.m4s?e=ig8euxZM2rNcNbdlhoNvNC8BqJIzNb
+  cand video 360p score=216 route=browser_probe https://upos-sz-mirrorcosov.bilivideo.com/upgcxcode/27/71/76837127/76837127-1-30015.m4s?e=ig8euxZM2rNcNbdlhoNvNC8BqJIzNb
+  cand video 360p score=216 route=browser_probe https://upos-sz-mirrorcosov.bilivideo.com/upgcxcode/27/71/76837127/76837127-1-30011.m4s?e=ig8euxZM2rNcNbdlhoNvNC8BqJIzNb
+select 2 candidates
+status downloading
+status remuxing
+status ready
+artifact {"kind": "video", "status": 206, "content_type": "video/mp4", "content_range": "bytes 0-511/70173457", "bytes": 512, "url": "http://127.0.0.1:8780/media/56417dc9-61d0-4df6-9b9f-ce954a7df6f8/video-97a7ede1-7ba6-421e-b0f6-8f935b99fb67.mp4"}
+
+SUMMARY
+[
+  {
+    "case": "bilibili-bbb-browser-video",
+    "tier": "platform",
+    "notes": "Browser/API probe public Bilibili video; quality may require profile login.",
+    "job_id": "56417dc9-61d0-4df6-9b9f-ce954a7df6f8",
+    "status": "ready",
+    "error": null,
+    "candidate_count": 18,
+    "artifact_count": 1,
+    "media_checks": [
+      {
+        "kind": "video",
+        "status": 206,
+        "content_type": "video/mp4",
+        "content_range": "bytes 0-511/70173457",
+        "bytes": 512,
+        "url": "http://127.0.0.1:8780/media/56417dc9-61d0-4df6-9b9f-ce954a7df6f8/video-97a7ede1-7ba6-421e-b0f6-8f935b99fb67.mp4"
+      }
+    ],
+    "trace_events": 6,
+    "expect_success": true
+  }
+]

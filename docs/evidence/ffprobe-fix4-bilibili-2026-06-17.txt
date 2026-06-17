@@ -1,0 +1,27 @@
+=== /data/public/56417dc9-61d0-4df6-9b9f-ce954a7df6f8/video-97a7ede1-7ba6-421e-b0f6-8f935b99fb67.mp4 ===
+{
+    "programs": [
+
+    ],
+    "streams": [
+        {
+            "index": 0,
+            "codec_name": "h264",
+            "codec_type": "video",
+            "width": 852,
+            "height": 480,
+            "pix_fmt": "yuv420p"
+        },
+        {
+            "index": 1,
+            "codec_name": "aac",
+            "codec_type": "audio",
+            "sample_rate": "48000",
+            "channels": 6
+        }
+    ],
+    "format": {
+        "duration": "634.567000",
+        "size": "70173457"
+    }
+}

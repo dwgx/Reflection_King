@@ -1,8 +1,8 @@
 # 下一个 Agent 交接文档
 
-更新时间：2026-06-16<br>
-仓库：`https://github.com/dwgx/Reflection_King`  
-当前主分支：`master`  
+更新时间：2026-06-17<br>
+仓库：`https://github.com/dwgx/Reflection_King`
+当前主分支：`master`
 当前公网服务：按部署环境设置 `RK_BASE_URL` 或 `--base-url`，不要依赖历史 IP。
 
 本文档用于让下一个 Agent 不依赖聊天窗口也能理解 Reflection King 当前状态、真实目标、
@@ -20,6 +20,8 @@
 - 子代理只读审查结果。
 - 2026-06-16 网页归档、后台解压浏览、缓存清理和 review 修复记录：
   `docs/evidence/page-archive-cache-2026-06-16.md`。
+- 2026-06-17 VPS 临时 Docker smoke 和后续修复记录：
+  `docs/evidence/vps-smoke-2026-06-17.md`。
 
 用户曾提到一个长聊天记录文件：
 
@@ -299,20 +301,27 @@ CI 覆盖：
 
 ### VPS
 
-VPS 状态未在本轮重新验证。上次记录的 VPS 期望状态：
+2026-06-17 在 SSH alias `dwgx-home-cloud` 上做过临时 Docker smoke。该机器
+不是已确认的 `/opt/reflection-king` systemd/nginx 生产部署；本轮未找到生产
+部署证据，只在 `~/reflection-king-smoke` 下 clone 了仓库并通过 Docker Compose
+启动临时环境。
 
 ```text
-URL: set RK_BASE_URL or --base-url to the active host
-commit requirement: /opt/reflection-king must match origin/master
-last functional baseline in this document: b3e4533
-reflection-api: active
-reflection-browser: active
-nginx: active
-/api/health: ok
+host: dwgx-home-cloud
+temporary path: ~/reflection-king-smoke
+docker: Docker 29.5.3
+compose: Docker Compose v5.1.4
+resources: 12 CPU, 15GiB RAM, about 101G free on /
+container: reflection-king-smoke-reflection-king-1
+loopback /api/health: ok at http://127.0.0.1:8780
+public :8780 /api/health: timeout
 ```
 
-如果当前公网端点仍是 HTTP，PC VRChat 可在允许不受信任 URL 的情况下测试；
-Android/Quest 或生产使用应配置域名和 HTTPS。
+因此本轮 smoke 证明的是 loopback API/media pipeline，不证明公网 raw URL
+可被 VRChat 或外部播放器访问。生产部署仍需要确认实际 host、域名、HTTPS、
+nginx/firewall 和 `/opt/reflection-king` 状态。如果当前公网端点仍是 HTTP，
+PC VRChat 只能在允许不受信任 URL 的情况下测试；Android/Quest 或生产使用
+应配置域名和 HTTPS。
 
 ## 平台支持矩阵
 
@@ -321,12 +330,12 @@ Android/Quest 或生产使用应配置域名和 HTTPS。
 | 平台 / 类型 | 当前状态 | 证据和说明 |
 | --- | --- | --- |
 | 直接媒体 URL | 可用 | 后端基础路径，CI 覆盖相关单元测试。 |
-| Bilibili | 可用但高质量依赖 Profile | 公共样本有 MP4 artifact 和 Range 206。未登录时可能只能拿低清，1080p/更高质量需要登录 Profile。 |
+| Bilibili | 可用样本但高质量依赖 Profile | 2026-06-17 VPS loopback smoke 生成 H.264 yuv420p + AAC MP4，Range 206，faststart OK。未登录时可能只能拿低清，1080p/更高质量需要登录 Profile。 |
 | YouTube | 可用样本 | platform smoke 样本通过 yt-dlp 得到 MP4，Range 206。平台规则可能随 yt-dlp 变化。 |
 | SoundCloud | 可用样本 | platform smoke 样本输出 MP3，Range 206。browser-only 曾失败，当前主要依赖外部适配器。 |
 | AcFun | 可用样本 | 用户样本 `ac48589257` 输出 MP4，VRChat raw URL 检查通过。 |
-| Youku | 可用样本 | 用户样本输出 MP4，VRChat raw URL 检查通过。曾有“候选 720p 但产物 540p”的格式选择问题，后续样本达到 720p。仍需持续回归。 |
-| TikTok | 可用样本但易变 | yt-dlp raw CDN 403 时用委托下载 fallback；platform smoke 有 MP4/Range 206。 |
+| Youku | 可用样本 | 2026-06-17 修复 extensionless `/playlist/m3u8?...` HLS 识别后，VPS loopback smoke 输出 H.264 1080p + AAC MP4，Range 206。签名 URL 易过期，仍需持续回归。 |
+| TikTok | 需要 Profile / 未通过本轮 smoke | 2026-06-17 VPS loopback smoke 选中的 raw CDN 候选返回 HTTP 403，job 进入 `needs_profile`。不要把旧 fallback 证据推广成当前稳定支持。 |
 | Douyin | experimental | 部分 public short video 通过 browser probing 成功；yt-dlp 常提示 fresh cookies；Profile 不保证稳定。 |
 | Kuaishou | experimental | fresh browser candidate 可成功，但 CDN URL 短时效；yt-dlp/you-get/streamlink 不可靠。 |
 | iQ.com trailer | experimental | 有 PhantomJS/inline HLS 成功样本，但依赖过时组件，签名和区域容易漂移。 |
@@ -338,28 +347,37 @@ Android/Quest 或生产使用应配置域名和 HTTPS。
 
 ## 已知关键问题
 
-1. HTTPS 未完成。  
-   公网仍是 HTTP，输入管理密钥和 VRChat Quest/Android 生产使用都应优先配置 HTTPS。
+1. 公网端点和 HTTPS 未完成。
+   2026-06-17 `dwgx-home-cloud` 临时 Docker smoke 的 loopback `/api/health`
+   正常，但公网 `:8780` timeout。输入管理密钥和 VRChat Quest/Android 生产
+   使用都应优先配置域名、HTTPS、nginx/firewall，并重新跑公网 raw URL 检查。
 
-2. iQIYI 国内页仍缺专用适配器。  
+2. iQIYI 国内页仍缺专用适配器。
    当前不是 Cookie/Header 简单回放能解决，证据显示 QWS 403，需要 runtime signature 或平台专用链路。
 
-3. Douyin/Kuaishou 不稳定。  
-   它们依赖 fresh cookies、challenge state、短时效 CDN URL 和浏览器 Profile。必须继续用真实 smoke 跟踪。
+3. TikTok/Douyin/Kuaishou 不稳定。
+   2026-06-17 TikTok public smoke 当前为 raw CDN HTTP 403 / `needs_profile`。
+   这类平台依赖 fresh cookies、challenge state、短时效 CDN URL 和浏览器 Profile。
+   必须继续用真实 smoke 跟踪。
 
-4. MacCMS/资源站需要更强 episode adapter。  
+4. MacCMS/资源站需要更强 episode adapter。
    现在能解析路线和集数，但要在候选层记录路线/集数/来源，并在选择前验证 manifest 和首段可复放。
 
-5. 通用未知网页发现还需要 fixture。  
+5. 通用未知网页发现还需要 fixture。
    需要覆盖 DOM media、metadata、preload、performance resources、inline JSON、script URL、manifest。
 
-6. CDP 网络捕获未完成。  
+6. Browser profile lock 需要继续回归。
+   2026-06-17 修复了 Docker 重建后 Chromium persistent profile 的 stale
+   `Singleton*` lock 导致 sidecar HTTP 500 的问题；后续仍要在容器重建、
+   sidecar graceful shutdown 和交互 login session 场景下回归。
+
+7. CDP 网络捕获未完成。
    需要记录重定向链、initiator、小体积 JSON/manifest 片段，并严格限制字节和敏感内容。
 
-7. 任务队列还不是独立 worker 架构。  
+8. 任务队列还不是独立 worker 架构。
    当前是 API 进程内调度和 SQLite 持久记录。未来应实现 lease-based worker。
 
-8. UI/UX 仍需继续打磨。  
+9. UI/UX 仍需继续打磨。
    用户要求现代化、清楚、少误导，候选资源和任务详情尤其重要。
 
 ## 下一个 Agent 必须遵守的 workflow
@@ -450,29 +468,29 @@ python scripts\smoke\vrchat_raw_url_check.py --url "<artifact-url>"
 
 优先级从高到低：
 
-1. 配置 HTTPS。  
+1. 配置 HTTPS。
    这是公网管理密钥和 VRChat Quest/Android 生产可用性的前置条件。
 
-2. 做“真实平台 smoke 控制面板”。  
+2. 做“真实平台 smoke 控制面板”。
    让用户在前端看到每个平台最近一次成功/失败、失败分类、需要 Profile 与否、最近 artifact 检查结果。
 
-3. iQIYI 国内页专用 adapter。  
+3. iQIYI 国内页专用 adapter。
    目标不是绕过 DRM，而是判断能否合法复放。无法复放就保持 failed 并给出清楚原因。
 
-4. Douyin/Kuaishou fresh Profile 和短时效 URL 流程。  
+4. Douyin/Kuaishou fresh Profile 和短时效 URL 流程。
    探索“发现后立即捕获”的队列路径，减少候选过期。
 
-5. MacCMS episode adapter。  
+5. MacCMS episode adapter。
    记录路线、集数、候选来源、首段验证和地区阻断。不要把 403/404 CDN manifest 交给用户点。
 
-6. 通用网页 discovery fixture 和 CDP 捕获。  
+6. 通用网页 discovery fixture 和 CDP 捕获。
    CDP 捕获已有第一版，下一步要用可控 fixture 和 Rust/Playwright 测试覆盖，
    不要只靠真实站点临时结果。
 
-7. UI 继续重做候选资源体验。  
+7. UI 继续重做候选资源体验。
    候选要让用户看懂：可用、需要授权、地区阻断、DRM、广告、过期、待适配，不能混在一起。
 
-8. 独立 worker / lease 队列。  
+8. 独立 worker / lease 队列。
    当前 SQLite 已有基础，但多 worker 和崩溃恢复还不是最终生产形态。
 
 9. 网页归档回归测试。
