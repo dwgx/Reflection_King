@@ -526,6 +526,7 @@ function App() {
     [jobs, jobPage, jobPageSize],
   );
   const taskStats = useMemo(() => summarizeJobs(jobs), [jobs]);
+  const sourceUrlIssue = useMemo(() => sourceInputIssue(form.url, health?.public_base_url), [form.url, health?.public_base_url]);
 
   const pagedCandidates = useMemo(
     () => paginate(visibleCandidates, candidatePage, candidatePageSize),
@@ -786,6 +787,10 @@ function App() {
 
   async function createJob(event: React.FormEvent) {
     event.preventDefault();
+    if (sourceUrlIssue) {
+      notify(sourceUrlIssue, "warn");
+      return;
+    }
     setBusy(true);
     setMessage("正在创建任务...");
     try {
@@ -1506,8 +1511,10 @@ function App() {
                 type="url"
                 placeholder="https://example.com/watch/123"
                 value={form.url}
+                className={sourceUrlIssue ? "input-warning" : ""}
                 onChange={(event) => setForm({ ...form, url: event.target.value })}
               />
+              {sourceUrlIssue && <span className="field-hint warn">{sourceUrlIssue}</span>}
             </label>
             <Button type="button" variant="secondary" onClick={clearForm} disabled={busy}>
               <X size={16} /> 清空
@@ -1677,7 +1684,7 @@ function App() {
                 <MetaLine label="清晰度" value={bitrateLabel(selectedJob.bitrate)} />
                 <MetaLine label="授权" value={authModeLabel(selectedJob.auth_mode)} />
                 <MetaLine label="更新时间" value={formatShortDate(selectedJob.updated_at)} />
-                <MetaLine label="播放地址" value={selectedJob.media_url ?? "-"} copyable />
+                <MetaLine label={isPageArchiveJob(selectedJob) ? "网页包地址" : "播放地址"} value={selectedJob.media_url ?? "-"} copyable />
               </div>
               {selectedJob.error && (
                 <div className={`error-line ${jobIssue(selectedJob)?.tone ?? "error"}`}>
@@ -3366,15 +3373,6 @@ function isDownloadArtifact(artifact: Artifact): boolean {
     || url.endsWith(".har");
 }
 
-function requiresAuthenticatedOpen(url: string): boolean {
-  try {
-    const parsed = new URL(url, window.location.href);
-    return parsed.pathname.includes("/api/jobs/") && parsed.pathname.includes("/archive/file");
-  } catch {
-    return url.includes("/api/jobs/") && url.includes("/archive/file");
-  }
-}
-
 function jobMediaContentType(job: JobView, artifacts: Artifact[]): string | null {
   if (!job.media_url) return null;
   const matching = artifacts.find((artifact) => artifact.media_url === job.media_url);
@@ -3636,6 +3634,21 @@ function safeUrl(value: string): URL | null {
   } catch {
     return null;
   }
+}
+
+function sourceInputIssue(value: string, publicBaseUrl?: string): string | null {
+  const parsed = safeUrl(value.trim());
+  if (!parsed) return null;
+  const path = parsed.pathname.toLowerCase();
+  const base = publicBaseUrl ? safeUrl(publicBaseUrl) : null;
+  const isSameService = parsed.origin === window.location.origin || parsed.origin === base?.origin;
+  if (isSameService && (path.startsWith("/media/") || path.startsWith("/api/jobs/"))) {
+    return "这是 Reflection King 已生成的产物/API 地址，不是要解析的源网页。请下载或打开产物，或粘贴原始公网页面 URL。";
+  }
+  if (isSameService) {
+    return "这是当前 Reflection King 服务地址，不是源网页。请粘贴 Steam、视频站或普通网页的原始公网 URL。";
+  }
+  return null;
 }
 
 function qualityFromUrl(value: string): string | null {

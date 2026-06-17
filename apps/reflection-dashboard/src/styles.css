@@ -331,6 +331,11 @@
     box-shadow: 0 0 0 3px rgba(25, 184, 207, 0.12);
   }
 
+  .input.input-warning {
+    border-color: #73531c;
+    background: #151104;
+  }
+
   textarea.input {
     height: auto;
   }
@@ -477,6 +482,10 @@
     color: #7e8998;
     font-size: 11px;
     line-height: 16px;
+  }
+
+  .field-hint.warn {
+    color: #f2ca75;
   }
 
   .segmented {

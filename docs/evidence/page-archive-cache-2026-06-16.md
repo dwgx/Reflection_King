@@ -63,6 +63,17 @@ Two user-visible archive opening regressions were fixed after VPS smoke:
   `public_base_url` when the target is a same-service media URL. External CDN
   URLs and authenticated `/api/jobs/{id}/archive/file?...` URLs are not
   rewritten.
+- `63ba956` and `60c4924` improve the page archive dashboard presentation:
+  the generated `archive.zip` web frontend package is ranked first, archive
+  files open in an in-dashboard authenticated blob preview instead of a popup,
+  and JSON/HAR/MHTML/ZIP artifacts no longer render bogus zero-duration media
+  controls.
+- A follow-up dashboard guard rejects Reflection King's own `/media/...` and
+  `/api/jobs/...` URLs in the source URL field before job creation. Those URLs
+  are generated artifacts/API endpoints, not source pages. Submitting the VPS
+  service address as a source URL still remains blocked by Rust URL policy
+  because `192.168.11.4` is a private RFC1918 address and must not be fetched
+  as an untrusted remote source.
 
 VPS verification after rebuilding the Docker service from `master`:
 
