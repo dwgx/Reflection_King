@@ -526,7 +526,11 @@ function App() {
     [jobs, jobPage, jobPageSize],
   );
   const taskStats = useMemo(() => summarizeJobs(jobs), [jobs]);
-  const sourceUrlIssue = useMemo(() => sourceInputIssue(form.url, health?.public_base_url), [form.url, health?.public_base_url]);
+  const normalizedSourceUrl = useMemo(() => normalizeSourceInput(form.url), [form.url]);
+  const sourceUrlIssue = useMemo(
+    () => sourceInputIssue(normalizedSourceUrl, health?.public_base_url),
+    [normalizedSourceUrl, health?.public_base_url],
+  );
 
   const pagedCandidates = useMemo(
     () => paginate(visibleCandidates, candidatePage, candidatePageSize),
@@ -796,7 +800,7 @@ function App() {
     try {
       const payload: CreateJobPayload = {
         ...form,
-        url: form.url.trim(),
+        url: normalizedSourceUrl,
         outputs: outputsForMode(outputMode),
         discovery: outputMode === "page_html" ? "browser" : form.discovery,
         auth_mode: outputMode === "page_html" ? "none" : form.auth_mode,
@@ -1508,8 +1512,9 @@ function App() {
               <span>来源 URL</span>
               <Input
                 required
-                type="url"
-                placeholder="https://example.com/watch/123"
+                type="text"
+                inputMode="url"
+                placeholder="youtube.com/watch?v=..."
                 value={form.url}
                 className={sourceUrlIssue ? "input-warning" : ""}
                 onChange={(event) => setForm({ ...form, url: event.target.value })}
@@ -3634,6 +3639,23 @@ function safeUrl(value: string): URL | null {
   } catch {
     return null;
   }
+}
+
+function normalizeSourceInput(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) return trimmed;
+  if (looksLikeBareHostUrl(trimmed)) return `https://${trimmed}`;
+  return trimmed;
+}
+
+function looksLikeBareHostUrl(value: string): boolean {
+  const hostPort = value.split(/[/?#]/, 1)[0] ?? "";
+  if (!hostPort || hostPort.startsWith("//") || hostPort.includes("@") || /\s/.test(hostPort)) return false;
+  const host = hostPort.startsWith("[")
+    ? hostPort.slice(1).split("]", 1)[0]
+    : hostPort.split(":", 1)[0];
+  return host.toLowerCase() === "localhost" || host.includes(".");
 }
 
 function sourceInputIssue(value: string, publicBaseUrl?: string): string | null {

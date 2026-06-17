@@ -19,6 +19,7 @@ use reflection_core::{
         JobView, OutputKind, PlatformHint, RestoreJobsResponse, SelectCandidatesRequest,
         UpdateRuntimeSettingsRequest,
     },
+    url_policy::parse_and_validate_url,
     AppConfig, RkError,
 };
 use serde::Deserialize;
@@ -413,6 +414,7 @@ async fn create_job(
     if source_url.is_empty() {
         return Err(RkError::BadRequest("missing url".to_string()).into());
     }
+    let source_url: String = parse_and_validate_url(source_url)?.into();
 
     // Requester provenance ("who / what IP / what browser"): prefer a proxy's
     // forwarded client IP, fall back to the socket peer address.
@@ -433,12 +435,12 @@ async fn create_job(
     let discovery = authorized_discovery(requested_discovery, &outputs, &principal)?;
     let platform_hint = request
         .platform_hint
-        .unwrap_or_else(|| infer_platform(source_url));
+        .unwrap_or_else(|| infer_platform(&source_url));
     let profile_id = normalize_profile_id(request.profile_id);
     let auth_mode = normalize_auth_mode_for_outputs(request.auth_mode, &outputs);
     let settings = state.runtime_settings_view().await?;
     let record = JobRecord::new_with_options(
-        source_url.to_string(),
+        source_url,
         bitrate,
         settings.public_base_url.as_str(),
         JobCreateOptions {
@@ -1505,16 +1507,15 @@ impl IntoResponse for ApiError {
             RkError::Unauthorized => StatusCode::UNAUTHORIZED,
             RkError::NotFound(_) => StatusCode::NOT_FOUND,
             RkError::UrlPolicy(_) => StatusCode::BAD_REQUEST,
+            RkError::UrlParse(_) => StatusCode::BAD_REQUEST,
             RkError::Source(_) => StatusCode::BAD_GATEWAY,
             RkError::Browser(_) => StatusCode::BAD_GATEWAY,
             RkError::DownloadTooLarge { .. } => StatusCode::PAYLOAD_TOO_LARGE,
             RkError::RangeNotSatisfiable { .. } => StatusCode::RANGE_NOT_SATISFIABLE,
             RkError::Transcode(_) => StatusCode::UNPROCESSABLE_ENTITY,
-            RkError::Io(_)
-            | RkError::Http(_)
-            | RkError::UrlParse(_)
-            | RkError::Json(_)
-            | RkError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            RkError::Io(_) | RkError::Http(_) | RkError::Json(_) | RkError::Database(_) => {
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
         };
 
         let body = Json(serde_json::json!({

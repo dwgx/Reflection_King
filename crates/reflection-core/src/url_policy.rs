@@ -5,9 +5,38 @@ use url::Url;
 use crate::{Result, RkError};
 
 pub fn parse_and_validate_url(input: &str) -> Result<Url> {
-    let url = Url::parse(input)?;
+    let url = parse_url_with_default_scheme(input)?;
     validate_url(&url)?;
     Ok(url)
+}
+
+fn parse_url_with_default_scheme(input: &str) -> Result<Url> {
+    let trimmed = input.trim();
+    match Url::parse(trimmed) {
+        Ok(url) => Ok(url),
+        Err(url::ParseError::RelativeUrlWithoutBase) if looks_like_bare_host_url(trimmed) => {
+            Ok(Url::parse(&format!("https://{trimmed}"))?)
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn looks_like_bare_host_url(value: &str) -> bool {
+    let Some(host_port) = value.split(['/', '?', '#']).next() else {
+        return false;
+    };
+    if host_port.is_empty()
+        || host_port.contains('@')
+        || host_port.contains(char::is_whitespace)
+        || value.starts_with("//")
+    {
+        return false;
+    }
+    let host = host_port
+        .strip_prefix('[')
+        .and_then(|rest| rest.split(']').next())
+        .unwrap_or_else(|| host_port.split(':').next().unwrap_or(host_port));
+    host.eq_ignore_ascii_case("localhost") || host.contains('.')
 }
 
 pub fn validate_url(url: &Url) -> Result<()> {
@@ -80,4 +109,30 @@ fn is_ipv6_unicast_link_local(ip: Ipv6Addr) -> bool {
 
 fn is_ipv6_documentation(ip: Ipv6Addr) -> bool {
     ip.segments()[0] == 0x2001 && ip.segments()[1] == 0x0db8
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bare_host_urls_default_to_https() {
+        let parsed = parse_and_validate_url("www.youtube.com/watch").unwrap();
+        assert_eq!(parsed.as_str(), "https://www.youtube.com/watch");
+
+        let parsed = parse_and_validate_url("example.com/watch?v=1").unwrap();
+        assert_eq!(parsed.as_str(), "https://example.com/watch?v=1");
+    }
+
+    #[test]
+    fn explicit_http_urls_are_preserved() {
+        let parsed = parse_and_validate_url("http://example.com/watch").unwrap();
+        assert_eq!(parsed.as_str(), "http://example.com/watch");
+    }
+
+    #[test]
+    fn non_url_text_is_not_treated_as_host() {
+        assert!(parse_and_validate_url("not a url").is_err());
+        assert!(parse_and_validate_url("/watch?v=1").is_err());
+    }
 }

@@ -74,6 +74,11 @@ Two user-visible archive opening regressions were fixed after VPS smoke:
   service address as a source URL still remains blocked by Rust URL policy
   because `192.168.11.4` is a private RFC1918 address and must not be fetched
   as an untrusted remote source.
+- Source URL handling now accepts bare host URLs such as
+  `www.youtube.com/watch` and normalizes them to `https://www.youtube.com/watch`
+  before policy validation. The dashboard no longer lets the browser's native
+  URL input validation block this common paste form before application logic
+  can normalize it.
 
 VPS verification after rebuilding the Docker service from `master`:
 
