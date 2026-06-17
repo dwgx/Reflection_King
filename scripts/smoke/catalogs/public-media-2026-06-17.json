@@ -1,0 +1,97 @@
+{
+  "name": "public-media-2026-06-17",
+  "purpose": "Public media and information-page smoke sources gathered for expanding Reflection King coverage without relying on private cookies, paid access, or protected media.",
+  "created_at": "2026-06-17",
+  "cases": [
+    {
+      "name": "w3schools-bbb-direct-video",
+      "url": "https://www.w3schools.com/html/mov_bbb.mp4",
+      "source_page": "https://www.w3schools.com/html/html5_video.asp",
+      "discovery": "direct",
+      "platform_hint": "generic",
+      "outputs": ["video"],
+      "tier": "core",
+      "auth_mode": "none",
+      "notes": "Small public MP4 sample; HEAD 200 video/mp4 with Content-Length 788493 on 2026-06-17."
+    },
+    {
+      "name": "w3schools-horse-direct-audio",
+      "url": "https://www.w3schools.com/html/horse.mp3",
+      "source_page": "https://www.w3schools.com/html/html5_audio.asp",
+      "discovery": "direct",
+      "platform_hint": "generic",
+      "outputs": ["audio"],
+      "tier": "core",
+      "bitrate": "128k",
+      "auth_mode": "none",
+      "notes": "Small public MP3 sample; HEAD 200 audio/mpeg with Content-Length 28915 on 2026-06-17."
+    },
+    {
+      "name": "blender-sintel-trailer-direct-video",
+      "url": "https://download.blender.org/durian/trailer/sintel_trailer-480p.mp4",
+      "source_page": "https://download.blender.org/durian/trailer/",
+      "discovery": "direct",
+      "platform_hint": "generic",
+      "outputs": ["video"],
+      "tier": "core",
+      "auth_mode": "none",
+      "notes": "Blender Foundation Sintel trailer MP4; HEAD 200 video/mp4 with Content-Length 4372373 on 2026-06-17."
+    },
+    {
+      "name": "dashif-bbb-30fps-dash-video",
+      "url": "https://dash.akamaized.net/akamai/bbb_30fps/bbb_30fps.mpd",
+      "source_page": "https://reference.dashif.org/dash.js/",
+      "discovery": "auto",
+      "platform_hint": "live",
+      "outputs": ["video"],
+      "tier": "experimental",
+      "auth_mode": "none",
+      "notes": "DASH-IF hosted MPD sample; useful for DASH manifest handling and marked experimental until artifact size/runtime are proven in this repo."
+    },
+    {
+      "name": "apple-bipbop-hls-manual-video",
+      "url": "https://devstreaming-cdn.apple.com/videos/streaming/examples/bipbop_16x9/bipbop_16x9_variant.m3u8",
+      "source_page": "https://developer.apple.com/streaming/examples/",
+      "discovery": "auto",
+      "platform_hint": "live",
+      "outputs": ["video"],
+      "tier": "experimental",
+      "auth_mode": "none",
+      "expect_success": false,
+      "notes": "Apple HLS authoring sample; long stream, so keep as manual stress coverage rather than an expected green smoke."
+    },
+    {
+      "name": "mtr-system-map-page-archive",
+      "url": "https://www.mtr.com.hk/en/customer/services/system_map.html",
+      "source_page": "https://www.mtr.com.hk/en/customer/services/system_map.html",
+      "discovery": "browser",
+      "platform_hint": "generic",
+      "outputs": ["page_html"],
+      "tier": "experimental",
+      "auth_mode": "none",
+      "notes": "MTR official public system map page; page_html archive source, not media extraction evidence."
+    },
+    {
+      "name": "mtr-tsuen-wan-station-page-archive",
+      "url": "https://www.mtr.com.hk/en/customer/services/tsw_index.html",
+      "source_page": "https://www.mtr.com.hk/en/customer/services/tsw_index.html",
+      "discovery": "browser",
+      "platform_hint": "generic",
+      "outputs": ["page_html"],
+      "tier": "experimental",
+      "auth_mode": "none",
+      "notes": "MTR official Tsuen Wan station page; page_html archive source for transit information pages."
+    },
+    {
+      "name": "tsuen-wan-district-council-page-archive",
+      "url": "https://www.districtcouncils.gov.hk/tw/english/welcome/welcome.html",
+      "source_page": "https://www.districtcouncils.gov.hk/tw/english/welcome/welcome.html",
+      "discovery": "browser",
+      "platform_hint": "generic",
+      "outputs": ["page_html"],
+      "tier": "experimental",
+      "auth_mode": "none",
+      "notes": "Official Tsuen Wan District Council public page; page_html archive source for government information pages."
+    }
+  ]
+}

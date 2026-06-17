@@ -1,0 +1,71 @@
+[
+  {
+    "case": "w3schools-bbb-direct-video",
+    "tier": "core",
+    "notes": "Small public MP4 sample; HEAD 200 video/mp4 with Content-Length 788493 on 2026-06-17.",
+    "job_id": "38f94292-d469-44af-a179-1d8b3aa85e2f",
+    "status": "ready",
+    "error": null,
+    "candidate_count": 0,
+    "artifact_count": 1,
+    "media_checks": [
+      {
+        "kind": "video",
+        "status": 206,
+        "content_type": "video/mp4",
+        "content_range": "bytes 0-511/586538",
+        "bytes": 512,
+        "url": "http://127.0.0.1:8780/media/38f94292-d469-44af-a179-1d8b3aa85e2f/video-4999583a-6807-4782-8835-c3b93c4b7add.mp4"
+      }
+    ],
+    "archive_check": null,
+    "trace_events": 6,
+    "expect_success": true
+  },
+  {
+    "case": "w3schools-horse-direct-audio",
+    "tier": "core",
+    "notes": "Small public MP3 sample; HEAD 200 audio/mpeg with Content-Length 28915 on 2026-06-17.",
+    "job_id": "9be10048-2a3b-45b3-8c17-78de1a5bfc0d",
+    "status": "ready",
+    "error": null,
+    "candidate_count": 0,
+    "artifact_count": 1,
+    "media_checks": [
+      {
+        "kind": "audio",
+        "status": 206,
+        "content_type": "audio/mpeg",
+        "content_range": "bytes 0-511/25539",
+        "bytes": 512,
+        "url": "http://127.0.0.1:8780/media/9be10048-2a3b-45b3-8c17-78de1a5bfc0d/audio-16d36038-d7ee-4059-917a-c2e4cb62729f.mp3"
+      }
+    ],
+    "archive_check": null,
+    "trace_events": 6,
+    "expect_success": true
+  },
+  {
+    "case": "blender-sintel-trailer-direct-video",
+    "tier": "core",
+    "notes": "Blender Foundation Sintel trailer MP4; HEAD 200 video/mp4 with Content-Length 4372373 on 2026-06-17.",
+    "job_id": "d1905fe3-de78-4463-9dd8-93f835a674f9",
+    "status": "ready",
+    "error": null,
+    "candidate_count": 0,
+    "artifact_count": 1,
+    "media_checks": [
+      {
+        "kind": "video",
+        "status": 206,
+        "content_type": "video/mp4",
+        "content_range": "bytes 0-511/4369173",
+        "bytes": 512,
+        "url": "http://127.0.0.1:8780/media/d1905fe3-de78-4463-9dd8-93f835a674f9/video-9080a650-7dad-4055-8657-c38f8f3ee130.mp4"
+      }
+    ],
+    "archive_check": null,
+    "trace_events": 6,
+    "expect_success": true
+  }
+]

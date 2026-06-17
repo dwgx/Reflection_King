@@ -1,0 +1,38 @@
+[
+  {
+    "case": "mtr-tsuen-wan-station-page-archive",
+    "tier": "experimental",
+    "notes": "MTR official Tsuen Wan station page; page_html archive source for transit information pages.",
+    "job_id": "5ba18559-afd1-4e81-9477-42547ab3cbab",
+    "status": "ready",
+    "error": null,
+    "candidate_count": 0,
+    "artifact_count": 8,
+    "media_checks": [],
+    "archive_check": {
+      "file_count": 8,
+      "required_present": [
+        "index.html",
+        "index.inline.html",
+        "page.txt"
+      ],
+      "missing_required": [
+        "archive.zip",
+        "page.html",
+        "resources.json",
+        "screenshot.png"
+      ],
+      "samples": [
+        {
+          "path": "index.html",
+          "status": 200,
+          "content_type": "text/html; charset=utf-8",
+          "content_range": null,
+          "bytes": 327
+        }
+      ]
+    },
+    "trace_events": 6,
+    "expect_success": true
+  }
+]

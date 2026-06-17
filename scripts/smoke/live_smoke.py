@@ -17,10 +17,23 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 
 TERMINAL_STATUSES = {"ready", "error"}
+DISCOVERY_MODES = {"auto", "browser", "external", "direct"}
+OUTPUT_KINDS = {"video", "audio", "image", "html", "page_html"}
+SMOKE_TIERS = {"core", "platform", "experimental"}
+PAGE_ARCHIVE_REQUIRED_FILES = {
+    "index.html",
+    "index.inline.html",
+    "page.html",
+    "page.txt",
+    "screenshot.png",
+    "resources.json",
+    "archive.zip",
+}
 
 
 @dataclass(frozen=True)
@@ -438,6 +451,129 @@ def external_to_api_path(media_url: str, base_url: str) -> str:
     return parsed.path + (f"?{parsed.query}" if parsed.query else "")
 
 
+def archive_file_api_path(job_id: str, relative_path: str) -> str:
+    return f"/api/jobs/{job_id}/archive/file?path={urllib.parse.quote(relative_path, safe='')}"
+
+
+def archive_checks(client: Client, job_id: str) -> dict[str, Any]:
+    tree = client.request("GET", f"/api/jobs/{job_id}/archive/tree")
+    files = tree.get("files") if isinstance(tree, dict) else []
+    if not isinstance(files, list):
+        files = []
+    paths = sorted(str(file.get("path") or "") for file in files if isinstance(file, dict))
+    required_present = sorted(path for path in PAGE_ARCHIVE_REQUIRED_FILES if path in paths)
+    missing_required = sorted(PAGE_ARCHIVE_REQUIRED_FILES - set(required_present))
+    samples = []
+    for relative_path in ["resources.json", "index.html", "page.html"]:
+        if relative_path not in paths:
+            continue
+        try:
+            result = client.request(
+                "GET",
+                archive_file_api_path(job_id, relative_path),
+                raw=True,
+                extra_headers={"range": "bytes=0-511"},
+            )
+            samples.append(
+                {
+                    "path": relative_path,
+                    "status": result["status"],
+                    "content_type": result["headers"].get("content-type"),
+                    "content_range": result["headers"].get("content-range"),
+                    "bytes": len(result["sample"]),
+                }
+            )
+        except Exception as error:  # noqa: BLE001 - smoke script records failures.
+            samples.append({"path": relative_path, "error": str(error)})
+    return {
+        "file_count": len(paths),
+        "required_present": required_present,
+        "missing_required": missing_required,
+        "samples": samples,
+    }
+
+
+def normalize_outputs(outputs: list[str] | None) -> list[str]:
+    normalized = [("page_html" if output == "html" else output) for output in (outputs or ["video"])]
+    unknown = sorted(set(normalized) - (OUTPUT_KINDS - {"html"}))
+    if unknown:
+        raise ValueError(f"unknown output kind(s): {', '.join(unknown)}")
+    if "page_html" in normalized:
+        return ["page_html"]
+    return normalized
+
+
+def catalog_bool(raw: dict[str, Any], key: str, default: bool, source: str, name: str) -> bool:
+    value = raw.get(key, default)
+    if isinstance(value, bool):
+        return value
+    raise ValueError(f"{source}:{name}: {key} must be a JSON boolean")
+
+
+def smoke_case_from_mapping(raw: dict[str, Any], source: str) -> SmokeCase:
+    try:
+        name = str(raw["name"])
+        url = str(raw["url"])
+    except KeyError as error:
+        raise ValueError(f"{source}: catalog case missing required field {error.args[0]!r}") from error
+    outputs = raw.get("outputs", ["video"])
+    if not isinstance(outputs, list) or not all(isinstance(output, str) for output in outputs):
+        raise ValueError(f"{source}:{name}: outputs must be a list of strings")
+    discovery = str(raw.get("discovery", "auto"))
+    if discovery not in DISCOVERY_MODES:
+        raise ValueError(f"{source}:{name}: discovery must be one of {sorted(DISCOVERY_MODES)}")
+    tier = str(raw.get("tier", "experimental"))
+    if tier not in SMOKE_TIERS:
+        raise ValueError(f"{source}:{name}: tier must be one of {sorted(SMOKE_TIERS)}")
+    return SmokeCase(
+        name=name,
+        url=url,
+        discovery=discovery,
+        platform_hint=str(raw.get("platform_hint", raw.get("platform", "auto"))),
+        outputs=normalize_outputs(outputs),
+        tier=tier,
+        notes=str(raw.get("notes", "")),
+        bitrate=str(raw.get("bitrate", "auto")),
+        auth_mode=str(raw.get("auth_mode", "auto")),
+        profile_id=str(raw.get("profile_id", "admin_default")),
+        max_selected=int(raw.get("max_selected", 8)),
+        expect_success=catalog_bool(raw, "expect_success", True, source, name),
+    )
+
+
+def load_catalog_cases(paths: list[str] | None) -> list[SmokeCase]:
+    cases: list[SmokeCase] = []
+    for path in paths or []:
+        catalog_path = Path(path)
+        with catalog_path.open("r", encoding="utf-8") as file:
+            catalog = json.load(file)
+        raw_cases = catalog.get("cases") if isinstance(catalog, dict) else catalog
+        if not isinstance(raw_cases, list):
+            raise ValueError(f"{catalog_path}: catalog must be a list or contain a cases list")
+        for raw_case in raw_cases:
+            if not isinstance(raw_case, dict):
+                raise ValueError(f"{catalog_path}: every catalog case must be an object")
+            cases.append(smoke_case_from_mapping(raw_case, str(catalog_path)))
+    return cases
+
+
+def result_is_success(result: dict[str, Any]) -> bool:
+    if result.get("status") != "ready" or not result.get("artifact_count"):
+        return False
+    media_checks = result.get("media_checks")
+    if isinstance(media_checks, list) and media_checks:
+        for check in media_checks:
+            if not isinstance(check, dict):
+                return False
+            if check.get("error") or check.get("status") not in {200, 206}:
+                return False
+    archive_check = result.get("archive_check")
+    if isinstance(archive_check, dict):
+        if archive_check.get("error") or archive_check.get("missing_required"):
+            return False
+    return True
+
+
 def run_case(client: Client, case: SmokeCase, timeout_seconds: int) -> dict[str, Any]:
     eprint(f"\n=== {case.name} ===")
     payload = {
@@ -495,23 +631,32 @@ def run_case(client: Client, case: SmokeCase, timeout_seconds: int) -> dict[str,
     final_job = client.request("GET", f"/api/jobs/{job_id}")
     artifacts = client.request("GET", f"/api/jobs/{job_id}/artifacts")
     media_checks = []
+    archive_check = None
     for artifact in artifacts:
-        media_url = artifact["media_url"]
-        path = external_to_api_path(media_url, client.base_url)
-        try:
-            result = client.request("GET", path, raw=True, extra_headers={"range": "bytes=0-511"})
-            check = {
-                "kind": artifact["kind"],
-                "status": result["status"],
-                "content_type": result["headers"].get("content-type"),
-                "content_range": result["headers"].get("content-range"),
-                "bytes": len(result["sample"]),
-                "url": media_url,
-            }
-        except Exception as error:  # noqa: BLE001 - smoke script records failures.
-            check = {"kind": artifact.get("kind"), "error": str(error), "url": media_url}
-        media_checks.append(check)
-        eprint("artifact " + json.dumps(check, ensure_ascii=False))
+        if artifact.get("kind") == "page_html":
+            if archive_check is None:
+                try:
+                    archive_check = archive_checks(client, job_id)
+                except Exception as error:  # noqa: BLE001 - smoke script records failures.
+                    archive_check = {"error": str(error)}
+                eprint("archive " + json.dumps(archive_check, ensure_ascii=False))
+        else:
+            media_url = artifact["media_url"]
+            path = external_to_api_path(media_url, client.base_url)
+            try:
+                result = client.request("GET", path, raw=True, extra_headers={"range": "bytes=0-511"})
+                check = {
+                    "kind": artifact["kind"],
+                    "status": result["status"],
+                    "content_type": result["headers"].get("content-type"),
+                    "content_range": result["headers"].get("content-range"),
+                    "bytes": len(result["sample"]),
+                    "url": media_url,
+                }
+            except Exception as error:  # noqa: BLE001 - smoke script records failures.
+                check = {"kind": artifact.get("kind"), "error": str(error), "url": media_url}
+            media_checks.append(check)
+            eprint("artifact " + json.dumps(check, ensure_ascii=False))
 
     trace = client.request("GET", f"/api/jobs/{job_id}/trace")
     return {
@@ -524,6 +669,7 @@ def run_case(client: Client, case: SmokeCase, timeout_seconds: int) -> dict[str,
         "candidate_count": len(candidates),
         "artifact_count": len(artifacts),
         "media_checks": media_checks,
+        "archive_check": archive_check,
         "trace_events": len(trace),
         "expect_success": case.expect_success,
     }
@@ -552,12 +698,15 @@ def main() -> int:
     parser.add_argument("--name", default="adhoc", help="Name for --url smoke case.")
     parser.add_argument("--discovery", default="auto", choices=["auto", "browser", "external", "direct"])
     parser.add_argument("--platform", default="auto", help="Platform hint for --url smoke case.")
-    parser.add_argument("--output", action="append", choices=["video", "audio", "image", "html"])
+    parser.add_argument("--output", action="append", choices=["video", "audio", "image", "html", "page_html"])
     parser.add_argument("--bitrate", default="auto")
     parser.add_argument("--auth-mode", default="auto")
     parser.add_argument("--profile-id", default="admin_default")
     parser.add_argument("--max-selected", type=int, default=8)
     parser.add_argument("--expect-success", action="store_true", help="Make --url fail the smoke run unless it creates an artifact.")
+    parser.add_argument("--catalog", action="append", help="Load additional smoke cases from a JSON catalog. Can be repeated.")
+    parser.add_argument("--catalog-only", action="store_true", help="Do not include built-in cases when selecting catalog cases.")
+    parser.add_argument("--summary-file", help="Write the machine-readable summary JSON to this path.")
     parser.add_argument(
         "--tier",
         action="append",
@@ -568,8 +717,11 @@ def main() -> int:
     parser.add_argument("--list", action="store_true", help="List case names and exit.")
     args = parser.parse_args()
 
+    catalog_cases = load_catalog_cases(args.catalog)
+    available_cases = ([] if args.catalog_only else list(DEFAULT_CASES)) + catalog_cases
+
     if args.list:
-        for case in DEFAULT_CASES:
+        for case in available_cases:
             print(f"{case.name}\t{case.tier}\t{case.discovery}/{case.platform_hint}")
         return 0
 
@@ -581,7 +733,7 @@ def main() -> int:
                 url=args.url,
                 discovery=args.discovery,
                 platform_hint=args.platform,
-                outputs=args.output or ["video"],
+                outputs=normalize_outputs(args.output),
                 bitrate=args.bitrate,
                 auth_mode=args.auth_mode,
                 profile_id=args.profile_id,
@@ -594,12 +746,12 @@ def main() -> int:
         selected_tiers = {"core", "platform", "experimental"} if args.all_tiers else set(args.tier or ["core"])
         cases = [
             case
-            for case in DEFAULT_CASES
+            for case in available_cases
             if (not selected_names or case.name in selected_names)
             and (selected_names or case.tier in selected_tiers)
         ]
         if selected_names and len(cases) != len(selected_names):
-            known = {case.name for case in DEFAULT_CASES}
+            known = {case.name for case in available_cases}
             missing = sorted(selected_names - known)
             raise SystemExit(f"unknown smoke case(s): {', '.join(missing)}")
 
@@ -609,7 +761,7 @@ def main() -> int:
     for case in cases:
         try:
             result = run_case(client, case, args.timeout_seconds)
-            success = result["status"] == "ready" and result["artifact_count"]
+            success = result_is_success(result)
             if case.expect_success and not success:
                 failed = True
             results.append(result)
@@ -627,7 +779,12 @@ def main() -> int:
             )
 
     print("\nSUMMARY")
-    print(json.dumps(results, ensure_ascii=False, indent=2))
+    summary = json.dumps(results, ensure_ascii=False, indent=2)
+    print(summary)
+    if args.summary_file:
+        summary_path = Path(args.summary_file)
+        summary_path.parent.mkdir(parents=True, exist_ok=True)
+        summary_path.write_text(summary + "\n", encoding="utf-8")
     return 1 if failed else 0
 
 

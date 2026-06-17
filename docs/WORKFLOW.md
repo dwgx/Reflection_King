@@ -79,6 +79,50 @@ build、PowerShell 语法检查、`git diff --check`，并在存在 Bash 时运�
 
 如果某项检查无法运行，必须在交接或最终说明里写明缺失依赖和错误文本。
 
+## 公开源 smoke 扩充
+
+新增公开视频或公开信息页时，优先把 URL 放进 catalog，而不是直接改
+`scripts/smoke/live_smoke.py` 的内置用例：
+
+```powershell
+python scripts/smoke/live_smoke.py `
+  --catalog scripts/smoke/catalogs/public-media-2026-06-17.json `
+  --catalog-only `
+  --list
+```
+
+运行低成本公开视频 smoke：
+
+```powershell
+python scripts/smoke/live_smoke.py `
+  --base-url http://127.0.0.1:8787 `
+  --api-key-file .tmp\admin-key.txt `
+  --catalog scripts/smoke/catalogs/public-media-2026-06-17.json `
+  --catalog-only `
+  --tier core `
+  --summary-file docs\evidence\public-catalog-core-smoke-local.json
+```
+
+在 VPS 临时 Docker 环境里，可以先只读检查容器和 health：
+
+```bash
+bash scripts/smoke/vps_smoke_inspect.sh ~/reflection-king-smoke
+```
+
+再运行 catalog smoke：
+
+```bash
+bash scripts/smoke/vps_run_catalog_smoke.sh ~/reflection-king-smoke \
+  --catalog-only \
+  --tier core \
+  --timeout-seconds 240 \
+  --summary-file /tmp/rk-public-core-summary.json
+```
+
+`page_html` 信息页和长 HLS/DASH 样本默认视为 experimental。只有在当前
+HEAD 或当前部署镜像上生成完整 artifact、`archive/tree` 完整，并且
+`archive/file` 通过带 `x-api-key` 的读取抽样后，才能写成已验证能力。
+
 ## Review 工作流
 
 用户要求 review 时：

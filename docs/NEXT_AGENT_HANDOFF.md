@@ -22,6 +22,8 @@
   `docs/evidence/page-archive-cache-2026-06-16.md`。
 - 2026-06-17 VPS 临时 Docker smoke 和后续修复记录：
   `docs/evidence/vps-smoke-2026-06-17.md`。
+- 2026-06-17 公开源 catalog、VPS core smoke 和 MTR/荃湾信息页归档试跑记录：
+  `docs/evidence/public-source-catalog-smoke-2026-06-17.md`。
 
 用户曾提到一个长聊天记录文件：
 
@@ -132,6 +134,62 @@ MHTML、HAR 均返回且 warnings 为空。临时 Profile 已清理。
 
 ```powershell
 .\scripts\check.ps1
+```
+
+### 2026-06-17 新增：公开源 catalog smoke
+
+本轮为 `scripts/smoke/live_smoke.py` 增加了数据驱动 smoke：
+
+- `--catalog <path>`：从 JSON catalog 读取额外 smoke case。
+- `--catalog-only`：只运行 catalog case。
+- `--summary-file <path>`：把机器可读结果写入 JSON。
+- `--output page_html`：支持临时跑网页归档 case。
+- `page_html` artifact 会额外调用 authenticated `archive/tree` 和
+  `archive/file?path=...` 抽样，检查 `index.html`、`index.inline.html`、
+  `page.html`、`page.txt`、`screenshot.png`、`resources.json`、`archive.zip`。
+
+新增 catalog：
+
+```text
+scripts/smoke/catalogs/public-media-2026-06-17.json
+```
+
+当前 catalog 分层：
+
+- core：W3Schools 小 MP4、W3Schools 小 MP3、Blender Sintel trailer MP4。
+- experimental：DASH-IF MPD、Apple HLS 长样本、MTR 系统图、MTR 荃湾站、
+  荃湾区议会公开信息页。
+
+VPS 临时 Docker 环境新增两个辅助脚本：
+
+```text
+scripts/smoke/vps_smoke_inspect.sh
+scripts/smoke/vps_run_catalog_smoke.sh
+```
+
+`vps_run_catalog_smoke.sh` 会从容器内 `/data/admin-key.txt` 读取 admin key
+到 0600 临时文件，传给 smoke 脚本，退出时删除；脚本不会打印真实 key。
+
+2026-06-17 VPS loopback core catalog smoke 结果：
+
+| Case | Job | Result |
+| --- | --- | --- |
+| `w3schools-bbb-direct-video` | `38f94292-d469-44af-a179-1d8b3aa85e2f` | ready, `video/mp4`, Range `206` |
+| `w3schools-horse-direct-audio` | `9be10048-2a3b-45b3-8c17-78de1a5bfc0d` | ready, `audio/mpeg`, Range `206` |
+| `blender-sintel-trailer-direct-video` | `d1905fe3-de78-4463-9dd8-93f835a674f9` | ready, `video/mp4`, Range `206` |
+
+MTR 荃湾站 `page_html` 在旧临时容器上试跑过：job `5ba18559-afd1-4e81-9477-42547ab3cbab`
+到 `ready`，authenticated `archive/file?path=index.html` 可读，但旧容器只生成了
+部分网页包文件，缺 `resources.json`、`screenshot.png`、`archive.zip` 和 `page.html`。
+该容器仍基于旧本地树，不代表当前 `master` 的 page archive 能力；要证明当前
+HEAD，需要在干净 rebuild 的容器或本地当前 HEAD 服务上重跑。
+
+证据：
+
+```text
+docs/evidence/public-source-catalog-smoke-2026-06-17.md
+docs/evidence/public-catalog-core-smoke-2026-06-17.json
+docs/evidence/public-catalog-page-old-container-2026-06-17.json
 ```
 
 ### 后端
