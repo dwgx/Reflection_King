@@ -3,7 +3,6 @@
 媒体抓取后端风险很高：它会访问用户提供的 URL，解析第三方页面，并运行 ffmpeg、Chromium、
 yt-dlp 等重型组件。Reflection King 的默认目标是“安全地处理用户有权访问的公开或授权内容”，
 并把生成后的媒体产物作为 `/media/...` raw URL 提供给 VRChat 或其他播放器。
-项目不做 DRM、付费墙、验证码、年龄门槛、区域限制或平台访问控制绕过。
 
 ## 已实现的基础防线
 
@@ -33,7 +32,6 @@ yt-dlp 等重型组件。Reflection King 的默认目标是“安全地处理用
 ## Cookie 和授权
 
 Profile Cookie 只能用于操作者已经有权限访问的内容。它可以帮助服务端复用登录态和必要 Header，
-但不能用于规避 DRM、付费墙、验证码、二次验证、年龄确认、区域封锁或法律限制。
 
 不要把 Cookie JSON、浏览器 Profile、SQLite 数据库、`.env`、`.env.docker`、
 `/etc/reflection-king/reflection.env` 或 `/root/reflection-king-admin-key.txt` 提交到 GitHub。
