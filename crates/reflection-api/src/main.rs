@@ -225,11 +225,49 @@ async fn index() -> Response {
     }
 }
 
-async fn dashboard_asset(Path(path): Path<String>) -> Result<Response, ApiError> {
-    if path.contains("..") || path.contains('\\') {
-        return Err(RkError::BadRequest("invalid asset path".to_string()).into());
+/// Resolve a request-supplied dashboard asset path safely.
+///
+/// The previous guard only rejected `..` and backslash, which let an absolute
+/// path (e.g. `C:/Windows/...` on Windows, or a leading `/` on Linux) replace
+/// the base directory through `Path::join`, yielding arbitrary file read on an
+/// unauthenticated route. We now reject absolute/rooted paths and any non-normal
+/// component, then canonicalize and confirm the result stays inside the assets
+/// root and is a regular file. Mirrors the archive path guard in `state.rs`.
+async fn safe_dashboard_asset_path(path: &str) -> Option<std::path::PathBuf> {
+    use std::path::{Component, Path as StdPath};
+
+    if path.is_empty()
+        || path.contains("..")
+        || path.starts_with('/')
+        || path.contains('\\')
+    {
+        return None;
     }
-    let full_path = std::path::Path::new("crates/reflection-api/dashboard-dist/assets").join(path);
+    let rel = StdPath::new(path);
+    if rel.is_absolute()
+        || rel
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return None;
+    }
+    let root = tokio::fs::canonicalize("crates/reflection-api/dashboard-dist/assets")
+        .await
+        .ok()?;
+    let candidate = tokio::fs::canonicalize(root.join(rel)).await.ok()?;
+    if !candidate.starts_with(&root) {
+        return None;
+    }
+    if !tokio::fs::metadata(&candidate).await.ok()?.is_file() {
+        return None;
+    }
+    Some(candidate)
+}
+
+async fn dashboard_asset(Path(path): Path<String>) -> Result<Response, ApiError> {
+    let full_path = safe_dashboard_asset_path(&path)
+        .await
+        .ok_or_else(|| ApiError::from(RkError::BadRequest("invalid asset path".to_string())))?;
     let bytes = fs::read(&full_path).await?;
     let content_type = full_path
         .file_name()
@@ -555,17 +593,37 @@ async fn get_archive_file(
     if file_len == 0 {
         return Err(RkError::Source("archive file is empty".to_string()).into());
     }
-    let content_type = path
-        .file_name()
-        .and_then(|value| value.to_str())
-        .map(content_type_for)
-        .unwrap_or("application/octet-stream");
+    let filename = path.file_name().and_then(|value| value.to_str());
+    let content_type = filename.map(content_type_for).unwrap_or("application/octet-stream");
+    // C1 defense: archived bytes come from arbitrary captured pages. If a
+    // captured .html is served inline as text/html on the dashboard origin,
+    // its <script> runs with access to the stored API key. Mark every archive
+    // response nosniff, and force any active/markup type to download instead of
+    // render. The dashboard also sandboxes its preview iframe (belt and braces).
+    let is_active = matches!(
+        content_type,
+        "text/html; charset=utf-8"
+            | "text/html"
+            | "application/xhtml+xml"
+            | "image/svg+xml"
+            | "application/xml"
+            | "text/xml"
+    );
     let stream = ReaderStream::new(file);
-    Ok(Response::builder()
+    let mut builder = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, content_type)
         .header(header::CONTENT_LENGTH, file_len.to_string())
-        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+        .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
+        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*");
+    if is_active {
+        let disposition = match filename {
+            Some(name) => format!("attachment; filename=\"{}\"", name.replace('"', "")),
+            None => "attachment".to_string(),
+        };
+        builder = builder.header(header::CONTENT_DISPOSITION, disposition);
+    }
+    Ok(builder
         .body(Body::from_stream(stream))
         .map_err(|error| RkError::Source(format!("failed to build response: {error}")))?)
 }
