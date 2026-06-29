@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use reqwest::{
     header::{HeaderMap, CONTENT_TYPE},
     Client, StatusCode,
@@ -5,6 +7,7 @@ use reqwest::{
 use url::Url;
 
 use crate::{
+    policy_http::{policy_client, validate_response_url_and_peer},
     url_policy::{parse_and_validate_url, validate_url},
     Result, RkError,
 };
@@ -20,14 +23,15 @@ enum ManifestKind {
 }
 
 pub async fn validate_manifest_url(
-    client: &Client,
     manifest_url: &str,
     headers: HeaderMap,
+    timeout: Duration,
 ) -> Result<()> {
+    let client = policy_client(timeout, "ReflectionKing/0.1")?;
     let kind = manifest_kind(manifest_url)
         .ok_or_else(|| RkError::Source("unsupported manifest URL".to_string()))?;
     match kind {
-        ManifestKind::Hls => validate_hls_manifest(client, manifest_url, headers).await,
+        ManifestKind::Hls => validate_hls_manifest(&client, manifest_url, headers).await,
         ManifestKind::Dash => Err(RkError::Source(
             "DASH manifest acquisition is blocked until MPD child URL policy validation is implemented"
                 .to_string(),
@@ -67,6 +71,7 @@ async fn fetch_manifest_text(
             .headers(headers.clone())
             .send()
             .await?;
+        validate_response_url_and_peer(&response)?;
         let status = response.status();
 
         if status.is_redirection() {

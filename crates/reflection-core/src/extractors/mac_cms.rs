@@ -9,11 +9,13 @@ use async_trait::async_trait;
 use base64::Engine;
 use reqwest::{header, Client, StatusCode, Url};
 use serde_json::json;
+use std::time::Duration;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::{
     models::{CandidateKind, CandidateProtection, CandidateValidationState, MediaCandidate},
+    policy_http::{policy_client_builder, validate_response_url_and_peer},
     Result,
 };
 
@@ -21,6 +23,7 @@ use super::{ExtractContext, ExtractResult, SourceExtractor};
 
 const DESKTOP_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36";
 const PLAYCONF_PREFIX: &str = "player_aaaa";
+const EXTRACTOR_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct MacCmsEpisodeExtractor;
 
@@ -68,20 +71,19 @@ impl SourceExtractor for MacCmsEpisodeExtractor {
     }
 
     async fn extract(&self, ctx: &ExtractContext) -> Result<ExtractResult> {
-        let client = Client::builder()
+        let client = policy_client_builder(EXTRACTOR_HTTP_TIMEOUT)
             .user_agent(DESKTOP_UA)
             .redirect(reqwest::redirect::Policy::limited(5))
             .build()?;
 
-        let html = client
+        let response = client
             .get(ctx.url.clone())
             .header(header::REFERER, ctx.source_url.as_str())
             .header(header::ACCEPT_LANGUAGE, "zh-CN,zh;q=0.9,en;q=0.8")
             .send()
-            .await?
-            .error_for_status()?
-            .text()
             .await?;
+        validate_response_url_and_peer(&response)?;
+        let html = response.error_for_status()?.text().await?;
 
         let Some(config) = extract_player_config(&html)? else {
             return Ok(ExtractResult {
@@ -399,6 +401,7 @@ async fn get_small(
         .send()
         .await
         .map_err(|error| format!("request failed: {error}"))?;
+    validate_response_url_and_peer(&response).map_err(|error| error.to_string())?;
     let status = response.status();
     let content_type = response
         .headers()

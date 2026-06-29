@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
 import os from "node:os";
+import dns from "node:dns/promises";
 import { chromium, type BrowserContext, type CDPSession, type Page, type Request, type Response } from "playwright";
 import type {
   BrowserCandidate,
@@ -103,6 +104,7 @@ interface CdpCapture {
 export class BrowserProbeService {
   private readonly contexts = new Map<string, ContextEntry>();
   private readonly loginSessions = new Map<string, LoginSessionEntry>();
+  private readonly blockedHosts = new Set<string>();
 
   constructor(private readonly config: RuntimeConfig) {}
 
@@ -312,32 +314,114 @@ export class BrowserProbeService {
     );
     // Douyin renders behind anti-bot/RSC, so the generic scan returns lots of
     // page noise. Keep only the real post media on Douyin's CDNs.
-    if (isDouyinUrl(request.url) || isDouyinUrl(finalUrl)) {
+    if (hasPlatformHint(request.platformHint, "douyin") || isDouyinUrl(request.url) || isDouyinUrl(finalUrl)) {
       filtered = filterDouyinCandidates(filtered);
     }
-    if (isKuaishouUrl(request.url) || isKuaishouUrl(finalUrl)) {
+    if (hasPlatformHint(request.platformHint, "kuaishou") || isKuaishouUrl(request.url) || isKuaishouUrl(finalUrl)) {
       filtered = filterKuaishouCandidates(filtered);
     }
     if (isAdultVideoPage(request.url) || isAdultVideoPage(finalUrl)) {
       filtered = filterAdultVideoCandidates(filtered);
     }
-    if (isAcfunUrl(request.url) || isAcfunUrl(finalUrl)) {
+    if (hasPlatformHint(request.platformHint, "acfun") || isAcfunUrl(request.url) || isAcfunUrl(finalUrl)) {
       filtered = filterCnVideoPlatformCandidates(filtered, "acfun");
     }
-    if (isIqiyiUrl(request.url) || isIqiyiUrl(finalUrl)) {
+    if (hasPlatformHint(request.platformHint, "iqiyi") || isIqiyiUrl(request.url) || isIqiyiUrl(finalUrl)) {
       filtered = filterCnVideoPlatformCandidates(filtered, "iqiyi");
     }
-    if (isYoukuUrl(request.url) || isYoukuUrl(finalUrl)) {
+    if (hasPlatformHint(request.platformHint, "youku") || isYoukuUrl(request.url) || isYoukuUrl(finalUrl)) {
       filtered = filterCnVideoPlatformCandidates(filtered, "youku");
     }
     if (isHAnimeUrl(request.url) || isHAnimeUrl(finalUrl)) {
       filtered = filterHAnimeCandidates(filtered);
     }
-    if (isTikTokUrl(request.url) || isTikTokUrl(finalUrl)) {
+    if (hasPlatformHint(request.platformHint, "tiktok") || isTikTokUrl(request.url) || isTikTokUrl(finalUrl)) {
       filtered = filterTikTokCandidates(filtered);
     }
-    if (isVimeoUrl(request.url) || isVimeoUrl(finalUrl)) {
+    if (hasPlatformHint(request.platformHint, "vimeo") || isVimeoUrl(request.url) || isVimeoUrl(finalUrl)) {
       filtered = filterVimeoCandidates(filtered);
+    }
+    if (hasPlatformHint(request.platformHint, "weibo") || isWeiboUrl(request.url) || isWeiboUrl(finalUrl)) {
+      filtered = filterWeiboCandidates(filtered);
+    }
+    if (hasPlatformHint(request.platformHint, "ximalaya") || isXimalayaUrl(request.url) || isXimalayaUrl(finalUrl)) {
+      filtered = filterXimalayaCandidates(filtered);
+    }
+    if (hasPlatformHint(request.platformHint, "dailymotion") || isDailymotionUrl(request.url) || isDailymotionUrl(finalUrl)) {
+      filtered = filterVideoSocialCandidates(filtered, "dailymotion");
+    }
+    if (hasPlatformHint(request.platformHint, "rumble") || isRumbleUrl(request.url) || isRumbleUrl(finalUrl)) {
+      filtered = filterVideoSocialCandidates(filtered, "rumble");
+    }
+    if (hasPlatformHint(request.platformHint, "peertube") || isPeertubeUrl(request.url) || isPeertubeUrl(finalUrl)) {
+      filtered = filterVideoSocialCandidates(filtered, "peertube");
+    }
+    if (hasPlatformHint(request.platformHint, "archive_org") || isArchiveOrgUrl(request.url) || isArchiveOrgUrl(finalUrl)) {
+      filtered = filterLibraryArchiveCandidates(filtered, "archive_org");
+    }
+    if (hasPlatformHint(request.platformHint, "wayback") || isWaybackUrl(request.url) || isWaybackUrl(finalUrl)) {
+      filtered = filterLibraryArchiveCandidates(filtered, "wayback");
+    }
+    if (hasPlatformHint(request.platformHint, "archive_it") || isArchiveItUrl(request.url) || isArchiveItUrl(finalUrl)) {
+      filtered = filterLibraryArchiveCandidates(filtered, "archive_it");
+    }
+    if (hasPlatformHint(request.platformHint, "perma_cc") || isPermaCcUrl(request.url) || isPermaCcUrl(finalUrl)) {
+      filtered = filterLibraryArchiveCandidates(filtered, "perma_cc");
+    }
+    if (hasPlatformHint(request.platformHint, "archive_today") || isArchiveTodayUrl(request.url) || isArchiveTodayUrl(finalUrl)) {
+      filtered = filterLibraryArchiveCandidates(filtered, "archive_today");
+    }
+    if (hasPlatformHint(request.platformHint, "ghostarchive") || isGhostarchiveUrl(request.url) || isGhostarchiveUrl(finalUrl)) {
+      filtered = filterLibraryArchiveCandidates(filtered, "ghostarchive");
+    }
+    if (hasPlatformHint(request.platformHint, "webcitation") || isWebcitationUrl(request.url) || isWebcitationUrl(finalUrl)) {
+      filtered = filterLibraryArchiveCandidates(filtered, "webcitation");
+    }
+    if (hasPlatformHint(request.platformHint, "memento") || isMementoUrl(request.url) || isMementoUrl(finalUrl)) {
+      filtered = filterLibraryArchiveCandidates(filtered, "memento");
+    }
+    if (hasPlatformHint(request.platformHint, "wikimedia") || isWikimediaUrl(request.url) || isWikimediaUrl(finalUrl)) {
+      filtered = filterLibraryArchiveCandidates(filtered, "wikimedia");
+    }
+    if (hasPlatformHint(request.platformHint, "twitch") || isTwitchUrl(request.url) || isTwitchUrl(finalUrl)) {
+      filtered = filterVideoSocialCandidates(filtered, "twitch");
+    }
+    if (hasPlatformHint(request.platformHint, "twitter") || isTwitterUrl(request.url) || isTwitterUrl(finalUrl)) {
+      filtered = filterVideoSocialCandidates(filtered, "twitter");
+    }
+    if (hasPlatformHint(request.platformHint, "reddit") || isRedditUrl(request.url) || isRedditUrl(finalUrl)) {
+      filtered = filterVideoSocialCandidates(filtered, "reddit");
+    }
+    if (hasPlatformHint(request.platformHint, "instagram") || isInstagramUrl(request.url) || isInstagramUrl(finalUrl)) {
+      filtered = filterVideoSocialCandidates(filtered, "instagram");
+    }
+    if (hasPlatformHint(request.platformHint, "facebook") || isFacebookUrl(request.url) || isFacebookUrl(finalUrl)) {
+      filtered = filterVideoSocialCandidates(filtered, "facebook");
+    }
+    if (hasPlatformHint(request.platformHint, "pinterest") || isPinterestUrl(request.url) || isPinterestUrl(finalUrl)) {
+      filtered = filterImagePlatformCandidates(filtered, "pinterest");
+    }
+    if (hasPlatformHint(request.platformHint, "imgur") || isImgurUrl(request.url) || isImgurUrl(finalUrl)) {
+      filtered = filterImagePlatformCandidates(filtered, "imgur");
+    }
+    if (hasPlatformHint(request.platformHint, "flickr") || isFlickrUrl(request.url) || isFlickrUrl(finalUrl)) {
+      filtered = filterImagePlatformCandidates(filtered, "flickr");
+    }
+    if (hasPlatformHint(request.platformHint, "bandcamp") || isBandcampUrl(request.url) || isBandcampUrl(finalUrl)) {
+      filtered = filterAudioPlatformCandidates(filtered, "bandcamp");
+    }
+    if (hasPlatformHint(request.platformHint, "mixcloud") || isMixcloudUrl(request.url) || isMixcloudUrl(finalUrl)) {
+      filtered = filterAudioPlatformCandidates(filtered, "mixcloud");
+    }
+    if (hasPlatformHint(request.platformHint, "niconico") || isNiconicoUrl(request.url) || isNiconicoUrl(finalUrl)) {
+      filtered = filterVideoSocialCandidates(filtered, "niconico");
+    }
+    if (hasPlatformHint(request.platformHint, "fc2") || isFc2Url(request.url) || isFc2Url(finalUrl)) {
+      filtered = filterVideoSocialCandidates(filtered, "fc2");
+    }
+    if (hasPlatformHint(request.platformHint, "spotify") || isSpotifyUrl(request.url) || isSpotifyUrl(finalUrl)) {
+      filtered = [];
+      warnings.push("spotify media extraction skipped: Spotify links are treated as metadata/page targets only");
     }
 
     if (filtered.length === 0 && isKuaishouUrl(request.url)) {
@@ -425,6 +509,8 @@ export class BrowserProbeService {
 
   async startLoginSession(profileId: string, url: string): Promise<LoginSessionSnapshot> {
     const normalizedProfileId = sanitizeProfileId(profileId || this.config.defaultProfileId);
+    const loginUrl = normalizeLoginUrl(url);
+    await assertSafeBrowserUrl(loginUrl);
     const context = await this.context(normalizedProfileId, this.config.headed);
     const page = await context.newPage();
     await page.setViewportSize(this.config.loginViewport);
@@ -439,7 +525,7 @@ export class BrowserProbeService {
     };
     this.loginSessions.set(entry.id, entry);
     await page
-      .goto(normalizeLoginUrl(url), { waitUntil: "domcontentloaded", timeout: 45_000 })
+      .goto(loginUrl, { waitUntil: "domcontentloaded", timeout: 45_000 })
       .catch(() => undefined);
     await page.waitForTimeout(800).catch(() => undefined);
     return this.snapshotLoginSession(entry.id);
@@ -557,9 +643,11 @@ export class BrowserProbeService {
 
   async loginNavigate(sessionId: string, url: string): Promise<LoginSessionSnapshot> {
     const entry = this.requireLoginSession(sessionId);
+    const loginUrl = normalizeLoginUrl(url);
+    await assertSafeBrowserUrl(loginUrl);
     entry.lastActiveAt = Date.now();
     await entry.page
-      .goto(normalizeLoginUrl(url), { waitUntil: "domcontentloaded", timeout: 45_000 })
+      .goto(loginUrl, { waitUntil: "domcontentloaded", timeout: 45_000 })
       .catch(() => undefined);
     await entry.page.waitForTimeout(800).catch(() => undefined);
     return this.snapshotLoginSession(sessionId);
@@ -652,6 +740,15 @@ export class BrowserProbeService {
       locale: this.config.locale,
       timezoneId: this.config.timezoneId,
       userAgent: this.config.userAgent,
+    });
+    await context.route("**/*", async (route) => {
+      const url = route.request().url();
+      try {
+        await assertSafeBrowserUrl(url, this.blockedHosts);
+        await route.continue();
+      } catch {
+        await route.abort("blockedbyclient").catch(() => undefined);
+      }
     });
     // Make the headless context behave like the user's real browser by
     // normalizing the most obvious automation tells. This is not aimed at any
@@ -1152,12 +1249,93 @@ async function genericCandidatesFromPage(page: Page, pageUrl: string): Promise<B
     }
 
     const urlPattern = new RegExp(urlPatternSource, "gi");
+    const platformMediaKeys = /(?:play|media|video|audio|stream|dash|hls|m3u8|mp4|m4s|source|src|url|uri|backup|main|origin|quality|download|file|manifest|playlist|data|bitrate|height|width)/i;
+    const decodeMaybeEncodedUrl = (value: string): string[] => {
+      const out = new Set<string>([value]);
+      for (const item of [...out]) {
+        try {
+          out.add(decodeURIComponent(item));
+        } catch {
+          // keep raw value
+        }
+        try {
+          if (/^[A-Za-z0-9+/=_-]{24,}$/.test(item) && item.length < 4096) {
+            const decoded = atob(item.replace(/-/g, "+").replace(/_/g, "/"));
+            if (/https?:\/\//i.test(decoded) || /\.(?:m3u8|mpd|mp4|m4s|m4a|mp3)(?:[?#]|$)/i.test(decoded)) {
+              out.add(decoded);
+            }
+          }
+        } catch {
+          // not base64
+        }
+      }
+      return [...out].map((item) => item
+        .replace(/\\u002[fF]/g, "/")
+        .replace(/\\u0026/g, "&")
+        .replace(/\\u003[dD]/g, "=")
+        .replace(/\\\//g, "/"));
+    };
+    const firstText = (record: Record<string, unknown>, keys: string[]): string | undefined => {
+      for (const key of keys) {
+        const value = record[key];
+        if (typeof value === "string" && value.trim()) {
+          return value.trim();
+        }
+      }
+      return undefined;
+    };
+    const addPlatformUrlRecord = (
+      record: Record<string, unknown>,
+      source: string,
+      addUrl: (value: string | null | undefined, source: string, options?: Omit<BrowserDiscoveredUrl, "url" | "source">) => void,
+    ) => {
+      const directKeys = [
+        "url", "uri", "src", "source", "playUrl", "play_url", "downloadUrl", "download_url",
+        "mainUrl", "main_url", "backupUrl", "backup_url", "baseUrl", "base_url", "hls", "dash",
+        "manifest", "playlist", "videoUrl", "video_url", "audioUrl", "audio_url", "file",
+      ];
+      for (const key of directKeys) {
+        const value = record[key];
+        if (typeof value === "string") {
+          const scoreBoost = platformMediaKeys.test(key) ? 28 : 20;
+          for (const decoded of decodeMaybeEncodedUrl(value)) {
+            addUrl(decoded, `${source}_${key}`, { scoreBoost });
+            for (const match of decoded.matchAll(urlPattern)) {
+              addUrl(match[0], `${source}_${key}_embedded`, { scoreBoost: scoreBoost + 2 });
+            }
+          }
+        }
+        if (Array.isArray(value)) {
+          for (const item of value.slice(0, 50)) {
+            if (typeof item === "string") {
+              addUrl(item, `${source}_${key}_list`, { scoreBoost: 24 });
+            }
+          }
+        }
+      }
+
+      const host = firstText(record, ["host", "domain", "cdn", "cdnHost", "cdn_host"]);
+      const path = firstText(record, ["path", "pathname", "file", "stream", "streamPath", "stream_path"]);
+      if (host && path) {
+        const normalizedHost = /^https?:\/\//i.test(host) ? host : `https://${host}`;
+        try {
+          addUrl(new URL(path, normalizedHost).href, `${source}_host_path`, { scoreBoost: 26 });
+        } catch {
+          // ignore malformed split URL records
+        }
+      }
+    };
     const scanJsonValue = (value: unknown, source: string, depth = 0) => {
       if (depth > 8 || value === null || value === undefined) {
         return;
       }
       if (typeof value === "string") {
-        add(value, source, { scoreBoost: 20 });
+        for (const decoded of decodeMaybeEncodedUrl(value)) {
+          add(decoded, source, { scoreBoost: 22 });
+          for (const match of decoded.matchAll(urlPattern)) {
+            add(match[0], source, { scoreBoost: 24 });
+          }
+        }
         return;
       }
       if (Array.isArray(value)) {
@@ -1167,8 +1345,11 @@ async function genericCandidatesFromPage(page: Page, pageUrl: string): Promise<B
         return;
       }
       if (typeof value === "object") {
-        for (const item of Object.values(value as Record<string, unknown>).slice(0, 500)) {
-          scanJsonValue(item, source, depth + 1);
+        const record = value as Record<string, unknown>;
+        addPlatformUrlRecord(record, source, add);
+        for (const [key, item] of Object.entries(record).slice(0, 500)) {
+          const keySource = platformMediaKeys.test(key) ? `${source}_${key.replace(/[^a-zA-Z0-9_-]/g, "_")}` : source;
+          scanJsonValue(item, keySource, depth + 1);
         }
       }
     };
@@ -2327,6 +2508,8 @@ function isAllowedMainMediaHost(host: string): boolean {
     host.endsWith("bilivideo.com") ||
     host.endsWith("bilibili.com") ||
     host.endsWith("sndcdn.com") ||
+    host.endsWith("ximalaya.com") ||
+    host.endsWith("xmcdn.com") ||
     host.endsWith("douyinvod.com") ||
     host.endsWith("douyinpic.com") ||
     host.endsWith("kwaicdn.com") ||
@@ -2342,8 +2525,54 @@ function isAllowedMainMediaHost(host: string): boolean {
     host.endsWith("ykimg.com") ||
     host.endsWith("tiktokcdn.com") ||
     host.endsWith("byteoversea.com") ||
-    host.endsWith("vimeocdn.com")
+    host.endsWith("vimeocdn.com") ||
+    host.endsWith("weibo.com") ||
+    host.endsWith("weibocdn.com") ||
+    host.endsWith("sinaimg.cn") ||
+    host.endsWith("dailymotion.com") ||
+    host.endsWith("dmcdn.net") ||
+    host.endsWith("rumble.com") ||
+    host.endsWith("rumblevideo.com") ||
+    host.endsWith("archive.org") ||
+    host.endsWith("archive-it.org") ||
+    host.endsWith("perma.cc") ||
+    isArchiveTodayHost(host) ||
+    host.endsWith("ghostarchive.org") ||
+    host.endsWith("webcitation.org") ||
+    host.endsWith("mementoweb.org") ||
+    host.endsWith("mementoarchive.lanl.gov") ||
+    host.endsWith("wikimedia.org") ||
+    host.endsWith("wikipedia.org") ||
+    host.endsWith("twitch.tv") ||
+    host.endsWith("ttvnw.net") ||
+    host.endsWith("jtvnw.net") ||
+    host.endsWith("x.com") ||
+    host.endsWith("twitter.com") ||
+    host.endsWith("twimg.com") ||
+    host.endsWith("reddit.com") ||
+    host.endsWith("redd.it") ||
+    host.endsWith("redditmedia.com") ||
+    host.endsWith("instagram.com") ||
+    host.endsWith("cdninstagram.com") ||
+    host.endsWith("facebook.com") ||
+    host.endsWith("fbcdn.net") ||
+    host.endsWith("pinterest.com") ||
+    host.endsWith("pinimg.com") ||
+    host.endsWith("imgur.com") ||
+    host.endsWith("flickr.com") ||
+    host.endsWith("staticflickr.com") ||
+    host.endsWith("bandcamp.com") ||
+    host.endsWith("bcbits.com") ||
+    host.endsWith("mixcloud.com") ||
+    host.endsWith("nicovideo.jp") ||
+    host.endsWith("nimg.jp") ||
+    host.endsWith("fc2.com") ||
+    isKnownPeertubeHost(host)
   );
+}
+
+function hasPlatformHint(value: string | undefined, expected: string): boolean {
+  return (value ?? "").toLowerCase() === expected;
 }
 
 function hasExtension(pathname: string, extensions: string[]): boolean {
@@ -2764,6 +2993,346 @@ function filterVimeoCandidates(candidates: BrowserCandidate[]): BrowserCandidate
   return out;
 }
 
+function filterWeiboCandidates(candidates: BrowserCandidate[]): BrowserCandidate[] {
+  const out: BrowserCandidate[] = [];
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    let host = "";
+    let pathname = "";
+    try {
+      const parsed = new URL(candidate.url);
+      host = parsed.hostname.toLowerCase();
+      pathname = parsed.pathname.toLowerCase();
+    } catch {
+      continue;
+    }
+    const allowed =
+      host.endsWith("weibocdn.com") ||
+      host.endsWith("weibo.com") ||
+      (host.endsWith("sinaimg.cn") && (pathname.includes("/video/") || pathname.includes(".mp4") || pathname.includes(".m3u8")));
+    if (!allowed || isLikelyAdOrTrackingUrl(candidate.url) || candidate.kind === "image") {
+      continue;
+    }
+    const key = `${candidate.kind}:${host}:${pathname}:${candidate.qualityLabel ?? ""}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    out.push({
+      ...candidate,
+      score: candidate.score + (candidate.kind === "manifest" ? 42 : 26),
+      metadata: { ...(candidate.metadata ?? {}), source: "weibo_filter", platform: "weibo" },
+    });
+  }
+  return out;
+}
+
+function filterXimalayaCandidates(candidates: BrowserCandidate[]): BrowserCandidate[] {
+  const out: BrowserCandidate[] = [];
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    let host = "";
+    let pathname = "";
+    try {
+      const parsed = new URL(candidate.url);
+      host = parsed.hostname.toLowerCase();
+      pathname = parsed.pathname.toLowerCase();
+    } catch {
+      continue;
+    }
+    const allowed =
+      host.endsWith("ximalaya.com") ||
+      host.endsWith("xmcdn.com") ||
+      pathname.endsWith(".m4a") ||
+      pathname.endsWith(".mp3");
+    if (!allowed || isLikelyAdOrTrackingUrl(candidate.url) || candidate.kind === "image") {
+      continue;
+    }
+    const key = `${candidate.kind}:${host}:${pathname}:${candidate.qualityLabel ?? ""}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    out.push({
+      ...candidate,
+      score: candidate.score + (candidate.kind === "audio" ? 40 : candidate.kind === "manifest" ? 24 : 12),
+      metadata: { ...(candidate.metadata ?? {}), source: "ximalaya_filter", platform: "ximalaya" },
+    });
+  }
+  return out;
+}
+
+type VideoSocialPlatform =
+  | "dailymotion"
+  | "rumble"
+  | "peertube"
+  | "twitch"
+  | "twitter"
+  | "reddit"
+  | "instagram"
+  | "facebook"
+  | "niconico"
+  | "fc2";
+
+function filterVideoSocialCandidates(
+  candidates: BrowserCandidate[],
+  platform: VideoSocialPlatform,
+): BrowserCandidate[] {
+  const out: BrowserCandidate[] = [];
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    let host = "";
+    let pathname = "";
+    try {
+      const parsed = new URL(candidate.url);
+      host = parsed.hostname.toLowerCase();
+      pathname = parsed.pathname.toLowerCase();
+    } catch {
+      continue;
+    }
+
+    if (!isVideoSocialMediaHost(platform, host, pathname) || isLikelyAdOrTrackingUrl(candidate.url)) {
+      continue;
+    }
+    if (candidate.kind === "image" && /(avatar|profile|icon|logo|emoji|sprite|badge|poster|thumbnail|thumb)/i.test(pathname)) {
+      continue;
+    }
+    if (candidate.kind === "image" && !["instagram", "twitter", "reddit", "facebook"].includes(platform)) {
+      continue;
+    }
+    const key = `${candidate.kind}:${host}:${canonicalCandidatePath(pathname)}:${candidate.qualityLabel ?? ""}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    out.push({
+      ...candidate,
+      score: candidate.score + videoSocialScoreBoost(candidate.kind, platform),
+      metadata: { ...(candidate.metadata ?? {}), source: `${platform}_filter`, platform },
+    });
+  }
+  return out;
+}
+
+function isVideoSocialMediaHost(platform: VideoSocialPlatform, host: string, pathname: string): boolean {
+  const mediaPath =
+    pathname.includes(".m3u8") ||
+    pathname.includes(".mpd") ||
+    pathname.includes(".mp4") ||
+    pathname.includes(".m4s") ||
+    pathname.includes(".ts") ||
+    pathname.includes(".webm") ||
+    pathname.includes("/video") ||
+    pathname.includes("/media") ||
+    pathname.includes("/hls") ||
+    pathname.includes("/dash") ||
+    pathname.includes("/vod") ||
+    pathname.includes("/play") ||
+    pathname.includes("/stream");
+  if (platform === "dailymotion") {
+    return (host.endsWith("dmcdn.net") || host.endsWith("dailymotion.com")) && mediaPath;
+  }
+  if (platform === "rumble") {
+    return (host.endsWith("rumblevideo.com") || host.endsWith("rumble.com")) && mediaPath;
+  }
+  if (platform === "peertube") {
+    return isKnownPeertubeHost(host) && mediaPath;
+  }
+  if (platform === "twitch") {
+    return (host.endsWith("twitch.tv") || host.endsWith("ttvnw.net") || host.endsWith("jtvnw.net")) && mediaPath;
+  }
+  if (platform === "twitter") {
+    return (host.endsWith("twimg.com") || host.endsWith("x.com") || host.endsWith("twitter.com")) && (mediaPath || pathname.includes("/tweet_video") || pathname.includes("/ext_tw_video"));
+  }
+  if (platform === "reddit") {
+    return (host.endsWith("redditmedia.com") || host.endsWith("redd.it") || host.endsWith("reddit.com")) && (mediaPath || pathname.includes("/dashplaylist"));
+  }
+  if (platform === "instagram") {
+    return (host.endsWith("cdninstagram.com") || host.endsWith("instagram.com") || host.endsWith("fbcdn.net")) && (mediaPath || pathname.includes("/o1/") || pathname.includes("/v/"));
+  }
+  if (platform === "facebook") {
+    return (host.endsWith("fbcdn.net") || host.endsWith("facebook.com")) && mediaPath;
+  }
+  if (platform === "niconico") {
+    return (host.endsWith("nicovideo.jp") || host.endsWith("nimg.jp") || host.includes("dmc.nico")) && mediaPath;
+  }
+  return host.endsWith("fc2.com") && mediaPath;
+}
+
+function videoSocialScoreBoost(kind: CandidateKind, platform: VideoSocialPlatform): number {
+  if (kind === "manifest") return platform === "twitch" ? 55 : 45;
+  if (kind === "video") return 35;
+  if (kind === "audio") return 18;
+  if (kind === "image") return 8;
+  return 0;
+}
+
+type LibraryArchivePlatform =
+  | "archive_org"
+  | "wayback"
+  | "archive_it"
+  | "perma_cc"
+  | "archive_today"
+  | "ghostarchive"
+  | "webcitation"
+  | "memento"
+  | "wikimedia";
+
+function filterLibraryArchiveCandidates(
+  candidates: BrowserCandidate[],
+  platform: LibraryArchivePlatform,
+): BrowserCandidate[] {
+  const out: BrowserCandidate[] = [];
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    let host = "";
+    let pathname = "";
+    try {
+      const parsed = new URL(candidate.url);
+      host = parsed.hostname.toLowerCase();
+      pathname = parsed.pathname.toLowerCase();
+    } catch {
+      continue;
+    }
+    const allowed = isLibraryArchiveMediaHost(platform, host, pathname);
+    if (!allowed || isLikelyAdOrTrackingUrl(candidate.url)) {
+      continue;
+    }
+    if (candidate.kind === "image" && /(avatar|logo|icon|sprite|badge|thumb|thumbnail)/i.test(pathname)) {
+      continue;
+    }
+    const key = `${candidate.kind}:${host}:${canonicalCandidatePath(pathname)}:${candidate.qualityLabel ?? ""}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    out.push({
+      ...candidate,
+      score: candidate.score + (candidate.kind === "video" || candidate.kind === "audio" || candidate.kind === "manifest" ? 32 : 18),
+      metadata: { ...(candidate.metadata ?? {}), source: `${platform}_filter`, platform },
+    });
+  }
+  return out;
+}
+
+function isLibraryArchiveMediaHost(platform: LibraryArchivePlatform, host: string, pathname: string): boolean {
+  switch (platform) {
+    case "archive_org":
+      return host.endsWith("archive.org") && !isWaybackHost(host, pathname);
+    case "wayback":
+      return isWaybackHost(host, pathname);
+    case "archive_it":
+      return host === "archive-it.org" || host.endsWith(".archive-it.org");
+    case "perma_cc":
+      return host === "perma.cc" || host.endsWith(".perma.cc");
+    case "archive_today":
+      return isArchiveTodayHost(host);
+    case "ghostarchive":
+      return host === "ghostarchive.org" || host.endsWith(".ghostarchive.org");
+    case "webcitation":
+      return host === "webcitation.org" || host.endsWith(".webcitation.org");
+    case "memento":
+      return host.endsWith("mementoweb.org") || host.endsWith("mementoarchive.lanl.gov");
+    case "wikimedia":
+      return host.endsWith("wikimedia.org") || host.endsWith("wikipedia.org");
+  }
+}
+
+type ImagePlatform = "pinterest" | "imgur" | "flickr";
+
+function filterImagePlatformCandidates(
+  candidates: BrowserCandidate[],
+  platform: ImagePlatform,
+): BrowserCandidate[] {
+  const out: BrowserCandidate[] = [];
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    let host = "";
+    let pathname = "";
+    try {
+      const parsed = new URL(candidate.url);
+      host = parsed.hostname.toLowerCase();
+      pathname = parsed.pathname.toLowerCase();
+    } catch {
+      continue;
+    }
+    if (!isImagePlatformMediaHost(platform, host, pathname) || isLikelyAdOrTrackingUrl(candidate.url)) {
+      continue;
+    }
+    if (candidate.kind === "image" && /(avatar|profile|icon|logo|emoji|sprite|badge)/i.test(pathname)) {
+      continue;
+    }
+    if (candidate.kind !== "image" && candidate.kind !== "video" && candidate.kind !== "manifest") {
+      continue;
+    }
+    const key = `${candidate.kind}:${host}:${canonicalCandidatePath(pathname)}:${candidate.qualityLabel ?? ""}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    out.push({
+      ...candidate,
+      score: candidate.score + (candidate.kind === "image" ? 42 : 18),
+      metadata: { ...(candidate.metadata ?? {}), source: `${platform}_filter`, platform },
+    });
+  }
+  return out;
+}
+
+function isImagePlatformMediaHost(platform: ImagePlatform, host: string, pathname: string): boolean {
+  const hasImagePath = /\.(?:jpe?g|png|webp|gif|avif)(?:$|[?#])/i.test(pathname);
+  const hasVideoPath = /\.(?:mp4|webm|m3u8|mpd)(?:$|[?#])/i.test(pathname);
+  if (platform === "pinterest") {
+    return (host.endsWith("pinimg.com") || host.endsWith("pinterest.com")) && (hasImagePath || hasVideoPath);
+  }
+  if (platform === "imgur") {
+    return host.endsWith("imgur.com") && (hasImagePath || hasVideoPath);
+  }
+  return (host.endsWith("flickr.com") || host.endsWith("staticflickr.com")) && (hasImagePath || hasVideoPath);
+}
+
+type AudioPlatform = "bandcamp" | "mixcloud";
+
+function filterAudioPlatformCandidates(
+  candidates: BrowserCandidate[],
+  platform: AudioPlatform,
+): BrowserCandidate[] {
+  const out: BrowserCandidate[] = [];
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    let host = "";
+    let pathname = "";
+    try {
+      const parsed = new URL(candidate.url);
+      host = parsed.hostname.toLowerCase();
+      pathname = parsed.pathname.toLowerCase();
+    } catch {
+      continue;
+    }
+    const allowed = platform === "bandcamp"
+      ? host.endsWith("bandcamp.com") || host.endsWith("bcbits.com")
+      : host.endsWith("mixcloud.com") || pathname.includes("/stream");
+    if (!allowed || isLikelyAdOrTrackingUrl(candidate.url) || candidate.kind === "image") {
+      continue;
+    }
+    const key = `${candidate.kind}:${host}:${canonicalCandidatePath(pathname)}:${candidate.qualityLabel ?? ""}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    out.push({
+      ...candidate,
+      score: candidate.score + (candidate.kind === "audio" ? 42 : candidate.kind === "manifest" ? 22 : 10),
+      metadata: { ...(candidate.metadata ?? {}), source: `${platform}_filter`, platform },
+    });
+  }
+  return out;
+}
+
+function canonicalCandidatePath(pathname: string): string {
+  return pathname.replace(/\/\d+x\d+(?=\/|$)/g, "/size").replace(/_[a-z]\.(jpg|jpeg|png|webp)$/i, ".$1");
+}
+
 function isAcfunUrl(value: string): boolean {
   try {
     const host = new URL(value).hostname.toLowerCase();
@@ -2804,6 +3373,282 @@ function isVimeoUrl(value: string): boolean {
   try {
     const host = new URL(value).hostname.toLowerCase();
     return host === "vimeo.com" || host.endsWith(".vimeo.com") || host.endsWith(".vimeocdn.com");
+  } catch {
+    return false;
+  }
+}
+
+function isWeiboUrl(value: string): boolean {
+  try {
+    const host = new URL(value).hostname.toLowerCase();
+    return (
+      host === "weibo.com" ||
+      host.endsWith(".weibo.com") ||
+      host.endsWith(".weibocdn.com") ||
+      host.endsWith(".sinaimg.cn")
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isXimalayaUrl(value: string): boolean {
+  try {
+    const host = new URL(value).hostname.toLowerCase();
+    return (
+      host === "ximalaya.com" ||
+      host.endsWith(".ximalaya.com") ||
+      host.endsWith(".xmcdn.com")
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isDailymotionUrl(value: string): boolean {
+  try {
+    const host = new URL(value).hostname.toLowerCase();
+    return host === "dailymotion.com" || host.endsWith(".dailymotion.com") || host.endsWith(".dmcdn.net");
+  } catch {
+    return false;
+  }
+}
+
+function isRumbleUrl(value: string): boolean {
+  try {
+    const host = new URL(value).hostname.toLowerCase();
+    return host === "rumble.com" || host.endsWith(".rumble.com") || host.endsWith(".rumblevideo.com");
+  } catch {
+    return false;
+  }
+}
+
+function isKnownPeertubeHost(host: string): boolean {
+  return (
+    host === "video.blender.org" ||
+    host.endsWith(".video.blender.org") ||
+    host === "peertube.tv" ||
+    host.endsWith(".peertube.tv") ||
+    host === "framatube.org" ||
+    host.endsWith(".framatube.org") ||
+    host === "tilvids.com" ||
+    host.endsWith(".tilvids.com") ||
+    host === "tube.tchncs.de" ||
+    host.endsWith(".tube.tchncs.de") ||
+    host === "diode.zone" ||
+    host.endsWith(".diode.zone")
+  );
+}
+
+function isPeertubeUrl(value: string): boolean {
+  try {
+    return isKnownPeertubeHost(new URL(value).hostname.toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
+function isArchiveOrgUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    const host = parsed.hostname.toLowerCase();
+    return (host === "archive.org" || host.endsWith(".archive.org")) && !isWaybackHost(host, parsed.pathname.toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
+function isWaybackUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    return isWaybackHost(parsed.hostname.toLowerCase(), parsed.pathname.toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
+function isWaybackHost(host: string, pathname: string): boolean {
+  return host === "web.archive.org" || host.endsWith(".web.archive.org") || ((host === "archive.org" || host.endsWith(".archive.org")) && pathname.startsWith("/web/"));
+}
+
+function isArchiveItUrl(value: string): boolean {
+  try {
+    const host = new URL(value).hostname.toLowerCase();
+    return host === "archive-it.org" || host.endsWith(".archive-it.org");
+  } catch {
+    return false;
+  }
+}
+
+function isPermaCcUrl(value: string): boolean {
+  try {
+    const host = new URL(value).hostname.toLowerCase();
+    return host === "perma.cc" || host.endsWith(".perma.cc");
+  } catch {
+    return false;
+  }
+}
+
+function isArchiveTodayUrl(value: string): boolean {
+  try {
+    return isArchiveTodayHost(new URL(value).hostname.toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
+function isArchiveTodayHost(host: string): boolean {
+  return ["archive.today", "archive.ph", "archive.is", "archive.vn", "archive.md", "archive.li", "archive.fo"].includes(host);
+}
+
+function isGhostarchiveUrl(value: string): boolean {
+  try {
+    const host = new URL(value).hostname.toLowerCase();
+    return host === "ghostarchive.org" || host.endsWith(".ghostarchive.org");
+  } catch {
+    return false;
+  }
+}
+
+function isWebcitationUrl(value: string): boolean {
+  try {
+    const host = new URL(value).hostname.toLowerCase();
+    return host === "webcitation.org" || host.endsWith(".webcitation.org");
+  } catch {
+    return false;
+  }
+}
+
+function isMementoUrl(value: string): boolean {
+  try {
+    const host = new URL(value).hostname.toLowerCase();
+    return host.endsWith("mementoweb.org") || host.endsWith("mementoarchive.lanl.gov");
+  } catch {
+    return false;
+  }
+}
+
+function isWikimediaUrl(value: string): boolean {
+  try {
+    const host = new URL(value).hostname.toLowerCase();
+    return host.endsWith("wikimedia.org") || host.endsWith("wikipedia.org");
+  } catch {
+    return false;
+  }
+}
+
+function isTwitchUrl(value: string): boolean {
+  try {
+    const host = new URL(value).hostname.toLowerCase();
+    return host === "twitch.tv" || host.endsWith(".twitch.tv") || host.endsWith(".ttvnw.net") || host.endsWith(".jtvnw.net");
+  } catch {
+    return false;
+  }
+}
+
+function isTwitterUrl(value: string): boolean {
+  try {
+    const host = new URL(value).hostname.toLowerCase();
+    return host === "x.com" || host.endsWith(".x.com") || host === "twitter.com" || host.endsWith(".twitter.com") || host.endsWith(".twimg.com");
+  } catch {
+    return false;
+  }
+}
+
+function isRedditUrl(value: string): boolean {
+  try {
+    const host = new URL(value).hostname.toLowerCase();
+    return host === "reddit.com" || host.endsWith(".reddit.com") || host.endsWith(".redd.it") || host.endsWith(".redditmedia.com") || host.endsWith(".redditstatic.com");
+  } catch {
+    return false;
+  }
+}
+
+function isInstagramUrl(value: string): boolean {
+  try {
+    const host = new URL(value).hostname.toLowerCase();
+    return host === "instagram.com" || host.endsWith(".instagram.com") || host.endsWith(".cdninstagram.com");
+  } catch {
+    return false;
+  }
+}
+
+function isFacebookUrl(value: string): boolean {
+  try {
+    const host = new URL(value).hostname.toLowerCase();
+    return host === "facebook.com" || host.endsWith(".facebook.com") || host === "fb.watch" || host.endsWith(".fbcdn.net");
+  } catch {
+    return false;
+  }
+}
+
+function isPinterestUrl(value: string): boolean {
+  try {
+    const host = new URL(value).hostname.toLowerCase();
+    return host === "pinterest.com" || host.endsWith(".pinterest.com") || host === "pin.it" || host.endsWith(".pinimg.com");
+  } catch {
+    return false;
+  }
+}
+
+function isImgurUrl(value: string): boolean {
+  try {
+    const host = new URL(value).hostname.toLowerCase();
+    return host === "imgur.com" || host.endsWith(".imgur.com");
+  } catch {
+    return false;
+  }
+}
+
+function isFlickrUrl(value: string): boolean {
+  try {
+    const host = new URL(value).hostname.toLowerCase();
+    return host === "flickr.com" || host.endsWith(".flickr.com") || host.endsWith(".staticflickr.com") || host === "flic.kr";
+  } catch {
+    return false;
+  }
+}
+
+function isBandcampUrl(value: string): boolean {
+  try {
+    const host = new URL(value).hostname.toLowerCase();
+    return host.endsWith(".bandcamp.com") || host === "bandcamp.com" || host.endsWith(".bcbits.com");
+  } catch {
+    return false;
+  }
+}
+
+function isMixcloudUrl(value: string): boolean {
+  try {
+    const host = new URL(value).hostname.toLowerCase();
+    return host === "mixcloud.com" || host.endsWith(".mixcloud.com");
+  } catch {
+    return false;
+  }
+}
+
+function isNiconicoUrl(value: string): boolean {
+  try {
+    const host = new URL(value).hostname.toLowerCase();
+    return host.endsWith("nicovideo.jp") || host.endsWith("niconico.com") || host.endsWith("nimg.jp") || host.includes("dmc.nico");
+  } catch {
+    return false;
+  }
+}
+
+function isFc2Url(value: string): boolean {
+  try {
+    const host = new URL(value).hostname.toLowerCase();
+    return host === "fc2.com" || host.endsWith(".fc2.com");
+  } catch {
+    return false;
+  }
+}
+
+function isSpotifyUrl(value: string): boolean {
+  try {
+    const host = new URL(value).hostname.toLowerCase();
+    return host === "spotify.com" || host.endsWith(".spotify.com") || host === "spotify.link";
   } catch {
     return false;
   }
@@ -3238,6 +4083,91 @@ function normalizeLoginUrl(value: string): string {
     throw new Error("login URL must be http or https");
   }
   return url.href;
+}
+
+async function assertSafeBrowserUrl(value: string, blockedHosts?: Set<string>): Promise<void> {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return;
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    return;
+  }
+  const host = url.hostname.toLowerCase();
+  if (!host || host === "localhost" || host.endsWith(".localhost")) {
+    throw new Error("browser URL resolves to blocked host");
+  }
+  if (blockedHosts?.has(host)) {
+    throw new Error("browser URL resolves to blocked host");
+  }
+  if (isBlockedIpLiteral(host)) {
+    blockedHosts?.add(host);
+    throw new Error("browser URL resolves to blocked address");
+  }
+  const records = await dns.lookup(host, { all: true, verbatim: true }).catch((error) => {
+    throw new Error(`browser DNS resolution failed: ${error instanceof Error ? error.message : String(error)}`);
+  });
+  if (records.length === 0 || records.some((record) => isBlockedIpLiteral(record.address))) {
+    blockedHosts?.add(host);
+    throw new Error("browser URL resolves to blocked address");
+  }
+}
+
+function isBlockedIpLiteral(value: string): boolean {
+  const normalized = value.replace(/^\[|\]$/g, "");
+  if (isBlockedIpv4(normalized)) {
+    return true;
+  }
+  return isBlockedIpv6(normalized);
+}
+
+function isBlockedIpv4(value: string): boolean {
+  const parts = value.split(".");
+  if (parts.length !== 4) {
+    return false;
+  }
+  const octets = parts.map((part) => Number.parseInt(part, 10));
+  if (octets.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
+    return false;
+  }
+  const [a, b, c, d] = octets as [number, number, number, number];
+  return (
+    a === 0 ||
+    a === 10 ||
+    a === 127 ||
+    a >= 224 ||
+    (a === 100 && b >= 64 && b <= 127) ||
+    (a === 169 && b === 254) ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168) ||
+    (a === 192 && b === 0 && c === 0) ||
+    (a === 192 && b === 0 && c === 2) ||
+    (a === 198 && (b === 18 || b === 19)) ||
+    (a === 198 && b === 51 && c === 100) ||
+    (a === 203 && b === 0 && c === 113) ||
+    (a === 255 && b === 255 && c === 255 && d === 255)
+  );
+}
+
+function isBlockedIpv6(value: string): boolean {
+  const lowered = value.toLowerCase();
+  if (!lowered.includes(":")) {
+    return false;
+  }
+  return (
+    lowered === "::" ||
+    lowered === "::1" ||
+    lowered.startsWith("fc") ||
+    lowered.startsWith("fd") ||
+    lowered.startsWith("fe80:") ||
+    lowered.startsWith("ff") ||
+    lowered.startsWith("2001:db8:") ||
+    lowered.startsWith("::ffff:127.") ||
+    lowered.startsWith("::ffff:10.") ||
+    lowered.startsWith("::ffff:192.168.")
+  );
 }
 
 /// Normalize a URL for "is this the page itself" comparison: drop the fragment

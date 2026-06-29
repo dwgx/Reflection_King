@@ -1,0 +1,147 @@
+{
+  "name": "platform-discovery-2026-06-24",
+  "purpose": "Public platform smoke sources for expanding Reflection King discovery coverage. These cases are inputs for evidence gathering, not claims that every platform is currently supported.",
+  "created_at": "2026-06-24",
+  "cases": [
+    {
+      "name": "youtube-bbb-external-video",
+      "url": "https://www.youtube.com/watch?v=aqz-KE-bpKQ",
+      "source_page": "https://www.youtube.com/watch?v=aqz-KE-bpKQ",
+      "discovery": "external",
+      "platform_hint": "youtube",
+      "outputs": ["video"],
+      "tier": "platform",
+      "auth_mode": "none",
+      "notes": "Public Blender Foundation sample. Depends on configured external adapter and may fail on bot/token drift."
+    },
+    {
+      "name": "soundcloud-nasa-public-audio",
+      "url": "https://m.soundcloud.com/nasa/apollo-8-merry-christmas",
+      "source_page": "https://m.soundcloud.com/nasa/apollo-8-merry-christmas",
+      "discovery": "external",
+      "platform_hint": "soundcloud",
+      "outputs": ["audio"],
+      "tier": "platform",
+      "bitrate": "128k",
+      "auth_mode": "none",
+      "notes": "Public NASA audio sample through external adapter."
+    },
+    {
+      "name": "bilibili-public-browser-video",
+      "url": "https://www.bilibili.com/video/BV1Fb4111732/",
+      "source_page": "https://www.bilibili.com/video/BV1Fb4111732/",
+      "discovery": "browser",
+      "platform_hint": "bilibili",
+      "outputs": ["video"],
+      "tier": "platform",
+      "auth_mode": "none",
+      "notes": "Public Bilibili browser/API discovery sample; quality and availability may vary without a profile."
+    },
+    {
+      "name": "acfun-public-external-video",
+      "url": "https://m.acfun.cn/v/?ac=17529896",
+      "source_page": "https://m.acfun.cn/v/?ac=17529896",
+      "discovery": "external",
+      "platform_hint": "acfun",
+      "outputs": ["video"],
+      "tier": "platform",
+      "auth_mode": "none",
+      "notes": "Public AcFun sample for external adapter discovery."
+    },
+    {
+      "name": "youku-public-trailer-video",
+      "url": "https://v.youku.com/v_show/id_XNDgwODM0NjYwNA%3D%3D.html",
+      "source_page": "https://v.youku.com/v_show/id_XNDgwODM0NjYwNA%3D%3D.html",
+      "discovery": "external",
+      "platform_hint": "youku",
+      "outputs": ["video"],
+      "tier": "platform",
+      "auth_mode": "none",
+      "expect_success": false,
+      "notes": "Public Youku trailer sample. Signed HLS URLs may drift quickly; treat failures as evidence for adapter work."
+    },
+    {
+      "name": "tiktok-public-external-video",
+      "url": "https://vm.tiktok.com/ZMBNyCU7n/",
+      "source_page": "https://vm.tiktok.com/ZMBNyCU7n/",
+      "discovery": "external",
+      "platform_hint": "tiktok",
+      "outputs": ["video"],
+      "tier": "experimental",
+      "auth_mode": "none",
+      "expect_success": false,
+      "notes": "Public short-video sample. Region/bot checks can change, so record outcome rather than assuming support."
+    },
+    {
+      "name": "douyin-public-browser-video",
+      "url": "https://v.douyin.com/BgPNNVe/",
+      "source_page": "https://v.douyin.com/BgPNNVe/",
+      "discovery": "browser",
+      "platform_hint": "douyin",
+      "outputs": ["video"],
+      "tier": "experimental",
+      "auth_mode": "none",
+      "expect_success": false,
+      "notes": "Browser discovery sample for signed DOM/network media URLs; convert immediately if candidates appear."
+    },
+    {
+      "name": "kuaishou-public-browser-video",
+      "url": "https://www.kuaishou.com/short-video/3x2wdee2f2ud7ac",
+      "source_page": "https://www.kuaishou.com/short-video/3x2wdee2f2ud7ac",
+      "discovery": "browser",
+      "platform_hint": "kuaishou",
+      "outputs": ["video"],
+      "tier": "experimental",
+      "auth_mode": "none",
+      "expect_success": false,
+      "notes": "Browser-only Kuaishou sample. CDN URLs are short-lived and should be converted immediately."
+    },
+    {
+      "name": "vimeo-external-video",
+      "url": "https://vimeo.com/76979871",
+      "source_page": "https://vimeo.com/76979871",
+      "discovery": "external",
+      "platform_hint": "vimeo",
+      "outputs": ["video"],
+      "tier": "platform",
+      "auth_mode": "none",
+      "notes": "Public Vimeo sample used to verify external adapter and browser fallback coverage."
+    },
+    {
+      "name": "ximalaya-public-audio",
+      "url": "https://www.ximalaya.com/sound/70954637",
+      "source_page": "https://www.ximalaya.com/album/4317803",
+      "discovery": "external",
+      "platform_hint": "ximalaya",
+      "outputs": ["audio"],
+      "tier": "platform",
+      "bitrate": "128k",
+      "auth_mode": "none",
+      "notes": "Public Ximalaya track sample. Lux explicitly lists Ximalaya audio support; RSS enclosure paths also provide stable browser-side evidence."
+    },
+    {
+      "name": "weibo-public-video",
+      "url": "https://weibo.com/tv/show/1034:5274208629096503?from=old_pc_videoshow",
+      "source_page": "https://weibo.com/tv/show/1034:5274208629096503?from=old_pc_videoshow",
+      "discovery": "external",
+      "platform_hint": "weibo",
+      "outputs": ["video"],
+      "tier": "experimental",
+      "auth_mode": "none",
+      "expect_success": false,
+      "notes": "Public Weibo video sample. Lux/yt-dlp support exists, but visitor redirect and anti-bot behavior can drift; record outcome rather than assuming success."
+    },
+    {
+      "name": "apple-bipbop-hls-live-video",
+      "url": "https://devstreaming-cdn.apple.com/videos/streaming/examples/bipbop_16x9/bipbop_16x9_variant.m3u8",
+      "source_page": "https://developer.apple.com/streaming/examples/",
+      "discovery": "auto",
+      "platform_hint": "live",
+      "outputs": ["video"],
+      "tier": "experimental",
+      "auth_mode": "none",
+      "expect_success": false,
+      "notes": "Long public HLS sample for manifest stress coverage; not expected in low-cost smoke."
+    }
+  ]
+}

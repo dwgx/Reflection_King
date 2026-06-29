@@ -31,6 +31,7 @@ type PlatformHint =
   | "bilibili"
   | "youtube"
   | "soundcloud"
+  | "ximalaya"
   | "douyin"
   | "kuaishou"
   | "pornhub"
@@ -39,6 +40,32 @@ type PlatformHint =
   | "youku"
   | "tiktok"
   | "vimeo"
+  | "weibo"
+  | "dailymotion"
+  | "rumble"
+  | "peertube"
+  | "archive_org"
+  | "wayback"
+  | "archive_it"
+  | "perma_cc"
+  | "archive_today"
+  | "ghostarchive"
+  | "webcitation"
+  | "memento"
+  | "wikimedia"
+  | "twitch"
+  | "twitter"
+  | "reddit"
+  | "instagram"
+  | "facebook"
+  | "pinterest"
+  | "imgur"
+  | "flickr"
+  | "bandcamp"
+  | "mixcloud"
+  | "niconico"
+  | "fc2"
+  | "spotify"
   | "live"
   | "generic";
 type OutputKind = "audio" | "video" | "image" | "page_html";
@@ -367,10 +394,38 @@ const LOGIN_TARGETS = [
   { id: "kuaishou", label: "快手", url: "https://www.kuaishou.com/" },
   { id: "bilibili", label: "哔哩哔哩", url: "https://www.bilibili.com/" },
   { id: "youtube", label: "YouTube", url: "https://www.youtube.com/" },
+  { id: "soundcloud", label: "SoundCloud", url: "https://soundcloud.com/" },
+  { id: "ximalaya", label: "喜马拉雅", url: "https://www.ximalaya.com/" },
   { id: "tiktok", label: "TikTok", url: "https://www.tiktok.com/" },
+  { id: "vimeo", label: "Vimeo", url: "https://vimeo.com/" },
+  { id: "weibo", label: "微博", url: "https://weibo.com/" },
+  { id: "dailymotion", label: "Dailymotion", url: "https://www.dailymotion.com/" },
+  { id: "rumble", label: "Rumble", url: "https://rumble.com/" },
+  { id: "peertube", label: "PeerTube", url: "https://video.blender.org/" },
+  { id: "archive_org", label: "Archive.org", url: "https://archive.org/" },
+  { id: "wayback", label: "Wayback", url: "https://web.archive.org/" },
+  { id: "archive_it", label: "Archive-It", url: "https://archive-it.org/" },
+  { id: "perma_cc", label: "Perma.cc", url: "https://perma.cc/" },
+  { id: "archive_today", label: "archive.today", url: "https://archive.today/" },
+  { id: "ghostarchive", label: "Ghostarchive", url: "https://ghostarchive.org/" },
+  { id: "webcitation", label: "WebCitation", url: "https://www.webcitation.org/" },
+  { id: "memento", label: "Memento", url: "https://timetravel.mementoweb.org/" },
+  { id: "wikimedia", label: "Wikimedia", url: "https://commons.wikimedia.org/" },
+  { id: "twitch", label: "Twitch", url: "https://www.twitch.tv/" },
+  { id: "twitter", label: "X / Twitter", url: "https://x.com/" },
+  { id: "reddit", label: "Reddit", url: "https://www.reddit.com/" },
+  { id: "instagram", label: "Instagram", url: "https://www.instagram.com/" },
+  { id: "facebook", label: "Facebook", url: "https://www.facebook.com/watch/" },
+  { id: "pinterest", label: "Pinterest", url: "https://www.pinterest.com/" },
+  { id: "imgur", label: "Imgur", url: "https://imgur.com/" },
+  { id: "flickr", label: "Flickr", url: "https://www.flickr.com/" },
+  { id: "bandcamp", label: "Bandcamp", url: "https://bandcamp.com/" },
+  { id: "mixcloud", label: "Mixcloud", url: "https://www.mixcloud.com/" },
+  { id: "niconico", label: "Niconico", url: "https://www.nicovideo.jp/" },
   { id: "youku", label: "优酷", url: "https://www.youku.com/" },
   { id: "iqiyi", label: "爱奇艺", url: "https://www.iqiyi.com/" },
   { id: "acfun", label: "AcFun", url: "https://www.acfun.cn/" },
+  { id: "maccms", label: "资源站", url: "https://www.dmttang.com/" },
 ];
 
 const EMPTY_RUNTIME_FORM: RuntimeSettingsForm = {
@@ -391,6 +446,60 @@ const EMPTY_RUNTIME_FORM: RuntimeSettingsForm = {
   page_archive_cdp_body_total_mb: "",
   cache_cleanup_min_age_hours: "",
 };
+
+const FALLBACK_PLATFORM_HINTS: PlatformHint[] = [
+  "auto",
+  "bilibili",
+  "youtube",
+  "soundcloud",
+  "ximalaya",
+  "douyin",
+  "kuaishou",
+  "pornhub",
+  "acfun",
+  "iqiyi",
+  "youku",
+  "tiktok",
+  "vimeo",
+  "weibo",
+  "dailymotion",
+  "rumble",
+  "peertube",
+  "archive_org",
+  "wayback",
+  "archive_it",
+  "perma_cc",
+  "archive_today",
+  "ghostarchive",
+  "webcitation",
+  "memento",
+  "wikimedia",
+  "twitch",
+  "twitter",
+  "reddit",
+  "instagram",
+  "facebook",
+  "pinterest",
+  "imgur",
+  "flickr",
+  "bandcamp",
+  "mixcloud",
+  "niconico",
+  "fc2",
+  "spotify",
+  "live",
+  "generic",
+];
+
+const WEB_ARCHIVE_PLATFORM_HINTS = new Set<PlatformHint>([
+  "wayback",
+  "archive_it",
+  "perma_cc",
+  "archive_today",
+  "ghostarchive",
+  "webcitation",
+  "memento",
+]);
 
 function App() {
   const [apiKey, setApiKey] = useState(() => localStorage.getItem("reflection_api_key") ?? "");
@@ -417,6 +526,7 @@ function App() {
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
   const [filePreview, setFilePreview] = useState<FilePreviewState | null>(null);
   const notificationIdRef = useRef(0);
+  const jobLoadRequestRef = useRef(0);
   const [userKeys, setUserKeys] = useState<UserKeyView[]>([]);
   const [newUserKey, setNewUserKey] = useState("");
   const [newAdminKey, setNewAdminKey] = useState("");
@@ -766,17 +876,21 @@ function App() {
   }
 
   async function loadJob(id: string, quiet = false) {
+    const requestId = ++jobLoadRequestRef.current;
     try {
       const job = await request<JobView>(`/api/jobs/${id}`);
+      if (requestId !== jobLoadRequestRef.current) return;
       setSelectedJob(job);
       const [candidateData, artifactData] = await Promise.all([
         request<Candidate[]>(`/api/jobs/${id}/candidates`).catch(() => []),
         request<Artifact[]>(`/api/jobs/${id}/artifacts`).catch(() => []),
       ]);
+      if (requestId !== jobLoadRequestRef.current) return;
       setCandidates(candidateData);
       setArtifacts(artifactData);
       if (job.outputs.includes("page_html")) {
         const tree = await request<ArchiveTreeView>(`/api/jobs/${id}/archive/tree`).catch(() => null);
+        if (requestId !== jobLoadRequestRef.current) return;
         setArchiveTree(tree);
       } else {
         setArchiveTree(null);
@@ -826,6 +940,23 @@ function App() {
   function clearForm() {
     setForm({ ...form, url: "" });
     notify("已清空来源 URL", "info");
+  }
+
+  function handleSourceUrlChange(value: string) {
+    const platformHint = platformHintForSourceUrl(value);
+    if (platformHint && WEB_ARCHIVE_PLATFORM_HINTS.has(platformHint)) {
+      setOutputMode("page_html");
+      setForm({
+        ...form,
+        url: value,
+        platform_hint: platformHint,
+        discovery: "browser",
+        outputs: ["page_html"],
+        auth_mode: "none",
+      });
+      return;
+    }
+    setForm({ ...form, url: value });
   }
 
   async function clearVisibleJobs() {
@@ -891,6 +1022,7 @@ function App() {
   }
 
   function clearSelection() {
+    jobLoadRequestRef.current += 1;
     setSelectedJobId("");
     setSelectedJob(null);
     setCandidates([]);
@@ -1518,7 +1650,7 @@ function App() {
                 placeholder="youtube.com/watch?v=..."
                 value={form.url}
                 className={sourceUrlIssue ? "input-warning" : ""}
-                onChange={(event) => setForm({ ...form, url: event.target.value })}
+                onChange={(event) => handleSourceUrlChange(event.target.value)}
               />
               {sourceUrlIssue && <span className="field-hint warn">{sourceUrlIssue}</span>}
             </label>
@@ -1553,7 +1685,7 @@ function App() {
                 value={form.platform_hint}
                 options={capabilities?.supported_platform_hints?.length
                   ? capabilities.supported_platform_hints
-                  : ["auto", "bilibili", "youtube", "soundcloud", "douyin", "kuaishou", "pornhub", "acfun", "iqiyi", "youku", "tiktok", "vimeo", "live", "generic"]}
+                  : FALLBACK_PLATFORM_HINTS}
                 labelFor={platformLabel}
                 onChange={(value) => setForm({ ...form, platform_hint: value as PlatformHint })}
               />
@@ -3247,6 +3379,7 @@ function platformLabel(value: string): string {
     bilibili: "哔哩哔哩",
     youtube: "YouTube",
     soundcloud: "SoundCloud",
+    ximalaya: "喜马拉雅",
     douyin: "抖音",
     kuaishou: "快手",
     pornhub: "Pornhub",
@@ -3255,6 +3388,32 @@ function platformLabel(value: string): string {
     youku: "优酷",
     tiktok: "TikTok",
     vimeo: "Vimeo",
+    weibo: "微博",
+    dailymotion: "Dailymotion",
+    rumble: "Rumble",
+    peertube: "PeerTube",
+    archive_org: "Archive.org",
+    wayback: "Wayback",
+    archive_it: "Archive-It",
+    perma_cc: "Perma.cc",
+    archive_today: "archive.today",
+    ghostarchive: "Ghostarchive",
+    webcitation: "WebCitation",
+    memento: "Memento",
+    wikimedia: "Wikimedia",
+    twitch: "Twitch",
+    twitter: "X / Twitter",
+    reddit: "Reddit",
+    instagram: "Instagram",
+    facebook: "Facebook",
+    pinterest: "Pinterest",
+    imgur: "Imgur",
+    flickr: "Flickr",
+    bandcamp: "Bandcamp",
+    mixcloud: "Mixcloud",
+    niconico: "Niconico",
+    fc2: "FC2",
+    spotify: "Spotify",
     live: "直播/清单",
     generic: "通用",
   } as Record<string, string>)[value] ?? value;
@@ -3658,6 +3817,33 @@ function normalizeSourceInput(value: string): string {
   return trimmed;
 }
 
+function platformHintForSourceUrl(value: string): PlatformHint | null {
+  const parsed = safeUrl(normalizeSourceInput(value));
+  if (!parsed) return null;
+  const host = parsed.hostname.toLowerCase();
+  const path = parsed.pathname.toLowerCase();
+  if (isWaybackHost(host, path)) return "wayback";
+  if (hostMatches(host, "archive-it.org")) return "archive_it";
+  if (hostMatches(host, "perma.cc")) return "perma_cc";
+  if (isArchiveTodayHost(host)) return "archive_today";
+  if (hostMatches(host, "ghostarchive.org")) return "ghostarchive";
+  if (hostMatches(host, "webcitation.org")) return "webcitation";
+  if (hostMatches(host, "mementoweb.org") || hostMatches(host, "mementoarchive.lanl.gov")) return "memento";
+  return null;
+}
+
+function hostMatches(host: string, domain: string): boolean {
+  return host === domain || host.endsWith(`.${domain}`);
+}
+
+function isWaybackHost(host: string, path: string): boolean {
+  return hostMatches(host, "web.archive.org") || (hostMatches(host, "archive.org") && path.startsWith("/web/"));
+}
+
+function isArchiveTodayHost(host: string): boolean {
+  return ["archive.today", "archive.ph", "archive.is", "archive.vn", "archive.md", "archive.li", "archive.fo"].includes(host);
+}
+
 function looksLikeBareHostUrl(value: string): boolean {
   const hostPort = value.split(/[/?#]/, 1)[0] ?? "";
   if (!hostPort || hostPort.startsWith("//") || hostPort.includes("@") || /\s/.test(hostPort)) return false;
@@ -3670,6 +3856,7 @@ function looksLikeBareHostUrl(value: string): boolean {
 function sourceInputIssue(value: string, publicBaseUrl?: string): string | null {
   const parsed = safeUrl(value.trim());
   if (!parsed) return null;
+  const host = parsed.hostname.toLowerCase();
   const path = parsed.pathname.toLowerCase();
   const base = publicBaseUrl ? safeUrl(publicBaseUrl) : null;
   const isSameService = parsed.origin === window.location.origin || parsed.origin === base?.origin;
@@ -3678,6 +3865,16 @@ function sourceInputIssue(value: string, publicBaseUrl?: string): string | null 
   }
   if (isSameService) {
     return "这是当前 Reflection King 服务地址，不是源网页。请粘贴 Steam、视频站或普通网页的原始公网 URL。";
+  }
+  if (
+    (host === "www.youtube.com" || host === "youtube.com" || host.endsWith(".youtube.com")) &&
+    path === "/watch" &&
+    !parsed.searchParams.get("v")
+  ) {
+    return "YouTube 链接不完整：`/watch` 还缺少 `?v=...` 视频 ID。请粘贴完整视频页地址。";
+  }
+  if ((host === "youtu.be" || host.endsWith(".youtu.be")) && (!path || path === "/")) {
+    return "YouTube 短链接不完整：还缺少视频 ID。请粘贴完整视频页地址。";
   }
   return null;
 }

@@ -8,17 +8,20 @@
 use async_trait::async_trait;
 use reqwest::StatusCode;
 use serde_json::json;
+use std::time::Duration;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::{
     models::{CandidateKind, CandidateProtection, CandidateValidationState, MediaCandidate},
+    policy_http::{policy_client_builder, validate_response_url_and_peer},
     Result,
 };
 
 use super::{ExtractContext, ExtractResult, SourceExtractor};
 
 const HANIME_MOBILE_UA: &str = "Mozilla/5.0 (Linux; Android 8.0; Pixel 2 Build/OPD3.170816.012) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/87.0.4280.88 Mobile Safari/537.36 Edg/87.0.664.66";
+const EXTRACTOR_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct HanimeExtractor;
 
@@ -35,7 +38,7 @@ impl SourceExtractor for HanimeExtractor {
     }
 
     async fn extract(&self, ctx: &ExtractContext) -> Result<ExtractResult> {
-        let client = reqwest::Client::builder()
+        let client = policy_client_builder(EXTRACTOR_HTTP_TIMEOUT)
             .user_agent(HANIME_MOBILE_UA)
             .redirect(reqwest::redirect::Policy::limited(5))
             .build()?;
@@ -45,6 +48,7 @@ impl SourceExtractor for HanimeExtractor {
             .header(reqwest::header::ACCEPT_LANGUAGE, "zh-CN,zh;q=0.9,en;q=0.8")
             .send()
             .await?;
+        validate_response_url_and_peer(&response)?;
         let status = response.status();
         let html = response.text().await?;
         if status == StatusCode::FORBIDDEN && looks_like_cloudflare(&html) {

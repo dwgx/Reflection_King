@@ -42,6 +42,10 @@ PLATFORM_DOMAINS = {
         ".sndcdn.com",
         ".media-streaming.soundcloud.cloud",
     ),
+    "ximalaya": (
+        ".ximalaya.com",
+        ".xmcdn.com",
+    ),
     "douyin": (
         ".douyin.com",
         ".iesdouyin.com",
@@ -65,6 +69,121 @@ PLATFORM_DOMAINS = {
     "youku": (
         ".youku.com",
         ".ykimg.com",
+    ),
+    "weibo": (
+        ".weibo.com",
+        ".weibocdn.com",
+        ".sinaimg.cn",
+    ),
+    "dailymotion": (
+        ".dailymotion.com",
+        ".dmcdn.net",
+    ),
+    "rumble": (
+        ".rumble.com",
+        ".rumblevideo.com",
+    ),
+    "peertube": (
+        ".video.blender.org",
+        ".peertube.tv",
+        ".framatube.org",
+        ".tilvids.com",
+        ".tube.tchncs.de",
+        ".diode.zone",
+    ),
+    "archive_org": (
+        ".archive.org",
+    ),
+    "wayback": (
+        ".archive.org",
+    ),
+    "archive_it": (
+        ".archive-it.org",
+    ),
+    "perma_cc": (
+        ".perma.cc",
+    ),
+    "archive_today": (
+        ".archive.today",
+        ".archive.ph",
+        ".archive.is",
+        ".archive.vn",
+        ".archive.md",
+        ".archive.li",
+        ".archive.fo",
+    ),
+    "ghostarchive": (
+        ".ghostarchive.org",
+    ),
+    "webcitation": (
+        ".webcitation.org",
+    ),
+    "memento": (
+        ".mementoweb.org",
+        ".mementoarchive.lanl.gov",
+    ),
+    "wikimedia": (
+        ".wikimedia.org",
+        ".wikipedia.org",
+    ),
+    "twitch": (
+        ".twitch.tv",
+        ".ttvnw.net",
+        ".jtvnw.net",
+    ),
+    "twitter": (
+        ".x.com",
+        ".twitter.com",
+        ".twimg.com",
+    ),
+    "reddit": (
+        ".reddit.com",
+        ".redd.it",
+        ".redditmedia.com",
+        ".redditstatic.com",
+    ),
+    "instagram": (
+        ".instagram.com",
+        ".cdninstagram.com",
+        ".fbcdn.net",
+    ),
+    "facebook": (
+        ".facebook.com",
+        ".fb.watch",
+        ".fbcdn.net",
+    ),
+    "pinterest": (
+        ".pinterest.com",
+        ".pin.it",
+        ".pinimg.com",
+    ),
+    "imgur": (
+        ".imgur.com",
+    ),
+    "flickr": (
+        ".flickr.com",
+        ".staticflickr.com",
+        ".flic.kr",
+    ),
+    "bandcamp": (
+        ".bandcamp.com",
+        ".bcbits.com",
+    ),
+    "mixcloud": (
+        ".mixcloud.com",
+    ),
+    "niconico": (
+        ".nicovideo.jp",
+        ".niconico.com",
+        ".nimg.jp",
+        ".dmc.nico",
+    ),
+    "fc2": (
+        ".fc2.com",
+    ),
+    "spotify": (
+        ".spotify.com",
+        ".spotify.link",
     ),
 }
 

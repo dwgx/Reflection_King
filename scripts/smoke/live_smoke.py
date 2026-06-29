@@ -21,18 +21,16 @@ from pathlib import Path
 from typing import Any
 
 
-TERMINAL_STATUSES = {"ready", "error"}
+TERMINAL_STATUSES = {"ready", "error", "needs_profile"}
 DISCOVERY_MODES = {"auto", "browser", "external", "direct"}
 OUTPUT_KINDS = {"video", "audio", "image", "html", "page_html"}
 SMOKE_TIERS = {"core", "platform", "experimental"}
 PAGE_ARCHIVE_REQUIRED_FILES = {
     "index.html",
     "index.inline.html",
-    "page.html",
     "page.txt",
-    "screenshot.png",
-    "resources.json",
-    "archive.zip",
+    "metadata/resources.json",
+    "preview/screenshot.png",
 }
 
 
@@ -229,9 +227,10 @@ def eprint(message: str) -> None:
 
 
 class Client:
-    def __init__(self, base_url: str, api_key: str) -> None:
+    def __init__(self, base_url: str, api_key: str, user_agent: str) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
+        self.user_agent = user_agent
 
     def request(
         self,
@@ -244,7 +243,7 @@ class Client:
         extra_headers: dict[str, str] | None = None,
     ) -> Any:
         data = None
-        headers = {"x-api-key": self.api_key}
+        headers = {"x-api-key": self.api_key, "user-agent": self.user_agent}
         if body is not None:
             data = json.dumps(body).encode("utf-8")
             headers["content-type"] = "application/json"
@@ -464,7 +463,7 @@ def archive_checks(client: Client, job_id: str) -> dict[str, Any]:
     required_present = sorted(path for path in PAGE_ARCHIVE_REQUIRED_FILES if path in paths)
     missing_required = sorted(PAGE_ARCHIVE_REQUIRED_FILES - set(required_present))
     samples = []
-    for relative_path in ["resources.json", "index.html", "page.html"]:
+    for relative_path in ["index.html", "metadata/resources.json", "preview/screenshot.png"]:
         if relative_path not in paths:
             continue
         try:
@@ -692,6 +691,7 @@ def main() -> int:
     parser.add_argument("--base-url", default=os.environ.get("RK_BASE_URL", "http://127.0.0.1:8787"))
     parser.add_argument("--api-key")
     parser.add_argument("--api-key-file")
+    parser.add_argument("--user-agent", default="ReflectionKingSmoke/0.1")
     parser.add_argument("--timeout-seconds", type=int, default=240)
     parser.add_argument("--case", action="append", help="Run only matching case name. Can be repeated.")
     parser.add_argument("--url", help="Run a single ad-hoc smoke case for this URL.")
@@ -755,7 +755,7 @@ def main() -> int:
             missing = sorted(selected_names - known)
             raise SystemExit(f"unknown smoke case(s): {', '.join(missing)}")
 
-    client = Client(args.base_url, api_key)
+    client = Client(args.base_url, api_key, args.user_agent)
     results = []
     failed = False
     for case in cases:
