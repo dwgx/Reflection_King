@@ -902,9 +902,22 @@ function scoreCandidate(kind: CandidateKind, contentType: string | undefined, ur
   if (kind === "html") score += 10;
   if (contentType) score += 5;
   if (/(\.m3u8|\.mpd|\.mp4|\.m4s|\.m4a|\.mp3)$/i.test(path)) score += 10;
+  // Prefer a master/multivariant manifest over a single rendition: it exposes
+  // every quality to the downstream picker. These names are the de-facto
+  // convention across HLS/DASH packagers (Bento4, Shaka, ffmpeg, AWS MediaConvert).
+  if (kind === "manifest" && /(master|multivariant|playlist|index|manifest)\.(m3u8|mpd)(\?|$)/i.test(path)) {
+    score += 12;
+  }
   const height = qualityHeight(url);
   if (height) score += Math.min(Math.floor(height / 12), 140);
-  if (/(\.ts|segment|chunk|frag)/i.test(path)) score -= 25;
+  // Penalise media *segments* (not the manifest that lists them). A manifest
+  // path can legitimately contain "frag" (e.g. PeerTube's *-fragmented.mp4 is a
+  // full file, and HLS playlists may sit under a /frag/ dir), so only penalise
+  // when the path is not itself a manifest.
+  const isManifestPath = /\.(m3u8|mpd)(\?|$)/i.test(path);
+  if (!isManifestPath && /(\.ts(\?|$)|\.m4s(\?|$)|segment|chunk|[-_/]frag\d|seg-\d)/i.test(path)) {
+    score -= 25;
+  }
   if (isLikelyAdOrTrackingUrl(url)) score -= 500;
   return score;
 }

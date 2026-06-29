@@ -11,6 +11,7 @@
 
 mod browser;
 mod direct;
+mod generic;
 mod external_tool;
 mod hanime;
 mod mac_cms;
@@ -19,6 +20,7 @@ mod yt_dlp;
 
 pub use browser::BrowserExtractor;
 pub use direct::DirectExtractor;
+pub use generic::GenericExtractor;
 pub use external_tool::ExternalToolExtractor;
 pub use hanime::HanimeExtractor;
 pub use mac_cms::MacCmsEpisodeExtractor;
@@ -172,6 +174,7 @@ impl SourceResolver {
                 Box::new(DirectExtractor),
                 Box::new(HanimeExtractor),
                 Box::new(MacCmsEpisodeExtractor),
+                Box::new(GenericExtractor),
                 Box::new(YtDlpExtractor),
                 Box::new(ExternalToolExtractor::new(ExternalToolKind::YouGet)),
                 Box::new(ExternalToolExtractor::new(ExternalToolKind::Lux)),
@@ -450,6 +453,7 @@ mod tests {
                 "direct",
                 "hanime1",
                 "mac_cms",
+                "generic",
                 "yt_dlp",
                 "you_get",
                 "lux",
