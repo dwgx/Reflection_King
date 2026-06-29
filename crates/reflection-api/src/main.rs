@@ -600,15 +600,7 @@ async fn get_archive_file(
     // its <script> runs with access to the stored API key. Mark every archive
     // response nosniff, and force any active/markup type to download instead of
     // render. The dashboard also sandboxes its preview iframe (belt and braces).
-    let is_active = matches!(
-        content_type,
-        "text/html; charset=utf-8"
-            | "text/html"
-            | "application/xhtml+xml"
-            | "image/svg+xml"
-            | "application/xml"
-            | "text/xml"
-    );
+    let is_active = is_active_content_type(content_type);
     let stream = ReaderStream::new(file);
     let mut builder = Response::builder()
         .status(StatusCode::OK)
@@ -1347,6 +1339,13 @@ async fn get_media(
         return Err(RkError::Source("media file is empty".to_string()).into());
     }
 
+    // C1 defense: /media is unauthenticated and serves arbitrary captured bytes
+    // (e.g. page.html/index.html) on the dashboard origin. If a captured .html
+    // is served inline as text/html, its <script> runs with access to the
+    // stored API key. Mark every media response nosniff, and force any
+    // active/markup type to download instead of render. Mirrors get_archive_file.
+    let is_active = is_active_content_type(content_type);
+
     let range = parse_range(headers.get(header::RANGE), file_len)?;
 
     if let Some(range) = range {
@@ -1354,7 +1353,7 @@ async fn get_media(
         let stream = ReaderStream::new(file.take(range.len()));
         let body = Body::from_stream(stream);
 
-        return Response::builder()
+        let mut builder = Response::builder()
             .status(StatusCode::PARTIAL_CONTENT)
             .header(header::CONTENT_TYPE, content_type)
             .header(header::ACCEPT_RANGES, "bytes")
@@ -1363,7 +1362,15 @@ async fn get_media(
                 header::CONTENT_RANGE,
                 format!("bytes {}-{}/{}", range.start, range.end, file_len),
             )
-            .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+            .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
+            .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*");
+        if is_active {
+            builder = builder.header(
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{}\"", filename.replace('"', "")),
+            );
+        }
+        return builder
             .body(body)
             .map_err(|error| RkError::Source(format!("failed to build response: {error}")).into());
     }
@@ -1371,12 +1378,20 @@ async fn get_media(
     let stream = ReaderStream::new(file);
     let body = Body::from_stream(stream);
 
-    Ok(Response::builder()
+    let mut builder = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, content_type)
         .header(header::ACCEPT_RANGES, "bytes")
         .header(header::CONTENT_LENGTH, file_len.to_string())
-        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+        .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
+        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*");
+    if is_active {
+        builder = builder.header(
+            header::CONTENT_DISPOSITION,
+            format!("attachment; filename=\"{}\"", filename.replace('"', "")),
+        );
+    }
+    Ok(builder
         .body(body)
         .map_err(|error| RkError::Source(format!("failed to build response: {error}")))?)
 }
@@ -1396,12 +1411,22 @@ async fn head_media(
         return Err(RkError::Source("media file is empty".to_string()).into());
     }
 
-    Ok(Response::builder()
+    // C1 defense: keep HEAD metadata consistent with GET (see get_media).
+    let is_active = is_active_content_type(content_type);
+    let mut builder = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, content_type)
         .header(header::ACCEPT_RANGES, "bytes")
         .header(header::CONTENT_LENGTH, file_len.to_string())
-        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+        .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
+        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*");
+    if is_active {
+        builder = builder.header(
+            header::CONTENT_DISPOSITION,
+            format!("attachment; filename=\"{}\"", filename.replace('"', "")),
+        );
+    }
+    Ok(builder
         .body(Body::empty())
         .map_err(|error| RkError::Source(format!("failed to build response: {error}")))?)
 }
@@ -1787,6 +1812,23 @@ mod tests {
             ),
             AuthMode::Auto
         );
+    }
+
+    #[test]
+    fn active_content_types_force_download() {
+        // C1: captured page.html / index.html served via /media or /archive must
+        // be treated as active so they download (attachment + nosniff) instead of
+        // executing <script> in the dashboard origin and stealing the API key.
+        assert!(is_active_content_type(content_type_for("page.html")));
+        assert!(is_active_content_type(content_type_for("index.html")));
+        assert!(is_active_content_type(content_type_for("logo.svg")));
+        assert!(is_active_content_type("application/xhtml+xml"));
+        assert!(is_active_content_type("application/xml"));
+        assert!(is_active_content_type("text/xml"));
+        // Genuine media keeps inline + Range behavior.
+        assert!(!is_active_content_type(content_type_for("clip.mp4")));
+        assert!(!is_active_content_type(content_type_for("audio.mp3")));
+        assert!(!is_active_content_type(content_type_for("poster.png")));
     }
 
     fn principal(role: ApiKeyRole, key_id: Option<Uuid>) -> AuthPrincipal {
@@ -2243,6 +2285,22 @@ fn is_archive_today_host(host: &str) -> bool {
             | "archive.md"
             | "archive.li"
             | "archive.fo"
+    )
+}
+
+/// C1 defense: identify active/markup content types whose bytes can execute
+/// script in the dashboard origin if served inline. Such responses must be
+/// marked nosniff and forced to download (shared by get_archive_file and the
+/// unauthenticated /media handlers, which serve arbitrary captured pages).
+fn is_active_content_type(content_type: &str) -> bool {
+    matches!(
+        content_type,
+        "text/html; charset=utf-8"
+            | "text/html"
+            | "application/xhtml+xml"
+            | "image/svg+xml"
+            | "application/xml"
+            | "text/xml"
     )
 }
 

@@ -18,7 +18,8 @@ use reflection_core::{
     extractors::{ExtractContext, SourceResolver},
     job_store::JobStore,
     models::{
-        ApiKeyRecord, ApiKeyView, ArchiveFileView, ArchiveTreeView, ArtifactView, AuthMode,
+        ApiKeyRecord, ApiKeyRole, ApiKeyView, ArchiveFileView, ArchiveTreeView, ArtifactView,
+        AuthMode,
         CacheCategoryView, CacheCleanupEntryView, CacheCleanupRequest, CacheCleanupView,
         CacheInventoryView, CandidateKind, CandidateProtection, CandidateValidationState,
         ClearJobsResponse, CreateUserKeyRequest, CreatedUserKeyResponse, DiscoveryMode,
@@ -85,6 +86,13 @@ pub fn classify_error(error: &RkError) -> ErrorClass {
     }
 }
 
+/// Render a secret as a short, value-masked fingerprint for log output so admin-key
+/// drift can be diagnosed without leaking the configured `RK_API_KEY` into logs.
+fn mask_secret(secret: &str) -> String {
+    let visible: String = secret.chars().take(3).collect();
+    format!("{visible}***(len={})", secret.chars().count())
+}
+
 pub struct AppState {
     pub config: AppConfig,
     pub paths: StoragePaths,
@@ -135,6 +143,22 @@ impl AppState {
         let job_store = JobStore::connect(&paths.database_path()).await?;
         if let Some(api_key) = config.api_key.as_deref() {
             job_store.ensure_admin_key_from_secret(api_key).await?;
+            // `ensure_admin_key_from_secret` only seeds when NO active admin key exists, so a DB
+            // that survives a container rebuild silently ignores a *changed* RK_API_KEY and the
+            // operator-supplied secret then 401s. Reconcile by hash: if the configured secret does
+            // not resolve to an active admin key, surface the drift loudly (value-masked) instead
+            // of letting the operator debug blind 401s. We deliberately do not rotate/revoke here.
+            match job_store.find_api_key(api_key).await? {
+                Some(record) if record.role == ApiKeyRole::Admin => {}
+                _ => {
+                    warn!(
+                        configured_key = %mask_secret(api_key),
+                        "RK_API_KEY does not match any active admin key (drift after container rebuild?); \
+                         requests using this key will 401; rotate the admin key to the configured secret \
+                         via POST /admin/keys/rotate or clear the stale admin key in the database"
+                    );
+                }
+            }
         }
         let browser_probe = config
             .browser_probe_url
@@ -6195,6 +6219,18 @@ mod tests {
         CandidateProtection, CandidateValidationState, JobCreateOptions,
     };
     use serde_json::json;
+
+    #[test]
+    fn mask_secret_hides_value_but_keeps_fingerprint() {
+        let masked = mask_secret("supersecretadminkey");
+        assert!(!masked.contains("supersecretadminkey"));
+        assert!(masked.starts_with("sup"));
+        assert!(masked.contains("len=19"));
+        // Must not panic on multibyte input and must report char length, not byte length.
+        let unicode = mask_secret("密钥abc");
+        assert!(!unicode.contains("密钥abc"));
+        assert!(unicode.contains("len=5"));
+    }
 
     fn candidate(
         job_id: Uuid,

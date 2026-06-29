@@ -16,7 +16,8 @@ use uuid::Uuid;
 use crate::{
     models::{CandidateKind, CandidateProtection, CandidateValidationState, MediaCandidate},
     policy_http::{policy_client_builder, validate_response_url_and_peer},
-    Result,
+    url_policy::validate_url,
+    Result, RkError,
 };
 
 use super::{ExtractContext, ExtractResult, SourceExtractor};
@@ -24,6 +25,7 @@ use super::{ExtractContext, ExtractResult, SourceExtractor};
 const DESKTOP_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36";
 const PLAYCONF_PREFIX: &str = "player_aaaa";
 const EXTRACTOR_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_REDIRECTS: usize = 5;
 
 pub struct MacCmsEpisodeExtractor;
 
@@ -73,15 +75,15 @@ impl SourceExtractor for MacCmsEpisodeExtractor {
     async fn extract(&self, ctx: &ExtractContext) -> Result<ExtractResult> {
         let client = policy_client_builder(EXTRACTOR_HTTP_TIMEOUT)
             .user_agent(DESKTOP_UA)
-            .redirect(reqwest::redirect::Policy::limited(5))
             .build()?;
 
-        let response = client
-            .get(ctx.url.clone())
-            .header(header::REFERER, ctx.source_url.as_str())
-            .header(header::ACCEPT_LANGUAGE, "zh-CN,zh;q=0.9,en;q=0.8")
-            .send()
-            .await?;
+        let referer = ctx.source_url.clone();
+        let response = fetch_following_redirects(&client, ctx.url.clone(), |request| {
+            request
+                .header(header::REFERER, referer.as_str())
+                .header(header::ACCEPT_LANGUAGE, "zh-CN,zh;q=0.9,en;q=0.8")
+        })
+        .await?;
         validate_response_url_and_peer(&response)?;
         let html = response.error_for_status()?.text().await?;
 
@@ -382,25 +384,68 @@ struct SmallResponse {
     body: String,
 }
 
+/// Follow HTTP redirects manually so every hop is policy-validated.
+///
+/// `policy_client_builder` installs `redirect::Policy::none()`, so reqwest
+/// surfaces each 30x response instead of chasing the `Location` header
+/// internally. We call `validate_url` before every request (so a literal
+/// internal IP never receives a blind GET) and re-resolve each `Location`
+/// against the current URL, capping the chain at `MAX_REDIRECTS`. Without this
+/// an open redirect to e.g. `http://[::ffff:169.254.169.254]/` would be
+/// followed to a blocked address with no per-hop check.
+async fn fetch_following_redirects(
+    client: &Client,
+    url: Url,
+    apply: impl Fn(reqwest::RequestBuilder) -> reqwest::RequestBuilder + Send,
+) -> Result<reqwest::Response> {
+    let mut current = url;
+    let mut redirects = 0usize;
+    loop {
+        validate_url(&current)?;
+        let response = apply(client.get(current.clone())).send().await?;
+        if !response.status().is_redirection() {
+            return Ok(response);
+        }
+        if redirects >= MAX_REDIRECTS {
+            return Err(RkError::UrlPolicy(format!(
+                "exceeded {MAX_REDIRECTS} redirects starting from {current}"
+            )));
+        }
+        let location = response
+            .headers()
+            .get(header::LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .ok_or_else(|| {
+                RkError::UrlPolicy(format!(
+                    "redirect response from {current} missing Location header"
+                ))
+            })?;
+        current = current.join(location).map_err(|error| {
+            RkError::UrlPolicy(format!("invalid redirect Location `{location}`: {error}"))
+        })?;
+        redirects += 1;
+    }
+}
+
 async fn get_small(
     client: &Client,
     url: Url,
     referer: &str,
     range: Option<&str>,
 ) -> std::result::Result<SmallResponse, String> {
-    let mut request = client
-        .get(url)
-        .header(header::USER_AGENT, DESKTOP_UA)
-        .header(header::REFERER, referer)
-        .header(header::ACCEPT, "*/*")
-        .header(header::ACCEPT_LANGUAGE, "zh-CN,zh;q=0.9,en;q=0.8");
-    if let Some(range) = range {
-        request = request.header(header::RANGE, range);
-    }
-    let response = request
-        .send()
-        .await
-        .map_err(|error| format!("request failed: {error}"))?;
+    let response = fetch_following_redirects(client, url, |request| {
+        let request = request
+            .header(header::USER_AGENT, DESKTOP_UA)
+            .header(header::REFERER, referer)
+            .header(header::ACCEPT, "*/*")
+            .header(header::ACCEPT_LANGUAGE, "zh-CN,zh;q=0.9,en;q=0.8");
+        match range {
+            Some(range) => request.header(header::RANGE, range),
+            None => request,
+        }
+    })
+    .await
+    .map_err(|error| error.to_string())?;
     validate_response_url_and_peer(&response).map_err(|error| error.to_string())?;
     let status = response.status();
     let content_type = response
@@ -709,5 +754,24 @@ mod tests {
             segment.as_str(),
             "https://cdn.example.com/a/3000k/hls/0001.ts?hash=abc"
         );
+    }
+
+    #[tokio::test]
+    async fn fetch_following_redirects_rejects_blocked_initial_url() {
+        let client = policy_client_builder(EXTRACTOR_HTTP_TIMEOUT)
+            .user_agent(DESKTOP_UA)
+            .build()
+            .expect("client builds");
+        // A literal internal IP must be rejected by validate_url before any GET
+        // is sent. Both the plain link-local metadata IP and the IPv4-mapped
+        // IPv6 form (the C2 SSRF class) must be blocked on the very first hop.
+        for raw in [
+            "http://169.254.169.254/latest/meta-data",
+            "http://[::ffff:169.254.169.254]/latest/meta-data",
+        ] {
+            let url = Url::parse(raw).expect("valid url");
+            let result = fetch_following_redirects(&client, url, |request| request).await;
+            assert!(result.is_err(), "expected blocked-address rejection for {raw}");
+        }
     }
 }

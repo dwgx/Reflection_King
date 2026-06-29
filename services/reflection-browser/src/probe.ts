@@ -4152,22 +4152,134 @@ function isBlockedIpv4(value: string): boolean {
 }
 
 function isBlockedIpv6(value: string): boolean {
-  const lowered = value.toLowerCase();
-  if (!lowered.includes(":")) {
+  const segments = parseIpv6Segments(value);
+  if (segments === null) {
     return false;
   }
+
+  // Fold any IPv6 form that embeds or tunnels an IPv4 address back to that
+  // IPv4 address and apply the v4 rules. Without this, IPv4-mapped addresses
+  // such as ::ffff:169.254.169.254 (cloud metadata) or ::ffff:127.0.0.1 slip
+  // past the v6 checks because none of the pure-v6 prefixes match them. Covers
+  // IPv4-mapped (::ffff:0:0/96), 6to4 (2002::/16), NAT64 well-known prefix
+  // (64:ff9b::/96), and Teredo (2001::/32). Mirrors the Rust url_policy.rs.
+  const embedded = embeddedIpv4(segments);
+  if (embedded !== null) {
+    return isBlockedIpv4(embedded);
+  }
+
+  const [s0, s1] = segments as [number, number];
   return (
-    lowered === "::" ||
-    lowered === "::1" ||
-    lowered.startsWith("fc") ||
-    lowered.startsWith("fd") ||
-    lowered.startsWith("fe80:") ||
-    lowered.startsWith("ff") ||
-    lowered.startsWith("2001:db8:") ||
-    lowered.startsWith("::ffff:127.") ||
-    lowered.startsWith("::ffff:10.") ||
-    lowered.startsWith("::ffff:192.168.")
+    segments.every((segment) => segment === 0) || // unspecified ::
+    (segments.slice(0, 7).every((segment) => segment === 0) && segments[7] === 1) || // loopback ::1
+    (s0 & 0xff00) === 0xff00 || // multicast ff00::/8
+    (s0 & 0xfe00) === 0xfc00 || // unique local fc00::/7
+    (s0 & 0xffc0) === 0xfe80 || // link-local fe80::/10
+    (s0 === 0x2001 && s1 === 0x0db8) // documentation 2001:db8::/32
   );
+}
+
+/**
+ * Extract an embedded/tunneled IPv4 address from a parsed IPv6 address (as eight
+ * 16-bit segments), if any, returned in dotted-quad form. Mirrors
+ * crates/reflection-core/src/url_policy.rs embedded_ipv4.
+ */
+function embeddedIpv4(segments: number[]): string | null {
+  const [s0, s1, s2, s3, s4, s5, s6, s7] = segments as [number, number, number, number, number, number, number, number];
+  const dotted = (high: number, low: number): string =>
+    `${(high >> 8) & 0xff}.${high & 0xff}.${(low >> 8) & 0xff}.${low & 0xff}`;
+
+  // IPv4-mapped (::ffff:a.b.c.d). Deliberately requires the ::ffff:0:0/96
+  // prefix and NOT the IPv4-compatible ::/96 form, which would fold ::1 to
+  // 0.0.0.1; ::1 and :: are already handled by the loopback/unspecified rules.
+  if (s0 === 0 && s1 === 0 && s2 === 0 && s3 === 0 && s4 === 0 && s5 === 0xffff) {
+    return dotted(s6, s7);
+  }
+
+  // 6to4: 2002:AABB:CCDD::/48 embeds a.b.c.d in segments[1..=2].
+  if (s0 === 0x2002) {
+    return dotted(s1, s2);
+  }
+
+  // NAT64 well-known prefix 64:ff9b::/96 embeds a.b.c.d in the low 32 bits.
+  if (s0 === 0x0064 && s1 === 0xff9b && s2 === 0 && s3 === 0 && s4 === 0 && s5 === 0) {
+    return dotted(s6, s7);
+  }
+
+  // Teredo 2001:0000::/32 embeds the (obfuscated) client IPv4 in the last two
+  // segments, bitwise negated.
+  if (s0 === 0x2001 && s1 === 0x0000) {
+    return dotted((~s6) & 0xffff, (~s7) & 0xffff);
+  }
+
+  return null;
+}
+
+/**
+ * Parse an IPv6 literal (brackets already stripped) into eight 16-bit segments,
+ * expanding "::" compression and any trailing embedded IPv4 dotted-quad. Returns
+ * null for anything that is not a syntactically valid IPv6 address, so non-IP
+ * hosts fall through to "not blocked" exactly as before.
+ */
+function parseIpv6Segments(value: string): number[] | null {
+  const lowered = value.toLowerCase();
+  if (!lowered.includes(":") || !/^[0-9a-f:.]+$/.test(lowered)) {
+    return null;
+  }
+  // At most one "::" run is allowed.
+  if (lowered.indexOf("::") !== lowered.lastIndexOf("::")) {
+    return null;
+  }
+
+  const groupsToSegments = (part: string): number[] | null => {
+    if (part === "") {
+      return [];
+    }
+    const groups = part.split(":");
+    const segments: number[] = [];
+    for (let i = 0; i < groups.length; i += 1) {
+      const group = groups[i] as string;
+      if (group.includes(".")) {
+        // An embedded IPv4 may only appear as the final group.
+        if (i !== groups.length - 1) {
+          return null;
+        }
+        const octets = group.split(".");
+        if (octets.length !== 4 || octets.some((octet) => !/^\d{1,3}$/.test(octet))) {
+          return null;
+        }
+        const nums = octets.map((octet) => Number.parseInt(octet, 10)) as [number, number, number, number];
+        if (nums.some((num) => num > 255)) {
+          return null;
+        }
+        segments.push(((nums[0] << 8) | nums[1]) & 0xffff);
+        segments.push(((nums[2] << 8) | nums[3]) & 0xffff);
+      } else {
+        if (!/^[0-9a-f]{1,4}$/.test(group)) {
+          return null;
+        }
+        segments.push(Number.parseInt(group, 16));
+      }
+    }
+    return segments;
+  };
+
+  const doubleColon = lowered.indexOf("::");
+  if (doubleColon === -1) {
+    const parsed = groupsToSegments(lowered);
+    return parsed !== null && parsed.length === 8 ? parsed : null;
+  }
+
+  const head = groupsToSegments(lowered.slice(0, doubleColon));
+  const tail = groupsToSegments(lowered.slice(doubleColon + 2));
+  if (head === null || tail === null) {
+    return null;
+  }
+  const fill = 8 - head.length - tail.length;
+  if (fill < 1) {
+    return null;
+  }
+  return [...head, ...new Array<number>(fill).fill(0), ...tail];
 }
 
 /// Normalize a URL for "is this the page itself" comparison: drop the fragment
