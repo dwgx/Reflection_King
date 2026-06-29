@@ -1,0 +1,8 @@
+[
+  {
+    "case": "wayback-example",
+    "status": "smoke_error",
+    "error": "wayback-example: timed out waiting for job 6022a725-ba9a-42f9-a776-dd132571ab69",
+    "expect_success": false
+  }
+]
