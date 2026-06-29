@@ -556,4 +556,72 @@ mod tests {
 
         assert_eq!(classify(&error), ErrorClass::Blocked);
     }
+
+    // --- Full-chain live integration tests (network). Run explicitly:
+    //   RK_VERIFY_ENABLED=1 cargo test -p reflection-core --release \
+    //     chain_live -- --ignored --nocapture
+    // Exercises the real discovery+verify path end to end: a public page is
+    // scanned by GenericExtractor (og:video / JSON-LD / bare media URLs), the
+    // produced candidates are HTTP-probed by the verify stage, and the winner
+    // must come back Usable. archive.org/details pages reliably embed og:video
+    // + twitter:player pointing at real mp4s (see VERIFICATION-DESIGN.md 8.2).
+
+    async fn run_chain(url: &str) -> ResolveOutcome {
+        let resolver = SourceResolver::new(vec![
+            Box::new(DirectExtractor),
+            Box::new(GenericExtractor),
+        ]);
+        resolver.resolve(&ctx(url)).await
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn chain_live_archive_details_discovers_and_verifies() {
+        for page in [
+            "https://archive.org/details/Sintel",
+            "https://archive.org/details/BigBuckBunny_328",
+            "https://archive.org/details/ElephantsDream",
+        ] {
+            let outcome = run_chain(page).await;
+            let usable = outcome
+                .candidates
+                .iter()
+                .filter(|c| c.validation_state == Some(CandidateValidationState::Usable))
+                .count();
+            println!(
+                "CHAIN {page}: {} candidates, {} Usable, winner={:?}",
+                outcome.candidates.len(),
+                usable,
+                outcome.winner
+            );
+            for c in outcome.candidates.iter().take(3) {
+                println!(
+                    "  - {:?} score={} {:?} status={:?} ct={:?} {}",
+                    c.validation_state, c.score, c.kind, c.status, c.content_type, c.url
+                );
+            }
+            assert!(
+                !outcome.candidates.is_empty(),
+                "{page}: generic scan produced no candidates"
+            );
+            // With RK_VERIFY_ENABLED=1 the top candidate must be probed and
+            // confirmed playable; the verified sort floats it to the front.
+            if std::env::var("RK_VERIFY_ENABLED").is_ok() {
+                assert!(
+                    usable >= 1,
+                    "{page}: no candidate verified Usable (states: {:?})",
+                    outcome
+                        .candidates
+                        .iter()
+                        .map(|c| c.validation_state)
+                        .collect::<Vec<_>>()
+                );
+                assert_eq!(
+                    outcome.candidates[0].validation_state,
+                    Some(CandidateValidationState::Usable),
+                    "{page}: top candidate after verified sort is not Usable"
+                );
+            }
+        }
+    }
 }
