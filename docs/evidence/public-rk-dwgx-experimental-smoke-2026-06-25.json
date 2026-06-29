@@ -1,0 +1,99 @@
+[
+  {
+    "case": "tiktok-public-external-video",
+    "tier": "experimental",
+    "notes": "Public short-video sample. Region/bot checks can change, so record outcome rather than assuming support.",
+    "job_id": "e87316c8-5747-4359-b40b-f09a4388c03e",
+    "status": "needs_profile",
+    "error": "remote source error: all selected candidates failed: video 576p: remote source error: remote returned HTTP 403 Forbidden | video 576p: remote source error: remote returned HTTP 403 Forbidden | video 576p: remote source error: remote returned HTTP 403 Forbidden | video 576p: remote source error: remote returned HTTP 403 Forbidden | video watermarked: remote source error: remote returned HTTP 403 Forbidden",
+    "candidate_count": 0,
+    "artifact_count": 0,
+    "media_checks": [],
+    "archive_check": null,
+    "trace_events": 6,
+    "expect_success": false
+  },
+  {
+    "case": "douyin-public-browser-video",
+    "tier": "experimental",
+    "notes": "Browser discovery sample for signed DOM/network media URLs; convert immediately if candidates appear.",
+    "job_id": "ff66b13d-7688-4f70-b1ad-56b4c4201327",
+    "status": "ready",
+    "error": null,
+    "candidate_count": 0,
+    "artifact_count": 1,
+    "media_checks": [
+      {
+        "kind": "video",
+        "status": 206,
+        "content_type": "video/mp4",
+        "content_range": "bytes 0-511/6127453",
+        "bytes": 512,
+        "url": "https://rk.dwgx.top/media/ff66b13d-7688-4f70-b1ad-56b4c4201327/video-cbc6d76e-36c8-428e-b346-d7610f709b5f.mp4"
+      }
+    ],
+    "archive_check": null,
+    "trace_events": 6,
+    "expect_success": false
+  },
+  {
+    "case": "kuaishou-public-browser-video",
+    "tier": "experimental",
+    "notes": "Browser-only Kuaishou sample. CDN URLs are short-lived and should be converted immediately.",
+    "job_id": "f37f0b9c-5467-4b63-b0b5-c19b5edac032",
+    "status": "error",
+    "error": "remote source error: no media candidates from chain [browser_probe]",
+    "candidate_count": 0,
+    "artifact_count": 0,
+    "media_checks": [],
+    "archive_check": null,
+    "trace_events": 6,
+    "expect_success": false
+  },
+  {
+    "case": "weibo-public-video",
+    "tier": "experimental",
+    "notes": "Public Weibo video sample. Lux/yt-dlp support exists, but visitor redirect and anti-bot behavior can drift; record outcome rather than assuming success.",
+    "job_id": "80b37064-1b5e-4983-ab03-e3f07ea3d322",
+    "status": "ready",
+    "error": null,
+    "candidate_count": 0,
+    "artifact_count": 1,
+    "media_checks": [
+      {
+        "kind": "video",
+        "status": 206,
+        "content_type": "video/mp4",
+        "content_range": "bytes 0-511/225273",
+        "bytes": 512,
+        "url": "https://rk.dwgx.top/media/80b37064-1b5e-4983-ab03-e3f07ea3d322/video-550fd01b-3dc6-47d3-8377-cc0be99fca0d.mp4"
+      }
+    ],
+    "archive_check": null,
+    "trace_events": 6,
+    "expect_success": false
+  },
+  {
+    "case": "apple-bipbop-hls-live-video",
+    "tier": "experimental",
+    "notes": "Long public HLS sample for manifest stress coverage; not expected in low-cost smoke.",
+    "job_id": "035067d4-a8e9-4f0e-8beb-1b003b8bcdbc",
+    "status": "ready",
+    "error": null,
+    "candidate_count": 0,
+    "artifact_count": 1,
+    "media_checks": [
+      {
+        "kind": "video",
+        "status": 206,
+        "content_type": "video/mp4",
+        "content_range": "bytes 0-511/191906584",
+        "bytes": 512,
+        "url": "https://rk.dwgx.top/media/035067d4-a8e9-4f0e-8beb-1b003b8bcdbc/video-46c63827-144f-4184-9e25-ffc45ac1d081.mp4"
+      }
+    ],
+    "archive_check": null,
+    "trace_events": 6,
+    "expect_success": false
+  }
+]

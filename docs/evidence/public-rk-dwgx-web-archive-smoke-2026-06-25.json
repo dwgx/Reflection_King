@@ -1,0 +1,378 @@
+[
+  {
+    "case": "wayback-example-page-html-hint",
+    "tier": "experimental",
+    "notes": "Wayback replay pages are page archives first. Use CDX/Availability metadata before promoting any captured media/file extraction.",
+    "job_id": "12300fdf-013e-4501-8c60-5890eca0edf8",
+    "status": "ready",
+    "error": null,
+    "candidate_count": 0,
+    "artifact_count": 9,
+    "media_checks": [],
+    "archive_check": {
+      "file_count": 24,
+      "required_present": [
+        "index.html",
+        "index.inline.html",
+        "metadata/resources.json",
+        "page.txt",
+        "preview/screenshot.png"
+      ],
+      "missing_required": [],
+      "samples": [
+        {
+          "path": "index.html",
+          "status": 200,
+          "content_type": "text/html; charset=utf-8",
+          "content_range": null,
+          "bytes": 512
+        },
+        {
+          "path": "metadata/resources.json",
+          "status": 200,
+          "content_type": "application/json",
+          "content_range": null,
+          "bytes": 512
+        },
+        {
+          "path": "preview/screenshot.png",
+          "status": 200,
+          "content_type": "image/png",
+          "content_range": null,
+          "bytes": 512
+        }
+      ]
+    },
+    "trace_events": 6,
+    "expect_success": false
+  },
+  {
+    "case": "wayback-cdx-api-hint",
+    "tier": "experimental",
+    "notes": "CDX JSON should become a structured extractor target; this catalog entry only validates URL routing and safe page capture behavior.",
+    "job_id": "bf18b76d-c22c-4949-a419-71b4a26ec80e",
+    "status": "ready",
+    "error": null,
+    "candidate_count": 0,
+    "artifact_count": 8,
+    "media_checks": [],
+    "archive_check": {
+      "file_count": 8,
+      "required_present": [
+        "index.html",
+        "index.inline.html",
+        "metadata/resources.json",
+        "page.txt",
+        "preview/screenshot.png"
+      ],
+      "missing_required": [],
+      "samples": [
+        {
+          "path": "index.html",
+          "status": 200,
+          "content_type": "text/html; charset=utf-8",
+          "content_range": null,
+          "bytes": 512
+        },
+        {
+          "path": "metadata/resources.json",
+          "status": 200,
+          "content_type": "application/json",
+          "content_range": null,
+          "bytes": 174
+        },
+        {
+          "path": "preview/screenshot.png",
+          "status": 200,
+          "content_type": "image/png",
+          "content_range": null,
+          "bytes": 512
+        }
+      ]
+    },
+    "trace_events": 6,
+    "expect_success": false
+  },
+  {
+    "case": "archive-it-cdx-collection-hint",
+    "tier": "experimental",
+    "notes": "Archive-It CDX/C should stay collection-scoped. Do not rely on broad /all queries for smoke or production behavior.",
+    "job_id": "a2fa9a4f-c261-4069-9ca6-0ad3efd08ddc",
+    "status": "ready",
+    "error": null,
+    "candidate_count": 0,
+    "artifact_count": 8,
+    "media_checks": [],
+    "archive_check": {
+      "file_count": 8,
+      "required_present": [
+        "index.html",
+        "index.inline.html",
+        "metadata/resources.json",
+        "page.txt",
+        "preview/screenshot.png"
+      ],
+      "missing_required": [],
+      "samples": [
+        {
+          "path": "index.html",
+          "status": 200,
+          "content_type": "text/html; charset=utf-8",
+          "content_range": null,
+          "bytes": 512
+        },
+        {
+          "path": "metadata/resources.json",
+          "status": 200,
+          "content_type": "application/json",
+          "content_range": null,
+          "bytes": 188
+        },
+        {
+          "path": "preview/screenshot.png",
+          "status": 200,
+          "content_type": "image/png",
+          "content_range": null,
+          "bytes": 512
+        }
+      ]
+    },
+    "trace_events": 6,
+    "expect_success": false
+  },
+  {
+    "case": "perma-public-archives-api-hint",
+    "tier": "experimental",
+    "notes": "Perma public archives endpoint is read-only and unauthenticated. Treat results as citation/page metadata, not media extraction.",
+    "job_id": "fa6de583-c520-4e93-9fa3-2723625783b1",
+    "status": "ready",
+    "error": null,
+    "candidate_count": 0,
+    "artifact_count": 9,
+    "media_checks": [],
+    "archive_check": {
+      "file_count": 18,
+      "required_present": [
+        "index.html",
+        "index.inline.html",
+        "metadata/resources.json",
+        "page.txt",
+        "preview/screenshot.png"
+      ],
+      "missing_required": [],
+      "samples": [
+        {
+          "path": "index.html",
+          "status": 200,
+          "content_type": "text/html; charset=utf-8",
+          "content_range": null,
+          "bytes": 512
+        },
+        {
+          "path": "metadata/resources.json",
+          "status": 200,
+          "content_type": "application/json",
+          "content_range": null,
+          "bytes": 512
+        },
+        {
+          "path": "preview/screenshot.png",
+          "status": 200,
+          "content_type": "image/png",
+          "content_range": null,
+          "bytes": 512
+        }
+      ]
+    },
+    "trace_events": 6,
+    "expect_success": false
+  },
+  {
+    "case": "archive-today-search-page-hint",
+    "tier": "experimental",
+    "notes": "archive.today/archive.ph has no stable official JSON API in current research. Keep as page_html and avoid JS-heavy media assumptions.",
+    "job_id": "71daeddf-89c4-4d49-a8b4-921b62ad05cf",
+    "status": "ready",
+    "error": null,
+    "candidate_count": 0,
+    "artifact_count": 9,
+    "media_checks": [],
+    "archive_check": {
+      "file_count": 43,
+      "required_present": [
+        "index.html",
+        "index.inline.html",
+        "metadata/resources.json",
+        "page.txt",
+        "preview/screenshot.png"
+      ],
+      "missing_required": [],
+      "samples": [
+        {
+          "path": "index.html",
+          "status": 200,
+          "content_type": "text/html; charset=utf-8",
+          "content_range": null,
+          "bytes": 512
+        },
+        {
+          "path": "metadata/resources.json",
+          "status": 200,
+          "content_type": "application/json",
+          "content_range": null,
+          "bytes": 512
+        },
+        {
+          "path": "preview/screenshot.png",
+          "status": 200,
+          "content_type": "image/png",
+          "content_range": null,
+          "bytes": 512
+        }
+      ]
+    },
+    "trace_events": 6,
+    "expect_success": false
+  },
+  {
+    "case": "ghostarchive-public-archive-page-hint",
+    "tier": "experimental",
+    "notes": "Ghostarchive replay uses browser-oriented archive pages. Capture as page_html first; do not assume video availability.",
+    "job_id": "2950ff33-d1a6-4b82-be01-18d4ce0907cc",
+    "status": "ready",
+    "error": null,
+    "candidate_count": 0,
+    "artifact_count": 9,
+    "media_checks": [],
+    "archive_check": {
+      "file_count": 40,
+      "required_present": [
+        "index.html",
+        "index.inline.html",
+        "metadata/resources.json",
+        "page.txt",
+        "preview/screenshot.png"
+      ],
+      "missing_required": [],
+      "samples": [
+        {
+          "path": "index.html",
+          "status": 200,
+          "content_type": "text/html; charset=utf-8",
+          "content_range": null,
+          "bytes": 512
+        },
+        {
+          "path": "metadata/resources.json",
+          "status": 200,
+          "content_type": "application/json",
+          "content_range": null,
+          "bytes": 512
+        },
+        {
+          "path": "preview/screenshot.png",
+          "status": 200,
+          "content_type": "image/png",
+          "content_range": null,
+          "bytes": 512
+        }
+      ]
+    },
+    "trace_events": 6,
+    "expect_success": false
+  },
+  {
+    "case": "webcitation-legacy-page-hint",
+    "tier": "experimental",
+    "notes": "WebCitation is a legacy read-only target and no longer accepts new archiving requests.",
+    "job_id": "1b639e6e-4498-4f40-aa6e-7c578296f2bf",
+    "status": "ready",
+    "error": null,
+    "candidate_count": 0,
+    "artifact_count": 9,
+    "media_checks": [],
+    "archive_check": {
+      "file_count": 21,
+      "required_present": [
+        "index.html",
+        "index.inline.html",
+        "metadata/resources.json",
+        "page.txt",
+        "preview/screenshot.png"
+      ],
+      "missing_required": [],
+      "samples": [
+        {
+          "path": "index.html",
+          "status": 200,
+          "content_type": "text/html; charset=utf-8",
+          "content_range": null,
+          "bytes": 512
+        },
+        {
+          "path": "metadata/resources.json",
+          "status": 200,
+          "content_type": "application/json",
+          "content_range": null,
+          "bytes": 512
+        },
+        {
+          "path": "preview/screenshot.png",
+          "status": 200,
+          "content_type": "image/png",
+          "content_range": null,
+          "bytes": 512
+        }
+      ]
+    },
+    "trace_events": 6,
+    "expect_success": false
+  },
+  {
+    "case": "memento-timegate-doc-page-hint",
+    "tier": "experimental",
+    "notes": "Memento is a protocol hint. Future support should parse Link headers and TimeMap responses; this entry validates page_html routing.",
+    "job_id": "9f32e515-783c-42bb-b6a1-22a01cbfa880",
+    "status": "ready",
+    "error": null,
+    "candidate_count": 0,
+    "artifact_count": 9,
+    "media_checks": [],
+    "archive_check": {
+      "file_count": 18,
+      "required_present": [
+        "index.html",
+        "index.inline.html",
+        "metadata/resources.json",
+        "page.txt",
+        "preview/screenshot.png"
+      ],
+      "missing_required": [],
+      "samples": [
+        {
+          "path": "index.html",
+          "status": 200,
+          "content_type": "text/html; charset=utf-8",
+          "content_range": null,
+          "bytes": 512
+        },
+        {
+          "path": "metadata/resources.json",
+          "status": 200,
+          "content_type": "application/json",
+          "content_range": null,
+          "bytes": 512
+        },
+        {
+          "path": "preview/screenshot.png",
+          "status": 200,
+          "content_type": "image/png",
+          "content_range": null,
+          "bytes": 512
+        }
+      ]
+    },
+    "trace_events": 6,
+    "expect_success": false
+  }
+]

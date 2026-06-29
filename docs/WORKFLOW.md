@@ -103,6 +103,49 @@ python scripts/smoke/live_smoke.py `
   --summary-file docs\evidence\public-catalog-core-smoke-local.json
 ```
 
+运行平台发现扩张 smoke：
+
+```powershell
+python scripts/smoke/live_smoke.py `
+  --base-url http://127.0.0.1:8787 `
+  --api-key-file .tmp\admin-key.txt `
+  --catalog scripts/smoke/catalogs/platform-discovery-2026-06-24.json `
+  --catalog-only `
+  --tier platform `
+  --summary-file docs\evidence\platform-discovery-smoke-local.json
+```
+
+平台 catalog 只记录公开样本和预期风险，不等同于“已支持”。只有当前 HEAD
+或部署镜像完成候选、选择、artifact、Range/归档抽样后，才能把结果写进
+`docs/evidence/`。
+
+当前 catalog 已额外纳入 `ximalaya` 与 `weibo` 作为下一批优先观察平台：
+它们有公开样本，也有现成外部解析器支持，但是否“当前可用”仍要以 smoke
+结果为准。
+
+2026-06-25 新增互联网平台扩张 catalog：
+
+```powershell
+python scripts/smoke/live_smoke.py `
+  --base-url http://127.0.0.1:8787 `
+  --api-key-file .tmp\admin-key.txt `
+  --catalog scripts/smoke/catalogs/internet-platform-expansion-2026-06-25.json `
+  --catalog-only `
+  --list
+```
+
+该 catalog 来自 yt-dlp、Streamlink、you-get、gallery-dl 等上游支持面调研，
+用于扩张 `PlatformHint`、浏览器过滤和后续 fixture 选择。里面大量 case
+是 `experimental` 或 `expect_success: false`，只表示“应该继续实测/适配”，
+不能写成平台已支持。`Spotify` 只作为 metadata/page_html 识别目标，不做媒体
+下载或 stream ripping。
+
+同一 catalog 也纳入网络时光机/网页归档样本。Wayback、Archive-It、
+Perma.cc、archive.today、Ghostarchive、WebCitation、Memento 默认按
+`browser` + `page_html` 观察，不自动创建外部归档，不把 replay HTML 当成
+媒体下载目标。只有 CDX/TimeMap/API 或页面公开 metadata 明确说明捕获资源
+是图片、音频、视频、PDF 或普通文件时，才能单独提升为媒体/文件抽取 case。
+
 在 VPS 临时 Docker 环境里，可以先只读检查容器和 health：
 
 ```bash

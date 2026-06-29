@@ -1,0 +1,25 @@
+[
+  {
+    "case": "youtube-bbb-external-video-360p",
+    "tier": "core",
+    "notes": "",
+    "job_id": "1ac21cb5-bb8b-4856-b834-7c0e9ea5356f",
+    "status": "ready",
+    "error": null,
+    "candidate_count": 0,
+    "artifact_count": 1,
+    "media_checks": [
+      {
+        "kind": "video",
+        "status": 206,
+        "content_type": "video/mp4",
+        "content_range": "bytes 0-511/28863635",
+        "bytes": 512,
+        "url": "https://rk.dwgx.top/media/1ac21cb5-bb8b-4856-b834-7c0e9ea5356f/video-ab2e41f5-fb55-4196-8d2f-44b7c185d322.mp4"
+      }
+    ],
+    "archive_check": null,
+    "trace_events": 6,
+    "expect_success": true
+  }
+]

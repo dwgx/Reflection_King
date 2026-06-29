@@ -1,0 +1,143 @@
+[
+  {
+    "case": "mtr-system-map-page-archive",
+    "tier": "experimental",
+    "notes": "MTR official public system map page; page_html archive source, not media extraction evidence.",
+    "job_id": "f95ad1cd-e5d4-4617-a02a-b6e1015149f6",
+    "status": "ready",
+    "error": null,
+    "candidate_count": 0,
+    "artifact_count": 8,
+    "media_checks": [],
+    "archive_check": {
+      "file_count": 8,
+      "required_present": [
+        "index.html",
+        "index.inline.html",
+        "metadata/resources.json",
+        "page.txt",
+        "preview/screenshot.png"
+      ],
+      "missing_required": [],
+      "samples": [
+        {
+          "path": "index.html",
+          "status": 200,
+          "content_type": "text/html; charset=utf-8",
+          "content_range": null,
+          "bytes": 512
+        },
+        {
+          "path": "metadata/resources.json",
+          "status": 200,
+          "content_type": "application/json",
+          "content_range": null,
+          "bytes": 172
+        },
+        {
+          "path": "preview/screenshot.png",
+          "status": 200,
+          "content_type": "image/png",
+          "content_range": null,
+          "bytes": 512
+        }
+      ]
+    },
+    "trace_events": 6,
+    "expect_success": true
+  },
+  {
+    "case": "mtr-tsuen-wan-station-page-archive",
+    "tier": "experimental",
+    "notes": "MTR official Tsuen Wan station page; page_html archive source for transit information pages.",
+    "job_id": "8b40ca18-fd16-4967-a26e-6417ac9a2c59",
+    "status": "ready",
+    "error": null,
+    "candidate_count": 0,
+    "artifact_count": 8,
+    "media_checks": [],
+    "archive_check": {
+      "file_count": 8,
+      "required_present": [
+        "index.html",
+        "index.inline.html",
+        "metadata/resources.json",
+        "page.txt",
+        "preview/screenshot.png"
+      ],
+      "missing_required": [],
+      "samples": [
+        {
+          "path": "index.html",
+          "status": 200,
+          "content_type": "text/html; charset=utf-8",
+          "content_range": null,
+          "bytes": 512
+        },
+        {
+          "path": "metadata/resources.json",
+          "status": 200,
+          "content_type": "application/json",
+          "content_range": null,
+          "bytes": 171
+        },
+        {
+          "path": "preview/screenshot.png",
+          "status": 200,
+          "content_type": "image/png",
+          "content_range": null,
+          "bytes": 512
+        }
+      ]
+    },
+    "trace_events": 6,
+    "expect_success": true
+  },
+  {
+    "case": "tsuen-wan-district-council-page-archive",
+    "tier": "experimental",
+    "notes": "Official Tsuen Wan District Council public page; page_html archive source for government information pages.",
+    "job_id": "37112331-ff0e-4de1-9dc7-cdba446c60e7",
+    "status": "ready",
+    "error": null,
+    "candidate_count": 0,
+    "artifact_count": 9,
+    "media_checks": [],
+    "archive_check": {
+      "file_count": 163,
+      "required_present": [
+        "index.html",
+        "index.inline.html",
+        "metadata/resources.json",
+        "page.txt",
+        "preview/screenshot.png"
+      ],
+      "missing_required": [],
+      "samples": [
+        {
+          "path": "index.html",
+          "status": 200,
+          "content_type": "text/html; charset=utf-8",
+          "content_range": null,
+          "bytes": 512
+        },
+        {
+          "path": "metadata/resources.json",
+          "status": 200,
+          "content_type": "application/json",
+          "content_range": null,
+          "bytes": 512
+        },
+        {
+          "path": "preview/screenshot.png",
+          "status": 200,
+          "content_type": "image/png",
+          "content_range": null,
+          "bytes": 512
+        }
+      ]
+    },
+    "trace_events": 6,
+    "expect_success": true
+  }
+]

@@ -1,0 +1,16 @@
+[
+  {
+    "case": "ximalaya-public-audio-recheck",
+    "tier": "core",
+    "notes": "",
+    "job_id": "8b41e422-4615-4502-a470-c38191fccc70",
+    "status": "needs_profile",
+    "error": "remote source error: all selected candidates failed: audio 64k audio: remote source error: yt-dlp candidate requires headers that are not persisted | audio 24k audio: remote source error: yt-dlp candidate requires headers that are not persisted",
+    "candidate_count": 0,
+    "artifact_count": 0,
+    "media_checks": [],
+    "archive_check": null,
+    "trace_events": 6,
+    "expect_success": false
+  }
+]

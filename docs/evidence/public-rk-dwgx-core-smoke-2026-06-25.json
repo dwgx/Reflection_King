@@ -1,0 +1,71 @@
+[
+  {
+    "case": "w3schools-bbb-direct-video",
+    "tier": "core",
+    "notes": "Small public MP4 sample; HEAD 200 video/mp4 with Content-Length 788493 on 2026-06-17.",
+    "job_id": "3972f80e-c7a9-4a66-bee0-8cd88f6912b0",
+    "status": "ready",
+    "error": null,
+    "candidate_count": 0,
+    "artifact_count": 1,
+    "media_checks": [
+      {
+        "kind": "video",
+        "status": 206,
+        "content_type": "video/mp4",
+        "content_range": "bytes 0-511/586538",
+        "bytes": 512,
+        "url": "https://rk.dwgx.top/media/3972f80e-c7a9-4a66-bee0-8cd88f6912b0/video-88e47be4-1738-4a05-8e33-1d49069cb911.mp4"
+      }
+    ],
+    "archive_check": null,
+    "trace_events": 6,
+    "expect_success": true
+  },
+  {
+    "case": "w3schools-horse-direct-audio",
+    "tier": "core",
+    "notes": "Small public MP3 sample; HEAD 200 audio/mpeg with Content-Length 28915 on 2026-06-17.",
+    "job_id": "d5c33e83-ac86-4595-8198-d7c83d8a5471",
+    "status": "ready",
+    "error": null,
+    "candidate_count": 0,
+    "artifact_count": 1,
+    "media_checks": [
+      {
+        "kind": "audio",
+        "status": 206,
+        "content_type": "audio/mpeg",
+        "content_range": "bytes 0-511/25539",
+        "bytes": 512,
+        "url": "https://rk.dwgx.top/media/d5c33e83-ac86-4595-8198-d7c83d8a5471/audio-ee673920-6f2c-4f34-bb3b-9e8be930e810.mp3"
+      }
+    ],
+    "archive_check": null,
+    "trace_events": 6,
+    "expect_success": true
+  },
+  {
+    "case": "blender-sintel-trailer-direct-video",
+    "tier": "core",
+    "notes": "Blender Foundation Sintel trailer MP4; HEAD 200 video/mp4 with Content-Length 4372373 on 2026-06-17.",
+    "job_id": "3fb221cd-4453-42c9-a013-aaf6244cea29",
+    "status": "ready",
+    "error": null,
+    "candidate_count": 0,
+    "artifact_count": 1,
+    "media_checks": [
+      {
+        "kind": "video",
+        "status": 206,
+        "content_type": "video/mp4",
+        "content_range": "bytes 0-511/4369173",
+        "bytes": 512,
+        "url": "https://rk.dwgx.top/media/3fb221cd-4453-42c9-a013-aaf6244cea29/video-1f2b23e3-cab6-4099-acfe-507e78333101.mp4"
+      }
+    ],
+    "archive_check": null,
+    "trace_events": 6,
+    "expect_success": true
+  }
+]

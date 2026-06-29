@@ -1,0 +1,129 @@
+[
+  {
+    "case": "youtube-bbb-external-video",
+    "status": "smoke_error",
+    "error": "youtube-bbb-external-video: timed out waiting for job 41832e91-cb09-4ad3-b058-6ef50767c04d",
+    "expect_success": true
+  },
+  {
+    "case": "soundcloud-nasa-public-audio",
+    "tier": "platform",
+    "notes": "Public NASA audio sample through external adapter.",
+    "job_id": "541b2b55-4975-44d0-bf03-3f149dd07e8f",
+    "status": "ready",
+    "error": null,
+    "candidate_count": 0,
+    "artifact_count": 1,
+    "media_checks": [
+      {
+        "kind": "audio",
+        "status": 206,
+        "content_type": "audio/mpeg",
+        "content_range": "bytes 0-511/217382",
+        "bytes": 512,
+        "url": "https://rk.dwgx.top/media/541b2b55-4975-44d0-bf03-3f149dd07e8f/audio-33515cf2-68ad-4532-abcb-d97d9c52ad51.mp3"
+      }
+    ],
+    "archive_check": null,
+    "trace_events": 6,
+    "expect_success": true
+  },
+  {
+    "case": "bilibili-public-browser-video",
+    "tier": "platform",
+    "notes": "Public Bilibili browser/API discovery sample; quality and availability may vary without a profile.",
+    "job_id": "ebb87203-b260-447a-863c-8dc8a60f856a",
+    "status": "ready",
+    "error": null,
+    "candidate_count": 0,
+    "artifact_count": 1,
+    "media_checks": [
+      {
+        "kind": "video",
+        "status": 206,
+        "content_type": "video/mp4",
+        "content_range": "bytes 0-511/70173457",
+        "bytes": 512,
+        "url": "https://rk.dwgx.top/media/ebb87203-b260-447a-863c-8dc8a60f856a/video-54a53886-a0dd-415d-ba16-e396b9161c25.mp4"
+      }
+    ],
+    "archive_check": null,
+    "trace_events": 6,
+    "expect_success": true
+  },
+  {
+    "case": "acfun-public-external-video",
+    "tier": "platform",
+    "notes": "Public AcFun sample for external adapter discovery.",
+    "job_id": "fe40ef03-f2fc-4bb1-a904-807e062ab44f",
+    "status": "ready",
+    "error": null,
+    "candidate_count": 0,
+    "artifact_count": 1,
+    "media_checks": [
+      {
+        "kind": "video",
+        "status": 206,
+        "content_type": "video/mp4",
+        "content_range": "bytes 0-511/41925112",
+        "bytes": 512,
+        "url": "https://rk.dwgx.top/media/fe40ef03-f2fc-4bb1-a904-807e062ab44f/video-743c8d54-4831-4ae4-b895-8f55d42a5eea.mp4"
+      }
+    ],
+    "archive_check": null,
+    "trace_events": 6,
+    "expect_success": true
+  },
+  {
+    "case": "youku-public-trailer-video",
+    "tier": "platform",
+    "notes": "Public Youku trailer sample. Signed HLS URLs may drift quickly; treat failures as evidence for adapter work.",
+    "job_id": "9b86c1b2-eb41-4032-a647-173cd0a48a1b",
+    "status": "ready",
+    "error": null,
+    "candidate_count": 0,
+    "artifact_count": 1,
+    "media_checks": [
+      {
+        "kind": "video",
+        "status": 206,
+        "content_type": "video/mp4",
+        "content_range": "bytes 0-511/17337469",
+        "bytes": 512,
+        "url": "https://rk.dwgx.top/media/9b86c1b2-eb41-4032-a647-173cd0a48a1b/video-e3ae872b-d0ab-44a6-8cde-3b78dc8642bf.mp4"
+      }
+    ],
+    "archive_check": null,
+    "trace_events": 6,
+    "expect_success": false
+  },
+  {
+    "case": "vimeo-external-video",
+    "tier": "platform",
+    "notes": "Public Vimeo sample used to verify external adapter and browser fallback coverage.",
+    "job_id": "032fe922-297d-4c5e-93e0-239f814d68d5",
+    "status": "ready",
+    "error": null,
+    "candidate_count": 0,
+    "artifact_count": 1,
+    "media_checks": [
+      {
+        "kind": "video",
+        "status": 206,
+        "content_type": "video/mp4",
+        "content_range": "bytes 0-511/20314033",
+        "bytes": 512,
+        "url": "https://rk.dwgx.top/media/032fe922-297d-4c5e-93e0-239f814d68d5/video-43ae333a-02b7-4c02-9b10-51c41b9f06ac.mp4"
+      }
+    ],
+    "archive_check": null,
+    "trace_events": 6,
+    "expect_success": true
+  },
+  {
+    "case": "ximalaya-public-audio",
+    "status": "smoke_error",
+    "error": "ximalaya-public-audio: timed out waiting for job 75985226-99b3-4cbb-ad2c-b09bea7a8faf",
+    "expect_success": true
+  }
+]
