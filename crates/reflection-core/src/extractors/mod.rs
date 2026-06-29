@@ -14,6 +14,7 @@ mod direct;
 mod external_tool;
 mod hanime;
 mod mac_cms;
+pub mod verify;
 mod yt_dlp;
 
 pub use browser::BrowserExtractor;
@@ -188,12 +189,25 @@ impl SourceResolver {
         let mut outcome = ResolveOutcome::default();
         let aggregate = ctx.discovery == DiscoveryMode::Auto;
         let mut seen_urls = HashSet::new();
+        let verify_cfg = verify::VerifyConfig::from_env();
 
         for extractor in &self.extractors {
             if !extractor.matches(ctx) {
                 continue;
             }
             let name = extractor.name().to_string();
+
+            // SAFE short-circuit: before running an expensive extractor (browser /
+            // external tools), verify the cheap candidates gathered so far. Skip the
+            // expensive extractor ONLY if at least one candidate is confirmed
+            // `Usable`. Never break on an `Untested` candidate (audit guard).
+            if aggregate && verify_cfg.enabled && is_expensive_extractor(&name) {
+                verify::verify_top_n(&mut outcome.candidates, &verify_cfg).await;
+                if verify::has_usable(&outcome.candidates) {
+                    break;
+                }
+            }
+
             outcome.chain.push(name.clone());
 
             let started = OffsetDateTime::now_utc();
@@ -257,10 +271,27 @@ impl SourceResolver {
             }
         }
 
-        outcome.candidates.sort_by_key(|candidate| -candidate.score);
-        outcome.candidates.truncate(80);
+        // Final verification pass (idempotent: already-verified candidates are
+        // skipped). Covers the no-short-circuit path and non-Auto modes.
+        verify::verify_top_n(&mut outcome.candidates, &verify_cfg).await;
+        if verify_cfg.enabled {
+            verify::sort_verified(&mut outcome.candidates);
+        } else {
+            outcome.candidates.sort_by_key(|candidate| -candidate.score);
+        }
+        outcome.candidates.truncate(verify_cfg.truncate_max);
         outcome
     }
+}
+
+/// Expensive extractors run a real browser or shell out to external tools; the
+/// verification short-circuit aims to skip these once a cheap candidate is
+/// confirmed playable. Names match `SourceExtractor::name()`.
+fn is_expensive_extractor(name: &str) -> bool {
+    matches!(
+        name,
+        "browser_probe" | "yt_dlp" | "you_get" | "lux" | "streamlink"
+    )
 }
 
 /// Map a backend error to an [`ErrorClass`] for attempt records. Kept here so the
