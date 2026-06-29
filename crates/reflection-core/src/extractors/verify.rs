@@ -139,17 +139,27 @@ fn content_type_is_manifest(ct: &str) -> bool {
 /// Parse signed-URL expiry from common query needles. Returns epoch seconds.
 fn parse_expiry_epoch(url: &Url) -> Option<i64> {
     const EPOCH_KEYS: &[&str] = &["expires", "expire", "oe", "e"];
+    const MIN_EPOCH: i64 = 1_000_000_000; // 2001-09
+    const MAX_EPOCH: i64 = 100_000_000_000; // year ~5138
     for (k, v) in url.query_pairs() {
         let key = k.to_ascii_lowercase();
-        if EPOCH_KEYS.contains(&key.as_str()) {
-            // hex (e.g. youtube `oe`) or decimal epoch seconds.
-            if let Ok(n) = i64::from_str_radix(v.trim_start_matches("0x"), 16) {
-                if n > 1_000_000_000 && n < 100_000_000_000 {
-                    return Some(n);
-                }
+        if !EPOCH_KEYS.contains(&key.as_str()) {
+            continue;
+        }
+        let raw = v.trim();
+        // Decimal first: a plain epoch like 1700000000 is *also* valid hex, so
+        // hex must only win for 0x-prefixed or hex-lettered values.
+        if let Ok(n) = raw.parse::<i64>() {
+            if (MIN_EPOCH..MAX_EPOCH).contains(&n) {
+                return Some(n);
             }
-            if let Ok(n) = v.parse::<i64>() {
-                if n > 1_000_000_000 && n < 100_000_000_000 {
+        }
+        let hex = raw.strip_prefix("0x").or_else(|| raw.strip_prefix("0X"));
+        let looks_hex = hex.is_some()
+            || raw.chars().any(|c| c.is_ascii_hexdigit() && !c.is_ascii_digit());
+        if looks_hex {
+            if let Ok(n) = i64::from_str_radix(hex.unwrap_or(raw), 16) {
+                if (MIN_EPOCH..MAX_EPOCH).contains(&n) {
                     return Some(n);
                 }
             }
@@ -681,6 +691,21 @@ mod tests {
     }
 
     #[test]
+    fn parse_expiry_plain_epoch_not_misread_as_hex() {
+        // Regression: 1700000000 is valid hex too; decimal must win so it is not
+        // read as a far-future timestamp (which would skip the Expired verdict).
+        let u = Url::parse("https://cdn.example/v.mp4?expires=1700000000").unwrap();
+        assert_eq!(parse_expiry_epoch(&u), Some(1_700_000_000));
+    }
+
+    #[test]
+    fn parse_expiry_hex_with_letters() {
+        // hex epoch 0x6553f100 = 1699997440
+        let u = Url::parse("https://cdn.example/v.mp4?oe=6553F100").unwrap();
+        assert_eq!(parse_expiry_epoch(&u), Some(0x6553_F100));
+    }
+
+    #[test]
     fn sort_orders_usable_above_untested_above_failed() {
         let mk = |state: Option<CandidateValidationState>, score: i64| mk_candidate(state, score);
         let mut v = vec![
@@ -706,5 +731,139 @@ mod tests {
     fn has_usable_detects_usable() {
         let c = mk_candidate(Some(CandidateValidationState::Usable), 10);
         assert!(has_usable(&[c]));
+    }
+
+    // --- Live integration tests (network). Run explicitly:
+    //   cargo test -p reflection-core --release verify_live -- --ignored --nocapture
+    // Probes deliberately bypass the proxy (.no_proxy()); home-cloud reaches
+    // these CDNs directly. Anchors per VERIFICATION-DESIGN.md §8.2.
+
+    fn live_candidate(url: &str, kind: CandidateKind) -> MediaCandidate {
+        let mut c = mk_candidate(Some(CandidateValidationState::Untested), 100);
+        c.url = url.to_string();
+        c.kind = kind;
+        c
+    }
+
+    fn enabled_cfg() -> VerifyConfig {
+        VerifyConfig {
+            enabled: true,
+            top_n: 8,
+            truncate_max: 80,
+            expiry_skew_secs: 60,
+        }
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn verify_live_direct_mp4_is_usable() {
+        let mut cands = vec![
+            live_candidate(
+                "https://download.blender.org/durian/trailer/sintel_trailer-480p.mp4",
+                CandidateKind::Video,
+            ),
+            live_candidate(
+                "https://www.w3schools.com/html/mov_bbb.mp4",
+                CandidateKind::Video,
+            ),
+            live_candidate(
+                "https://archive.org/download/BigBuckBunny_328/BigBuckBunny_512kb.mp4",
+                CandidateKind::Video,
+            ),
+        ];
+        verify_top_n(&mut cands, &enabled_cfg()).await;
+        for c in &cands {
+            println!(
+                "DIRECT {} -> {:?} status={:?} ct={:?} final={:?}",
+                c.url, c.validation_state, c.status, c.content_type, c.final_url_after_redirects
+            );
+            assert_eq!(
+                c.validation_state,
+                Some(CandidateValidationState::Usable),
+                "expected Usable for {}",
+                c.url
+            );
+        }
+        assert!(has_usable(&cands));
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn verify_live_manifests_are_usable() {
+        let mut cands = vec![
+            live_candidate(
+                "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8",
+                CandidateKind::Manifest,
+            ),
+            live_candidate(
+                "https://dash.akamaized.net/akamai/bbb_30fps/bbb_30fps.mpd",
+                CandidateKind::Manifest,
+            ),
+        ];
+        verify_top_n(&mut cands, &enabled_cfg()).await;
+        for c in &cands {
+            println!(
+                "MANIFEST {} -> {:?} status={:?} ct={:?}",
+                c.url, c.validation_state, c.status, c.content_type
+            );
+            assert_eq!(
+                c.validation_state,
+                Some(CandidateValidationState::Usable),
+                "expected Usable for {}",
+                c.url
+            );
+        }
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn verify_live_expired_signed_url_zero_network() {
+        // expires far in the past -> Expired before any network call.
+        let mut cands = vec![live_candidate(
+            "https://cdn.example/secret.mp4?expires=1000000001&signature=deadbeef",
+            CandidateKind::Video,
+        )];
+        verify_top_n(&mut cands, &enabled_cfg()).await;
+        println!(
+            "EXPIRED {} -> {:?} status={:?}",
+            cands[0].url, cands[0].validation_state, cands[0].status
+        );
+        assert_eq!(
+            cands[0].validation_state,
+            Some(CandidateValidationState::Expired)
+        );
+        // never probed -> no HTTP status recorded.
+        assert!(cands[0].status.is_none());
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn verify_live_sort_promotes_usable_over_untested() {
+        // High-score reachable mp4 + a high-score bogus host. After verify, the
+        // Usable one must sort first even though both started Untested.
+        let mut cands = vec![
+            live_candidate(
+                "https://nonexistent-host-rk-verify-test.invalid/x.mp4",
+                CandidateKind::Video,
+            ),
+            live_candidate(
+                "https://download.blender.org/durian/trailer/sintel_trailer-480p.mp4",
+                CandidateKind::Video,
+            ),
+        ];
+        cands[0].score = 999; // bogus ranks highest by raw score
+        cands[1].score = 1;
+        verify_top_n(&mut cands, &enabled_cfg()).await;
+        sort_verified(&mut cands);
+        println!(
+            "SORT[0] {} -> {:?} score={}",
+            cands[0].url, cands[0].validation_state, cands[0].score
+        );
+        // The reachable mp4 (low raw score) must now lead.
+        assert_eq!(
+            cands[0].validation_state,
+            Some(CandidateValidationState::Usable)
+        );
+        assert!(cands[0].url.contains("blender.org"));
     }
 }
