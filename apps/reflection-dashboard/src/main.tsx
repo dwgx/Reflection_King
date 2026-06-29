@@ -3014,7 +3014,12 @@ function FilePreviewModal(props: { preview: FilePreviewState; onClose: () => voi
           {isImage ? (
             <img src={props.preview.blobUrl} alt="" />
           ) : isFrame ? (
-            <iframe title={props.preview.title} src={props.preview.blobUrl} />
+            <iframe
+              title={props.preview.title}
+              src={props.preview.blobUrl}
+              sandbox=""
+              referrerPolicy="no-referrer"
+            />
           ) : (
             <div className="file-preview-empty">
               <strong>此文件类型不适合内嵌预览</strong>

@@ -76,6 +76,7 @@ fn is_blocked_ipv4(ip: Ipv4Addr) -> bool {
     let [a, b, c, _d] = ip.octets();
 
     ip.is_unspecified()
+        || a == 0
         || ip.is_loopback()
         || ip.is_private()
         || ip.is_link_local()
@@ -91,12 +92,60 @@ fn is_blocked_ipv4(ip: Ipv4Addr) -> bool {
 }
 
 fn is_blocked_ipv6(ip: Ipv6Addr) -> bool {
+    // Fold any IPv6 form that embeds or tunnels an IPv4 address back to that
+    // IPv4 address and apply the v4 rules. Without this, IPv4-mapped addresses
+    // such as ::ffff:169.254.169.254 (cloud metadata) or ::ffff:127.0.0.1
+    // slip past the v6 checks because is_loopback()/is_private() are false for
+    // them. Covers IPv4-mapped (::ffff:0:0/96), 6to4 (2002::/16),
+    // NAT64/well-known prefix (64:ff9b::/96), and Teredo (2001::/32).
+    if let Some(v4) = embedded_ipv4(ip) {
+        return is_blocked_ipv4(v4);
+    }
+
     ip.is_unspecified()
         || ip.is_loopback()
         || ip.is_multicast()
         || is_ipv6_unique_local(ip)
         || is_ipv6_unicast_link_local(ip)
         || is_ipv6_documentation(ip)
+}
+
+/// Extract an embedded/tunneled IPv4 address from an IPv6 address, if any.
+fn embedded_ipv4(ip: Ipv6Addr) -> Option<Ipv4Addr> {
+    let seg = ip.segments();
+
+    // IPv4-mapped (::ffff:a.b.c.d). Deliberately NOT to_ipv4(): that also
+    // matches IPv4-compatible ::/96, folding ::1 to 0.0.0.1 and slipping past
+    // the v4 rules. is_loopback()/is_unspecified() already cover ::1 and ::.
+    if let Some(v4) = ip.to_ipv4_mapped() {
+        return Some(v4);
+    }
+
+    // 6to4: 2002:AABB:CCDD::/48 embeds a.b.c.d in segments[1..=2].
+    if seg[0] == 0x2002 {
+        let [a, b] = seg[1].to_be_bytes();
+        let [c, d] = seg[2].to_be_bytes();
+        return Some(Ipv4Addr::new(a, b, c, d));
+    }
+
+    // NAT64 well-known prefix 64:ff9b::/96 embeds a.b.c.d in the low 32 bits.
+    if seg[0] == 0x0064 && seg[1] == 0xff9b && seg[2] == 0 && seg[3] == 0 && seg[4] == 0 && seg[5] == 0
+    {
+        let [a, b] = seg[6].to_be_bytes();
+        let [c, d] = seg[7].to_be_bytes();
+        return Some(Ipv4Addr::new(a, b, c, d));
+    }
+
+    // Teredo 2001:0000::/32 embeds the (obfuscated) server/client IPv4. Treat
+    // the embedded client address (last two segments, bitwise negated) as the
+    // target to validate.
+    if seg[0] == 0x2001 && seg[1] == 0x0000 {
+        let [a, b] = (!seg[6]).to_be_bytes();
+        let [c, d] = (!seg[7]).to_be_bytes();
+        return Some(Ipv4Addr::new(a, b, c, d));
+    }
+
+    None
 }
 
 fn is_ipv6_unique_local(ip: Ipv6Addr) -> bool {
@@ -114,6 +163,49 @@ fn is_ipv6_documentation(ip: Ipv6Addr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn blocks_ipv6_embedded_ipv4_ssrf_vectors() {
+        // (address, expected_blocked) — mapped/6to4/NAT64/Teredo forms that must
+        // fold back to IPv4 and hit the v4 rules.
+        let cases: &[(&str, bool)] = &[
+            // IPv4-mapped loopback / metadata / private / CGNAT / link-local
+            ("::ffff:127.0.0.1", true),
+            ("::ffff:169.254.169.254", true),
+            ("::ffff:10.0.0.1", true),
+            ("::ffff:192.168.1.1", true),
+            ("::ffff:172.16.0.1", true),
+            ("::ffff:100.64.0.1", true),
+            ("::ffff:0.0.0.0", true),
+            // IPv4-mapped public address must stay allowed
+            ("::ffff:1.1.1.1", false),
+            ("::ffff:8.8.8.8", false),
+            // 6to4 wrapping metadata / private
+            ("2002:a9fe:a9fe::", true),   // 169.254.169.254
+            ("2002:0a00:0001::", true),   // 10.0.0.1
+            ("2002:0808:0808::", false),  // 8.8.8.8 public
+            // NAT64 well-known prefix wrapping metadata / private
+            ("64:ff9b::a9fe:a9fe", true), // 169.254.169.254
+            ("64:ff9b::0a00:0001", true), // 10.0.0.1
+            ("64:ff9b::0808:0808", false),// 8.8.8.8 public
+            // Plain v6 loopback / unspecified / ULA / link-local stay blocked
+            ("::1", true),
+            ("::", true),
+            ("fc00::1", true),
+            ("fe80::1", true),
+            ("2001:db8::1", true),
+            // Public v6 allowed
+            ("2606:4700:4700::1111", false),
+        ];
+        for (addr, expected) in cases {
+            let ip: std::net::Ipv6Addr = addr.parse().unwrap();
+            assert_eq!(
+                is_blocked_ipv6(ip),
+                *expected,
+                "is_blocked_ipv6({addr}) expected {expected}"
+            );
+        }
+    }
 
     #[test]
     fn bare_host_urls_default_to_https() {
