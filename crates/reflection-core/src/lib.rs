@@ -10,6 +10,7 @@ pub mod manifest;
 pub mod models;
 pub mod observability;
 pub mod paths;
+pub mod policy_http;
 pub mod transcode;
 pub mod url_policy;
 

@@ -35,7 +35,7 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use time::OffsetDateTime;
 use tokio::{
     process::Command,
-    sync::{mpsc, Mutex, Semaphore},
+    sync::{mpsc, Mutex, RwLock, Semaphore},
     time as tokio_time,
 };
 use tracing::{debug, error, info, warn};
@@ -92,9 +92,17 @@ pub struct AppState {
     browser_probe: Option<BrowserProbeClient>,
     yt_dlp_probe: Option<YtDlpProbe>,
     external_tool_probes: Vec<ExternalToolProbe>,
+    browser_login_sessions: RwLock<HashMap<String, BrowserLoginSessionOwner>>,
     queue_tx: mpsc::Sender<Uuid>,
     queue_rx: Mutex<mpsc::Receiver<Uuid>>,
     worker_slots: Arc<Semaphore>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrowserLoginSessionOwner {
+    pub api_key_id: Option<Uuid>,
+    pub profile_id: String,
+    pub job_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone)]
@@ -181,6 +189,7 @@ impl AppState {
             browser_probe,
             yt_dlp_probe,
             external_tool_probes,
+            browser_login_sessions: RwLock::new(HashMap::new()),
             queue_tx,
             queue_rx: Mutex::new(queue_rx),
             worker_slots,
@@ -279,10 +288,23 @@ impl AppState {
         probes
     }
 
+    #[allow(dead_code)]
     pub async fn insert_and_enqueue(&self, record: JobRecord) -> Result<JobView> {
         let id = record.id;
         let settings = self.runtime_settings_view().await?;
         let view = rewrite_job_view_urls(JobView::from(record.clone()), &settings.public_base_url);
+        self.job_store.insert(&record).await?;
+        self.enqueue(id).await?;
+        Ok(view)
+    }
+
+    pub async fn insert_and_enqueue_with_base_url(
+        &self,
+        record: JobRecord,
+        public_base_url: &str,
+    ) -> Result<JobView> {
+        let id = record.id;
+        let view = rewrite_job_view_urls(JobView::from(record.clone()), public_base_url);
         self.job_store.insert(&record).await?;
         self.enqueue(id).await?;
         Ok(view)
@@ -300,6 +322,18 @@ impl AppState {
         })
     }
 
+    pub async fn get_job_view_with_base_url(
+        &self,
+        id: Uuid,
+        public_base_url: &str,
+    ) -> Result<Option<JobView>> {
+        self.job_store.get(id).await.map(|job| {
+            job.map(JobView::from)
+                .map(|job| rewrite_job_view_urls(job, public_base_url))
+        })
+    }
+
+    #[allow(dead_code)]
     pub async fn list_jobs(&self, limit: usize) -> Result<Vec<JobView>> {
         let settings = self.runtime_settings_view().await?;
         self.job_store.list_recent(limit).await.map(|jobs| {
@@ -310,6 +344,20 @@ impl AppState {
         })
     }
 
+    pub async fn list_jobs_with_base_url(
+        &self,
+        limit: usize,
+        public_base_url: &str,
+    ) -> Result<Vec<JobView>> {
+        self.job_store.list_recent(limit).await.map(|jobs| {
+            jobs.into_iter()
+                .map(JobView::from)
+                .map(|job| rewrite_job_view_urls(job, public_base_url))
+                .collect()
+        })
+    }
+
+    #[allow(dead_code)]
     pub async fn list_jobs_for_key(
         &self,
         requester_key_id: Uuid,
@@ -323,6 +371,23 @@ impl AppState {
                 jobs.into_iter()
                     .map(JobView::from)
                     .map(|job| rewrite_job_view_urls(job, &settings.public_base_url))
+                    .collect()
+            })
+    }
+
+    pub async fn list_jobs_for_key_with_base_url(
+        &self,
+        requester_key_id: Uuid,
+        limit: usize,
+        public_base_url: &str,
+    ) -> Result<Vec<JobView>> {
+        self.job_store
+            .list_recent_for_key(requester_key_id, limit)
+            .await
+            .map(|jobs| {
+                jobs.into_iter()
+                    .map(JobView::from)
+                    .map(|job| rewrite_job_view_urls(job, public_base_url))
                     .collect()
             })
     }
@@ -448,26 +513,57 @@ impl AppState {
         &self,
         profile_id: &str,
         url: &str,
+        requester_key_id: Option<Uuid>,
     ) -> Result<LoginSessionSnapshot> {
         let Some(browser_probe) = &self.browser_probe else {
             return Err(RkError::Browser(
                 "RK_BROWSER_PROBE_URL is required for browser profile management".to_string(),
             ));
         };
-        browser_probe.start_login_session(profile_id, url).await
+        let snapshot = browser_probe.start_login_session(profile_id, url).await?;
+        self.browser_login_sessions.write().await.insert(
+            snapshot.session.id.clone(),
+            BrowserLoginSessionOwner {
+                api_key_id: requester_key_id,
+                profile_id: snapshot.session.profile_id.clone(),
+                job_id: None,
+            },
+        );
+        Ok(snapshot)
     }
 
     pub async fn start_job_browser_login_session(
         &self,
         job: &JobRecord,
-        _requester_key_id: Option<Uuid>,
+        requester_key_id: Option<Uuid>,
     ) -> Result<LoginSessionSnapshot> {
         let profile_id = shared_job_profile_id(job, &self.config.browser_default_profile_id);
         self.job_store
             .attach_profile_for_job(job.id, &profile_id)
             .await?;
-        self.start_browser_login_session(&profile_id, &job.source_url)
+        let snapshot = self
+            .start_browser_login_session(&profile_id, &job.source_url, requester_key_id)
+            .await?;
+        self.browser_login_sessions.write().await.insert(
+            snapshot.session.id.clone(),
+            BrowserLoginSessionOwner {
+                api_key_id: requester_key_id,
+                profile_id: snapshot.session.profile_id.clone(),
+                job_id: Some(job.id),
+            },
+        );
+        Ok(snapshot)
+    }
+
+    pub async fn browser_login_session_owner(
+        &self,
+        session_id: &str,
+    ) -> Option<BrowserLoginSessionOwner> {
+        self.browser_login_sessions
+            .read()
             .await
+            .get(session_id)
+            .cloned()
     }
 
     pub async fn resume_job_with_profile(&self, job_id: Uuid) -> Result<JobView> {
@@ -540,7 +636,9 @@ impl AppState {
                 "RK_BROWSER_PROBE_URL is required for browser profile management".to_string(),
             ));
         };
-        browser_probe.login_session_snapshot(session_id).await
+        let result = browser_probe.login_session_snapshot(session_id).await;
+        self.forget_missing_login_session(session_id, &result).await;
+        result
     }
 
     pub async fn browser_login_session_click(
@@ -556,9 +654,11 @@ impl AppState {
                 "RK_BROWSER_PROBE_URL is required for browser profile management".to_string(),
             ));
         };
-        browser_probe
+        let result = browser_probe
             .login_session_click(session_id, x, y, button, click_count)
-            .await
+            .await;
+        self.forget_missing_login_session(session_id, &result).await;
+        result
     }
 
     pub async fn browser_login_session_move(
@@ -572,7 +672,9 @@ impl AppState {
                 "RK_BROWSER_PROBE_URL is required for browser profile management".to_string(),
             ));
         };
-        browser_probe.login_session_move(session_id, x, y).await
+        let result = browser_probe.login_session_move(session_id, x, y).await;
+        self.forget_missing_login_session(session_id, &result).await;
+        result
     }
 
     pub async fn browser_login_session_mouse_down(
@@ -587,9 +689,11 @@ impl AppState {
                 "RK_BROWSER_PROBE_URL is required for browser profile management".to_string(),
             ));
         };
-        browser_probe
+        let result = browser_probe
             .login_session_mouse_down(session_id, x, y, button)
-            .await
+            .await;
+        self.forget_missing_login_session(session_id, &result).await;
+        result
     }
 
     pub async fn browser_login_session_mouse_up(
@@ -604,9 +708,11 @@ impl AppState {
                 "RK_BROWSER_PROBE_URL is required for browser profile management".to_string(),
             ));
         };
-        browser_probe
+        let result = browser_probe
             .login_session_mouse_up(session_id, x, y, button)
-            .await
+            .await;
+        self.forget_missing_login_session(session_id, &result).await;
+        result
     }
 
     pub async fn browser_login_session_type(
@@ -619,7 +725,9 @@ impl AppState {
                 "RK_BROWSER_PROBE_URL is required for browser profile management".to_string(),
             ));
         };
-        browser_probe.login_session_type(session_id, text).await
+        let result = browser_probe.login_session_type(session_id, text).await;
+        self.forget_missing_login_session(session_id, &result).await;
+        result
     }
 
     pub async fn browser_login_session_insert_text(
@@ -632,9 +740,11 @@ impl AppState {
                 "RK_BROWSER_PROBE_URL is required for browser profile management".to_string(),
             ));
         };
-        browser_probe
+        let result = browser_probe
             .login_session_insert_text(session_id, text)
-            .await
+            .await;
+        self.forget_missing_login_session(session_id, &result).await;
+        result
     }
 
     pub async fn browser_login_session_press(
@@ -647,7 +757,9 @@ impl AppState {
                 "RK_BROWSER_PROBE_URL is required for browser profile management".to_string(),
             ));
         };
-        browser_probe.login_session_press(session_id, key).await
+        let result = browser_probe.login_session_press(session_id, key).await;
+        self.forget_missing_login_session(session_id, &result).await;
+        result
     }
 
     pub async fn browser_login_session_navigate(
@@ -660,7 +772,9 @@ impl AppState {
                 "RK_BROWSER_PROBE_URL is required for browser profile management".to_string(),
             ));
         };
-        browser_probe.login_session_navigate(session_id, url).await
+        let result = browser_probe.login_session_navigate(session_id, url).await;
+        self.forget_missing_login_session(session_id, &result).await;
+        result
     }
 
     pub async fn browser_login_session_wheel(
@@ -676,9 +790,11 @@ impl AppState {
                 "RK_BROWSER_PROBE_URL is required for browser profile management".to_string(),
             ));
         };
-        browser_probe
+        let result = browser_probe
             .login_session_wheel(session_id, delta_x, delta_y, x, y)
-            .await
+            .await;
+        self.forget_missing_login_session(session_id, &result).await;
+        result
     }
 
     pub async fn browser_login_session_resize(
@@ -692,9 +808,11 @@ impl AppState {
                 "RK_BROWSER_PROBE_URL is required for browser profile management".to_string(),
             ));
         };
-        browser_probe
+        let result = browser_probe
             .login_session_resize(session_id, width, height)
-            .await
+            .await;
+        self.forget_missing_login_session(session_id, &result).await;
+        result
     }
 
     pub async fn close_browser_login_session(&self, session_id: &str) -> Result<serde_json::Value> {
@@ -703,15 +821,41 @@ impl AppState {
                 "RK_BROWSER_PROBE_URL is required for browser profile management".to_string(),
             ));
         };
-        browser_probe.close_login_session(session_id).await
+        let result = browser_probe.close_login_session(session_id).await;
+        self.browser_login_sessions.write().await.remove(session_id);
+        result
     }
 
+    async fn forget_missing_login_session<T>(&self, session_id: &str, result: &Result<T>) {
+        if let Err(RkError::Browser(message)) = result {
+            if message.contains("login session not found")
+                || message.contains("login session expired")
+            {
+                self.browser_login_sessions.write().await.remove(session_id);
+            }
+        }
+    }
+
+    #[allow(dead_code)]
     pub async fn list_artifacts(&self, id: Uuid) -> Result<Vec<ArtifactView>> {
         let settings = self.runtime_settings_view().await?;
         self.job_store.list_artifacts(id).await.map(|artifacts| {
             artifacts
                 .into_iter()
                 .map(|artifact| rewrite_artifact_view_url(artifact, &settings.public_base_url))
+                .collect()
+        })
+    }
+
+    pub async fn list_artifacts_with_base_url(
+        &self,
+        id: Uuid,
+        public_base_url: &str,
+    ) -> Result<Vec<ArtifactView>> {
+        self.job_store.list_artifacts(id).await.map(|artifacts| {
+            artifacts
+                .into_iter()
+                .map(|artifact| rewrite_artifact_view_url(artifact, public_base_url))
                 .collect()
         })
     }
@@ -945,6 +1089,8 @@ impl AppState {
         self.resolve_candidates(job.clone()).await?;
         if job.discovery == DiscoveryMode::Direct {
             self.auto_select_direct_candidate(&job).await?;
+        } else if !job.outputs.contains(&OutputKind::PageHtml) {
+            self.auto_select_recommended_candidates(&job).await?;
         }
         Ok(())
     }
@@ -1129,6 +1275,46 @@ impl AppState {
         self.enqueue(job_id).await
     }
 
+    async fn auto_select_recommended_candidates(&self, job: &JobRecord) -> Result<()> {
+        let candidates = self.job_store.list_candidates(job.id).await?;
+        let selected = recommended_candidates_for_job(job, &candidates);
+        if selected.is_empty() {
+            return Ok(());
+        }
+
+        let candidate_ids = selected
+            .iter()
+            .map(|candidate| candidate.id)
+            .collect::<Vec<_>>();
+        self.job_store
+            .set_selected_candidates(job.id, &candidate_ids)
+            .await?;
+        for candidate in &selected {
+            self.job_store
+                .set_candidate_selection(
+                    candidate.id,
+                    true,
+                    Some("auto-selected recommended candidates"),
+                )
+                .await
+                .ok();
+        }
+        self.record_event(PipelineEvent::new(
+            job.id,
+            "candidate_selected",
+            "worker",
+            PipelineEventType::CandidateSelected,
+            serde_json::json!({
+                "candidate_ids": candidate_ids,
+                "reason": "auto-selected recommended candidates",
+            }),
+        ))
+        .await;
+        self.update_status(job.id, JobStatus::CandidateSelected)
+            .await?;
+        self.enqueue(job.id).await
+    }
+
     /// Emit a `candidate_found` event summarizing what an extractor surfaced
     /// (auditability: who extracted, which links, how scored).
     async fn record_candidate_summary(
@@ -1257,6 +1443,7 @@ impl AppState {
         }
 
         let artifacts = self.job_store.list_artifacts(job.id).await?;
+        ensure_job_outputs_satisfied(&job, &artifacts)?;
         let media_url = artifacts
             .first()
             .map(|artifact| artifact.media_url.clone())
@@ -1695,12 +1882,12 @@ impl AppState {
             }),
         ))
         .await;
-        let client = reqwest::Client::builder()
-            .timeout(settings.download_timeout)
-            .redirect(reqwest::redirect::Policy::none())
-            .user_agent("ReflectionKing/0.1")
-            .build()?;
-        reflection_core::manifest::validate_manifest_url(&client, &candidate.url, headers).await
+        reflection_core::manifest::validate_manifest_url(
+            &candidate.url,
+            headers,
+            settings.download_timeout,
+        )
+        .await
     }
 
     fn should_try_yt_dlp_delegated_download(&self, candidate: &MediaCandidate) -> bool {
@@ -2283,8 +2470,19 @@ impl AppState {
         }
     }
 
+    #[allow(dead_code)]
     pub async fn get_trace(&self, job_id: Uuid) -> Result<JobTrace> {
         self.job_store.get_trace(job_id).await
+    }
+
+    pub async fn get_trace_with_base_url(
+        &self,
+        job_id: Uuid,
+        public_base_url: &str,
+    ) -> Result<JobTrace> {
+        let mut trace = self.job_store.get_trace(job_id).await?;
+        rewrite_trace_urls(&mut trace, public_base_url);
+        Ok(trace)
     }
 }
 
@@ -4714,9 +4912,16 @@ fn content_type_for_path(path: &str) -> &'static str {
 }
 
 fn rewrite_job_view_urls(mut job: JobView, public_base_url: &str) -> JobView {
+    job.status_url = rewrite_public_api_url(&job.status_url, public_base_url);
     job.media_url = job
         .media_url
         .map(|url| rewrite_public_media_url(&url, public_base_url));
+    job.artifacts_url = rewrite_relative_api_url(&job.artifacts_url, public_base_url);
+    job.candidates_url = rewrite_relative_api_url(&job.candidates_url, public_base_url);
+    job.trace_url = rewrite_relative_api_url(&job.trace_url, public_base_url);
+    job.profile_action_url = job
+        .profile_action_url
+        .map(|url| rewrite_relative_api_url(&url, public_base_url));
     job
 }
 
@@ -4739,7 +4944,7 @@ fn rewrite_public_media_url(value: &str, public_base_url: &str) -> String {
         return value.to_string();
     }
     let path = parsed.path();
-    if !path.starts_with("/media/") {
+    if !path.starts_with("/media/") && !path.starts_with("/api/jobs/") {
         return value.to_string();
     }
     format!(
@@ -4751,6 +4956,31 @@ fn rewrite_public_media_url(value: &str, public_base_url: &str) -> String {
             .map(|query| format!("?{query}"))
             .unwrap_or_default()
     )
+}
+
+fn rewrite_public_api_url(value: &str, public_base_url: &str) -> String {
+    rewrite_public_media_url(value, public_base_url)
+}
+
+fn rewrite_relative_api_url(value: &str, public_base_url: &str) -> String {
+    if value.starts_with("/api/") {
+        format!("{}{}", public_base_url.trim_end_matches('/'), value)
+    } else {
+        rewrite_public_api_url(value, public_base_url)
+    }
+}
+
+fn rewrite_trace_urls(trace: &mut JobTrace, public_base_url: &str) {
+    for event in &mut trace.events {
+        if let Some(media_url) = event
+            .detail_json
+            .get_mut("media_url")
+            .and_then(|value| value.as_str().map(ToOwned::to_owned))
+        {
+            event.detail_json["media_url"] =
+                serde_json::Value::String(rewrite_public_media_url(&media_url, public_base_url));
+        }
+    }
 }
 
 async fn cache_inventory_for_paths(paths: &StoragePaths) -> Result<CacheInventoryView> {
@@ -5509,6 +5739,110 @@ fn primary_candidate_attempts<'a>(
     }
 }
 
+fn ensure_job_outputs_satisfied(job: &JobRecord, artifacts: &[ArtifactView]) -> Result<()> {
+    if job.outputs.contains(&OutputKind::PageHtml) {
+        if artifacts
+            .iter()
+            .any(|artifact| artifact.kind == OutputKind::PageHtml)
+        {
+            return Ok(());
+        }
+        return Err(RkError::Source(
+            "job completed without a page archive artifact".to_string(),
+        ));
+    }
+
+    if job.outputs.contains(&OutputKind::Video) {
+        if artifacts
+            .iter()
+            .any(|artifact| artifact.kind == OutputKind::Video)
+        {
+            return Ok(());
+        }
+        return Err(RkError::Source(
+            "job completed without a video artifact".to_string(),
+        ));
+    }
+
+    if job.outputs.contains(&OutputKind::Audio) {
+        if artifacts
+            .iter()
+            .any(|artifact| artifact.kind == OutputKind::Audio)
+        {
+            return Ok(());
+        }
+        return Err(RkError::Source(
+            "job completed without an audio artifact".to_string(),
+        ));
+    }
+
+    if job.outputs.contains(&OutputKind::Image) {
+        if artifacts
+            .iter()
+            .any(|artifact| artifact.kind == OutputKind::Image)
+        {
+            return Ok(());
+        }
+        return Err(RkError::Source(
+            "job completed without an image artifact".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn recommended_candidates_for_job<'a>(
+    job: &JobRecord,
+    candidates: &'a [MediaCandidate],
+) -> Vec<&'a MediaCandidate> {
+    let mut ranked = candidates
+        .iter()
+        .filter(|candidate| candidate_not_selectable_reason(candidate).is_none())
+        .collect::<Vec<_>>();
+    ranked.sort_by_key(|candidate| -candidate_attempt_rank(job, candidate));
+
+    if job.outputs.contains(&OutputKind::Video) {
+        let media_candidates = ranked
+            .iter()
+            .copied()
+            .filter(|candidate| {
+                matches!(
+                    candidate.kind,
+                    CandidateKind::Video | CandidateKind::Manifest
+                )
+            })
+            .collect::<Vec<_>>();
+        let Some(video_candidate) = media_candidates.first().copied() else {
+            return candidates
+                .iter()
+                .filter(|candidate| candidate.kind == CandidateKind::Image)
+                .take(1)
+                .collect();
+        };
+
+        if candidate_needs_audio_companion(video_candidate) {
+            if let Some(audio_candidate) = best_companion_audio(video_candidate, candidates) {
+                if candidate_not_selectable_reason(audio_candidate).is_none() {
+                    return vec![video_candidate, audio_candidate];
+                }
+            }
+        }
+        return vec![video_candidate];
+    }
+
+    if job.outputs.contains(&OutputKind::Audio) && !job.outputs.contains(&OutputKind::Video) {
+        if let Some(audio_candidate) = ranked
+            .iter()
+            .copied()
+            .find(|candidate| candidate.kind == CandidateKind::Audio)
+        {
+            return vec![audio_candidate];
+        }
+    }
+
+    ranked.first().copied().into_iter().collect()
+}
+
 fn is_compatible_fallback(job: &JobRecord, candidate: &MediaCandidate) -> bool {
     if job.outputs.contains(&OutputKind::Audio) && !job.outputs.contains(&OutputKind::Video) {
         return matches!(
@@ -5993,7 +6327,7 @@ mod tests {
                 "http://127.0.0.1:8780/api/jobs/job/archive/file?path=page.html",
                 "http://192.168.11.4:8780"
             ),
-            "http://127.0.0.1:8780/api/jobs/job/archive/file?path=page.html"
+            "http://192.168.11.4:8780/api/jobs/job/archive/file?path=page.html"
         );
 
         let mut job = JobRecord::new_with_options(
@@ -6010,6 +6344,18 @@ mod tests {
 
         let view = rewrite_job_view_urls(JobView::from(job), "http://192.168.11.4:8780");
         assert_eq!(view.media_url.as_deref(), Some(expected.as_str()));
+        assert_eq!(
+            view.status_url,
+            format!("http://192.168.11.4:8780/api/jobs/{}", view.id)
+        );
+        assert_eq!(
+            view.artifacts_url,
+            format!("http://192.168.11.4:8780/api/jobs/{}/artifacts", view.id)
+        );
+        assert_eq!(
+            view.trace_url,
+            format!("http://192.168.11.4:8780/api/jobs/{}/trace", view.id)
+        );
     }
 
     #[test]
@@ -6197,6 +6543,108 @@ mod tests {
         assert!(attempt_ids.contains(&selected.id));
         assert!(attempt_ids.contains(&good_fallback.id));
         assert!(!attempt_ids.contains(&failed_fallback.id));
+    }
+
+    #[test]
+    fn ready_requires_video_artifact_for_video_jobs() {
+        let job = JobRecord::new_with_options(
+            "https://example.com/watch".to_string(),
+            "auto".to_string(),
+            "http://127.0.0.1:8787",
+            JobCreateOptions {
+                discovery: DiscoveryMode::Browser,
+                outputs: vec![OutputKind::Video, OutputKind::Audio],
+                ..JobCreateOptions::default()
+            },
+        );
+
+        let audio_only = ArtifactView {
+            id: Uuid::new_v4(),
+            job_id: job.id,
+            kind: OutputKind::Audio,
+            path: "storage/public/job/audio.mp3".to_string(),
+            media_url: "http://127.0.0.1:8787/media/job/audio.mp3".to_string(),
+            content_type: "audio/mpeg".to_string(),
+            bytes: 1024,
+            created_at: OffsetDateTime::now_utc(),
+        };
+
+        let error = ensure_job_outputs_satisfied(&job, &[audio_only]).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("job completed without a video artifact"));
+    }
+
+    #[test]
+    fn ready_accepts_video_artifact_for_media_jobs() {
+        let job = JobRecord::new_with_options(
+            "https://example.com/watch".to_string(),
+            "auto".to_string(),
+            "http://127.0.0.1:8787",
+            JobCreateOptions {
+                discovery: DiscoveryMode::Browser,
+                outputs: vec![OutputKind::Video, OutputKind::Audio],
+                ..JobCreateOptions::default()
+            },
+        );
+
+        let video = ArtifactView {
+            id: Uuid::new_v4(),
+            job_id: job.id,
+            kind: OutputKind::Video,
+            path: "storage/public/job/video.mp4".to_string(),
+            media_url: "http://127.0.0.1:8787/media/job/video.mp4".to_string(),
+            content_type: "video/mp4".to_string(),
+            bytes: 1024,
+            created_at: OffsetDateTime::now_utc(),
+        };
+
+        ensure_job_outputs_satisfied(&job, &[video]).unwrap();
+    }
+
+    #[test]
+    fn recommended_media_job_selects_video_with_audio_companion() {
+        let job = JobRecord::new_with_options(
+            "https://www.bilibili.com/video/BV1jFJ36rEAx/".to_string(),
+            "auto".to_string(),
+            "http://127.0.0.1:8787",
+            JobCreateOptions {
+                discovery: DiscoveryMode::Auto,
+                outputs: vec![OutputKind::Video, OutputKind::Audio],
+                ..JobCreateOptions::default()
+            },
+        );
+
+        let video = candidate(
+            job.id,
+            CandidateKind::Video,
+            "https://upos.example.com/video-30032.m4s",
+            "852p",
+            json!({ "vcodec": "avc1.640033", "acodec": "none", "height": 852 }),
+        );
+        let audio = candidate(
+            job.id,
+            CandidateKind::Audio,
+            "https://upos.example.com/audio-30280.m4s",
+            "bilibili-audio-30280",
+            json!({ "vcodec": "none", "acodec": "mp4a.40.2", "abr": 128 }),
+        );
+        let fallback_video = candidate(
+            job.id,
+            CandidateKind::Video,
+            "https://upos.example.com/video-30016.m4s",
+            "640p",
+            json!({ "vcodec": "avc1.640033", "acodec": "none", "height": 640 }),
+        );
+
+        let pool = [video.clone(), audio.clone(), fallback_video];
+        let selected = recommended_candidates_for_job(&job, &pool);
+        let ids = selected
+            .iter()
+            .map(|candidate| candidate.id)
+            .collect::<Vec<_>>();
+
+        assert_eq!(ids, vec![video.id, audio.id]);
     }
 
     #[test]

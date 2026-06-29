@@ -8,6 +8,7 @@ use reqwest::{
 use tokio::{fs::File, io::AsyncWriteExt};
 
 use crate::{
+    policy_http::{policy_client, validate_response_url_and_peer},
     url_policy::{parse_and_validate_url, validate_url},
     Result, RkError,
 };
@@ -22,11 +23,7 @@ pub struct Downloader {
 
 impl Downloader {
     pub fn new(timeout: Duration, max_bytes: u64) -> Result<Self> {
-        let client = Client::builder()
-            .timeout(timeout)
-            .redirect(reqwest::redirect::Policy::none())
-            .user_agent("ReflectionKing/0.1")
-            .build()?;
+        let client = policy_client(timeout, "ReflectionKing/0.1")?;
 
         Ok(Self { client, max_bytes })
     }
@@ -53,6 +50,7 @@ impl Downloader {
                 .headers(headers.clone())
                 .send()
                 .await?;
+            validate_response_url_and_peer(&response)?;
             let status = response.status();
 
             if status.is_redirection() {

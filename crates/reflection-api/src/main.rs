@@ -1,6 +1,6 @@
 mod state;
 
-use std::sync::Arc;
+use std::{net::IpAddr, sync::Arc};
 
 use axum::{
     body::{Body, Bytes},
@@ -32,6 +32,7 @@ use tokio::{
 use tokio_util::io::ReaderStream;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing::{error, info};
+use url::Url;
 use uuid::Uuid;
 
 #[tokio::main]
@@ -293,10 +294,7 @@ async fn capabilities(
         "download_timeout_seconds": settings.download_timeout_seconds,
         "job_ttl_hours": settings.job_ttl_hours,
         "supported_discovery": supported_discovery_modes(&principal),
-        "supported_platform_hints": [
-            "auto", "bilibili", "youtube", "soundcloud", "douyin", "kuaishou", "pornhub",
-            "acfun", "iqiyi", "youku", "tiktok", "vimeo", "live", "generic"
-        ],
+        "supported_platform_hints": PlatformHint::SUPPORTED,
         "supported_outputs": ["audio", "video", "image", "page_html"],
         "auth": {
             "role": principal.role.as_str(),
@@ -322,10 +320,19 @@ async fn list_jobs(
 ) -> Result<Json<Vec<JobView>>, ApiError> {
     let principal = authorize(&state, &headers).await?;
     let limit = query.limit.unwrap_or(50).clamp(1, 200);
+    let public_base_url = effective_public_base_url(&headers, &state).await?;
     if principal.role == ApiKeyRole::Admin {
-        Ok(Json(state.list_jobs(limit).await?))
+        Ok(Json(
+            state
+                .list_jobs_with_base_url(limit, &public_base_url)
+                .await?,
+        ))
     } else if let Some(key_id) = principal.key_id {
-        Ok(Json(state.list_jobs_for_key(key_id, limit).await?))
+        Ok(Json(
+            state
+                .list_jobs_for_key_with_base_url(key_id, limit, &public_base_url)
+                .await?,
+        ))
     } else {
         Err(RkError::Unauthorized.into())
     }
@@ -424,7 +431,9 @@ async fn create_job(
     let requester_user_agent = header_str(&headers, header::USER_AGENT.as_str());
 
     let bitrate = normalize_bitrate(request.bitrate.as_deref());
-    let outputs = normalize_outputs(request.outputs);
+    let inferred_platform_hint = infer_platform(&source_url);
+    let platform_hint = request.platform_hint.unwrap_or(inferred_platform_hint);
+    let outputs = normalize_outputs_for_platform(request.outputs, platform_hint);
     let requested_discovery = request.discovery.unwrap_or_else(|| {
         if outputs.contains(&reflection_core::models::OutputKind::PageHtml) {
             DiscoveryMode::Browser
@@ -433,12 +442,10 @@ async fn create_job(
         }
     });
     let discovery = authorized_discovery(requested_discovery, &outputs, &principal)?;
-    let platform_hint = request
-        .platform_hint
-        .unwrap_or_else(|| infer_platform(&source_url));
     let profile_id = normalize_profile_id(request.profile_id);
     let auth_mode = normalize_auth_mode_for_outputs(request.auth_mode, &outputs);
     let settings = state.runtime_settings_view().await?;
+    let public_base_url = effective_public_base_url(&headers, &state).await?;
     let record = JobRecord::new_with_options(
         source_url,
         bitrate,
@@ -458,7 +465,9 @@ async fn create_job(
         Some(principal.label.clone()),
         principal.key_id,
     );
-    let view = state.insert_and_enqueue(record).await?;
+    let view = state
+        .insert_and_enqueue_with_base_url(record, &public_base_url)
+        .await?;
 
     Ok((StatusCode::ACCEPTED, Json(view)))
 }
@@ -470,8 +479,9 @@ async fn get_job(
 ) -> Result<Json<JobView>, ApiError> {
     let principal = authorize(&state, &headers).await?;
     ensure_job_access(&state, &principal, id).await?;
+    let public_base_url = effective_public_base_url(&headers, &state).await?;
     let job = state
-        .get_job_view(id)
+        .get_job_view_with_base_url(id, &public_base_url)
         .await
         .and_then(|job| job.ok_or_else(|| RkError::NotFound(format!("job {id}"))))?;
     Ok(Json(job))
@@ -507,7 +517,12 @@ async fn list_artifacts(
 ) -> Result<Json<Vec<reflection_core::models::ArtifactView>>, ApiError> {
     let principal = authorize(&state, &headers).await?;
     ensure_job_access(&state, &principal, id).await?;
-    Ok(Json(state.list_artifacts(id).await?))
+    let public_base_url = effective_public_base_url(&headers, &state).await?;
+    Ok(Json(
+        state
+            .list_artifacts_with_base_url(id, &public_base_url)
+            .await?,
+    ))
 }
 
 #[derive(Debug, Deserialize)]
@@ -522,10 +537,8 @@ async fn get_archive_tree(
 ) -> Result<Json<ArchiveTreeView>, ApiError> {
     let principal = authorize(&state, &headers).await?;
     ensure_job_access(&state, &principal, id).await?;
-    let settings = state.runtime_settings_view().await?;
-    Ok(Json(
-        state.archive_tree(id, &settings.public_base_url).await?,
-    ))
+    let public_base_url = effective_public_base_url(&headers, &state).await?;
+    Ok(Json(state.archive_tree(id, &public_base_url).await?))
 }
 
 async fn get_archive_file(
@@ -570,7 +583,10 @@ async fn get_trace(
         .get_job(id)
         .await
         .and_then(|job| job.ok_or_else(|| RkError::NotFound(format!("job {id}"))))?;
-    Ok(Json(state.get_trace(id).await?))
+    let public_base_url = effective_public_base_url(&headers, &state).await?;
+    Ok(Json(
+        state.get_trace_with_base_url(id, &public_base_url).await?,
+    ))
 }
 
 async fn start_job_browser_login_session(
@@ -600,6 +616,7 @@ async fn job_browser_login_session_snapshot(
     let principal = authorize(&state, &headers).await?;
     ensure_login_profile(&principal)?;
     ensure_job_access(&state, &principal, id).await?;
+    ensure_browser_login_session_access(&state, &principal, &session_id, Some(id)).await?;
     Ok(Json(
         state.browser_login_session_snapshot(&session_id).await?,
     ))
@@ -614,6 +631,7 @@ async fn job_browser_login_session_click(
     let principal = authorize(&state, &headers).await?;
     ensure_login_profile(&principal)?;
     ensure_job_access(&state, &principal, id).await?;
+    ensure_browser_login_session_access(&state, &principal, &session_id, Some(id)).await?;
     Ok(Json(
         state
             .browser_login_session_click(
@@ -636,6 +654,7 @@ async fn job_browser_login_session_move(
     let principal = authorize(&state, &headers).await?;
     ensure_login_profile(&principal)?;
     ensure_job_access(&state, &principal, id).await?;
+    ensure_browser_login_session_access(&state, &principal, &session_id, Some(id)).await?;
     Ok(Json(
         state
             .browser_login_session_move(&session_id, request.x, request.y)
@@ -652,6 +671,7 @@ async fn job_browser_login_session_mouse_down(
     let principal = authorize(&state, &headers).await?;
     ensure_login_profile(&principal)?;
     ensure_job_access(&state, &principal, id).await?;
+    ensure_browser_login_session_access(&state, &principal, &session_id, Some(id)).await?;
     Ok(Json(
         state
             .browser_login_session_mouse_down(
@@ -673,6 +693,7 @@ async fn job_browser_login_session_mouse_up(
     let principal = authorize(&state, &headers).await?;
     ensure_login_profile(&principal)?;
     ensure_job_access(&state, &principal, id).await?;
+    ensure_browser_login_session_access(&state, &principal, &session_id, Some(id)).await?;
     Ok(Json(
         state
             .browser_login_session_mouse_up(
@@ -694,6 +715,7 @@ async fn job_browser_login_session_type(
     let principal = authorize(&state, &headers).await?;
     ensure_login_profile(&principal)?;
     ensure_job_access(&state, &principal, id).await?;
+    ensure_browser_login_session_access(&state, &principal, &session_id, Some(id)).await?;
     Ok(Json(
         state
             .browser_login_session_type(&session_id, &request.text)
@@ -710,6 +732,7 @@ async fn job_browser_login_session_insert_text(
     let principal = authorize(&state, &headers).await?;
     ensure_login_profile(&principal)?;
     ensure_job_access(&state, &principal, id).await?;
+    ensure_browser_login_session_access(&state, &principal, &session_id, Some(id)).await?;
     Ok(Json(
         state
             .browser_login_session_insert_text(&session_id, &request.text)
@@ -726,6 +749,7 @@ async fn job_browser_login_session_press(
     let principal = authorize(&state, &headers).await?;
     ensure_login_profile(&principal)?;
     ensure_job_access(&state, &principal, id).await?;
+    ensure_browser_login_session_access(&state, &principal, &session_id, Some(id)).await?;
     Ok(Json(
         state
             .browser_login_session_press(&session_id, &request.key)
@@ -742,6 +766,7 @@ async fn job_browser_login_session_navigate(
     let principal = authorize(&state, &headers).await?;
     ensure_login_profile(&principal)?;
     ensure_job_access(&state, &principal, id).await?;
+    ensure_browser_login_session_access(&state, &principal, &session_id, Some(id)).await?;
     Ok(Json(
         state
             .browser_login_session_navigate(&session_id, request.url.trim())
@@ -758,6 +783,7 @@ async fn job_browser_login_session_wheel(
     let principal = authorize(&state, &headers).await?;
     ensure_login_profile(&principal)?;
     ensure_job_access(&state, &principal, id).await?;
+    ensure_browser_login_session_access(&state, &principal, &session_id, Some(id)).await?;
     Ok(Json(
         state
             .browser_login_session_wheel(
@@ -780,6 +806,7 @@ async fn job_browser_login_session_resize(
     let principal = authorize(&state, &headers).await?;
     ensure_login_profile(&principal)?;
     ensure_job_access(&state, &principal, id).await?;
+    ensure_browser_login_session_access(&state, &principal, &session_id, Some(id)).await?;
     Ok(Json(
         state
             .browser_login_session_resize(&session_id, request.width, request.height)
@@ -795,6 +822,7 @@ async fn job_close_browser_login_session(
     let principal = authorize(&state, &headers).await?;
     ensure_login_profile(&principal)?;
     ensure_job_access(&state, &principal, id).await?;
+    ensure_browser_login_session_access(&state, &principal, &session_id, Some(id)).await?;
     Ok(Json(state.close_browser_login_session(&session_id).await?))
 }
 
@@ -1016,11 +1044,12 @@ async fn start_browser_login_session(
     Json(request): Json<BrowserLoginStartRequest>,
 ) -> Result<Json<reflection_core::browser_probe::LoginSessionSnapshot>, ApiError> {
     let principal = authorize(&state, &headers).await?;
+    ensure_admin(&principal)?;
     ensure_login_profile(&principal)?;
     let profile_id = normalize_profile_id(Some(profile_id));
     Ok(Json(
         state
-            .start_browser_login_session(&profile_id, request.url.trim())
+            .start_browser_login_session(&profile_id, request.url.trim(), principal.key_id)
             .await?,
     ))
 }
@@ -1031,7 +1060,9 @@ async fn browser_login_session_snapshot(
     Path(session_id): Path<String>,
 ) -> Result<Json<reflection_core::browser_probe::LoginSessionSnapshot>, ApiError> {
     let principal = authorize(&state, &headers).await?;
+    ensure_admin(&principal)?;
     ensure_login_profile(&principal)?;
+    ensure_browser_login_session_access(&state, &principal, &session_id, None).await?;
     Ok(Json(
         state.browser_login_session_snapshot(&session_id).await?,
     ))
@@ -1044,7 +1075,9 @@ async fn browser_login_session_click(
     Json(request): Json<BrowserLoginClickRequest>,
 ) -> Result<Json<reflection_core::browser_probe::LoginSessionSnapshot>, ApiError> {
     let principal = authorize(&state, &headers).await?;
+    ensure_admin(&principal)?;
     ensure_login_profile(&principal)?;
+    ensure_browser_login_session_access(&state, &principal, &session_id, None).await?;
     Ok(Json(
         state
             .browser_login_session_click(
@@ -1065,7 +1098,9 @@ async fn browser_login_session_move(
     Json(request): Json<BrowserLoginMoveRequest>,
 ) -> Result<Json<reflection_core::browser_probe::LoginSessionSnapshot>, ApiError> {
     let principal = authorize(&state, &headers).await?;
+    ensure_admin(&principal)?;
     ensure_login_profile(&principal)?;
+    ensure_browser_login_session_access(&state, &principal, &session_id, None).await?;
     Ok(Json(
         state
             .browser_login_session_move(&session_id, request.x, request.y)
@@ -1080,7 +1115,9 @@ async fn browser_login_session_mouse_down(
     Json(request): Json<BrowserLoginMouseButtonRequest>,
 ) -> Result<Json<reflection_core::browser_probe::LoginSessionSnapshot>, ApiError> {
     let principal = authorize(&state, &headers).await?;
+    ensure_admin(&principal)?;
     ensure_login_profile(&principal)?;
+    ensure_browser_login_session_access(&state, &principal, &session_id, None).await?;
     Ok(Json(
         state
             .browser_login_session_mouse_down(
@@ -1100,7 +1137,9 @@ async fn browser_login_session_mouse_up(
     Json(request): Json<BrowserLoginMouseButtonRequest>,
 ) -> Result<Json<reflection_core::browser_probe::LoginSessionSnapshot>, ApiError> {
     let principal = authorize(&state, &headers).await?;
+    ensure_admin(&principal)?;
     ensure_login_profile(&principal)?;
+    ensure_browser_login_session_access(&state, &principal, &session_id, None).await?;
     Ok(Json(
         state
             .browser_login_session_mouse_up(
@@ -1120,7 +1159,9 @@ async fn browser_login_session_type(
     Json(request): Json<BrowserLoginTypeRequest>,
 ) -> Result<Json<reflection_core::browser_probe::LoginSessionSnapshot>, ApiError> {
     let principal = authorize(&state, &headers).await?;
+    ensure_admin(&principal)?;
     ensure_login_profile(&principal)?;
+    ensure_browser_login_session_access(&state, &principal, &session_id, None).await?;
     Ok(Json(
         state
             .browser_login_session_type(&session_id, &request.text)
@@ -1135,7 +1176,9 @@ async fn browser_login_session_insert_text(
     Json(request): Json<BrowserLoginTypeRequest>,
 ) -> Result<Json<reflection_core::browser_probe::LoginSessionSnapshot>, ApiError> {
     let principal = authorize(&state, &headers).await?;
+    ensure_admin(&principal)?;
     ensure_login_profile(&principal)?;
+    ensure_browser_login_session_access(&state, &principal, &session_id, None).await?;
     Ok(Json(
         state
             .browser_login_session_insert_text(&session_id, &request.text)
@@ -1150,7 +1193,9 @@ async fn browser_login_session_press(
     Json(request): Json<BrowserLoginPressRequest>,
 ) -> Result<Json<reflection_core::browser_probe::LoginSessionSnapshot>, ApiError> {
     let principal = authorize(&state, &headers).await?;
+    ensure_admin(&principal)?;
     ensure_login_profile(&principal)?;
+    ensure_browser_login_session_access(&state, &principal, &session_id, None).await?;
     Ok(Json(
         state
             .browser_login_session_press(&session_id, &request.key)
@@ -1165,7 +1210,9 @@ async fn browser_login_session_navigate(
     Json(request): Json<BrowserLoginNavigateRequest>,
 ) -> Result<Json<reflection_core::browser_probe::LoginSessionSnapshot>, ApiError> {
     let principal = authorize(&state, &headers).await?;
+    ensure_admin(&principal)?;
     ensure_login_profile(&principal)?;
+    ensure_browser_login_session_access(&state, &principal, &session_id, None).await?;
     Ok(Json(
         state
             .browser_login_session_navigate(&session_id, request.url.trim())
@@ -1180,7 +1227,9 @@ async fn browser_login_session_wheel(
     Json(request): Json<BrowserLoginWheelRequest>,
 ) -> Result<Json<reflection_core::browser_probe::LoginSessionSnapshot>, ApiError> {
     let principal = authorize(&state, &headers).await?;
+    ensure_admin(&principal)?;
     ensure_login_profile(&principal)?;
+    ensure_browser_login_session_access(&state, &principal, &session_id, None).await?;
     Ok(Json(
         state
             .browser_login_session_wheel(
@@ -1201,7 +1250,9 @@ async fn browser_login_session_resize(
     Json(request): Json<BrowserLoginResizeRequest>,
 ) -> Result<Json<reflection_core::browser_probe::LoginSessionSnapshot>, ApiError> {
     let principal = authorize(&state, &headers).await?;
+    ensure_admin(&principal)?;
     ensure_login_profile(&principal)?;
+    ensure_browser_login_session_access(&state, &principal, &session_id, None).await?;
     Ok(Json(
         state
             .browser_login_session_resize(&session_id, request.width, request.height)
@@ -1215,7 +1266,9 @@ async fn close_browser_login_session(
     Path(session_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let principal = authorize(&state, &headers).await?;
+    ensure_admin(&principal)?;
     ensure_login_profile(&principal)?;
+    ensure_browser_login_session_access(&state, &principal, &session_id, None).await?;
     Ok(Json(state.close_browser_login_session(&session_id).await?))
 }
 
@@ -1340,6 +1393,112 @@ fn principal_from_record(record: ApiKeyRecord) -> AuthPrincipal {
     }
 }
 
+async fn effective_public_base_url(
+    headers: &HeaderMap,
+    state: &AppState,
+) -> Result<String, RkError> {
+    let settings = state.runtime_settings_view().await?;
+    Ok(resolve_public_base_url(headers, &settings.public_base_url))
+}
+
+fn resolve_public_base_url(headers: &HeaderMap, fallback: &str) -> String {
+    let forwarded_host = forwarded_header_value(headers, "x-forwarded-host");
+    let forwarded_proto = forwarded_header_value(headers, "x-forwarded-proto");
+    let fallback_url = Url::parse(fallback).ok();
+    let fallback_host = fallback_url
+        .as_ref()
+        .and_then(|url| url.host_str())
+        .map(str::to_string);
+    let request_host = header_value(headers, header::HOST);
+    let host = forwarded_host.or_else(|| {
+        let request_host = request_host?;
+        if should_use_request_host(&request_host, fallback_host.as_deref()) {
+            Some(request_host)
+        } else {
+            None
+        }
+    });
+
+    let Some(host) = host.or(fallback_host) else {
+        return fallback.trim_end_matches('/').to_string();
+    };
+
+    let scheme = forwarded_proto
+        .or_else(|| fallback_url.as_ref().map(|url| url.scheme().to_string()))
+        .unwrap_or_else(|| "http".to_string());
+    format!("{}://{}", scheme.trim(), host.trim())
+}
+
+fn should_use_request_host(request_host: &str, fallback_host: Option<&str>) -> bool {
+    !matches!(
+        fallback_host,
+        Some(fallback_host)
+            if is_local_or_private_host(request_host)
+                && !is_local_or_private_host(fallback_host)
+    )
+}
+
+fn is_local_or_private_host(host: &str) -> bool {
+    let Some(host) = normalized_host_name(host) else {
+        return false;
+    };
+
+    if host == "localhost" || host.ends_with(".localhost") {
+        return true;
+    }
+
+    let Ok(ip) = host.parse::<IpAddr>() else {
+        return false;
+    };
+
+    match ip {
+        IpAddr::V4(ip) => {
+            let octets = ip.octets();
+            ip.is_loopback()
+                || ip.is_private()
+                || ip.is_link_local()
+                || ip.is_unspecified()
+                || (octets[0] == 100 && (octets[1] & 0b1100_0000) == 64)
+        }
+        IpAddr::V6(ip) => {
+            ip.is_loopback()
+                || ip.is_unique_local()
+                || ip.is_unicast_link_local()
+                || ip.is_unspecified()
+        }
+    }
+}
+
+fn normalized_host_name(host: &str) -> Option<String> {
+    let host = host.trim();
+    if host.is_empty() {
+        return None;
+    }
+
+    Url::parse(&format!("http://{host}"))
+        .ok()
+        .and_then(|url| url.host_str().map(|host| host.to_ascii_lowercase()))
+}
+
+fn header_value(headers: &HeaderMap, key: header::HeaderName) -> Option<String> {
+    headers
+        .get(key)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn forwarded_header_value(headers: &HeaderMap, key: &'static str) -> Option<String> {
+    headers
+        .get(key)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(',').next())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
 fn ensure_admin(principal: &AuthPrincipal) -> Result<(), RkError> {
     if principal.role == ApiKeyRole::Admin {
         Ok(())
@@ -1372,6 +1531,40 @@ async fn ensure_job_access(
     } else {
         Err(RkError::NotFound(format!("job {id}")))
     }
+}
+
+async fn ensure_browser_login_session_access(
+    state: &AppState,
+    principal: &AuthPrincipal,
+    session_id: &str,
+    job_id: Option<Uuid>,
+) -> Result<(), RkError> {
+    let owner = state
+        .browser_login_session_owner(session_id)
+        .await
+        .ok_or_else(|| RkError::NotFound(format!("browser login session {session_id}")))?;
+    if let Some(expected_job_id) = job_id {
+        if owner.job_id != Some(expected_job_id) {
+            return Err(RkError::NotFound(format!(
+                "browser login session {session_id}"
+            )));
+        }
+    }
+    if browser_login_session_owner_matches(principal, owner.api_key_id) {
+        Ok(())
+    } else {
+        Err(RkError::NotFound(format!(
+            "browser login session {session_id}"
+        )))
+    }
+}
+
+fn browser_login_session_owner_matches(
+    principal: &AuthPrincipal,
+    owner_key_id: Option<Uuid>,
+) -> bool {
+    principal.role == ApiKeyRole::Admin
+        || principal.key_id.is_some() && principal.key_id == owner_key_id
 }
 
 fn authorized_discovery(
@@ -1444,6 +1637,59 @@ fn supported_discovery_modes(principal: &AuthPrincipal) -> Vec<&'static str> {
 
 #[cfg(test)]
 mod tests {
+    use super::resolve_public_base_url;
+    use axum::http::{header, HeaderMap, HeaderValue};
+
+    #[test]
+    fn resolve_public_base_url_prefers_forwarded_headers() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-proto", HeaderValue::from_static("https"));
+        headers.insert("x-forwarded-host", HeaderValue::from_static("rk.dwgx.top"));
+        assert_eq!(
+            resolve_public_base_url(&headers, "http://127.0.0.1:8787"),
+            "https://rk.dwgx.top"
+        );
+    }
+
+    #[test]
+    fn resolve_public_base_url_falls_back_to_host_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, HeaderValue::from_static("192.168.11.4:8780"));
+        assert_eq!(
+            resolve_public_base_url(&headers, "http://127.0.0.1:8787"),
+            "http://192.168.11.4:8780"
+        );
+    }
+
+    #[test]
+    fn resolve_public_base_url_keeps_public_config_for_loopback_host() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, HeaderValue::from_static("127.0.0.1:8780"));
+        assert_eq!(
+            resolve_public_base_url(&headers, "https://rk.dwgx.top"),
+            "https://rk.dwgx.top"
+        );
+    }
+
+    #[test]
+    fn resolve_public_base_url_keeps_public_config_for_private_host() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, HeaderValue::from_static("192.168.11.4:8780"));
+        assert_eq!(
+            resolve_public_base_url(&headers, "https://rk.dwgx.top"),
+            "https://rk.dwgx.top"
+        );
+    }
+
+    #[test]
+    fn resolve_public_base_url_keeps_config_when_headers_missing() {
+        let headers = HeaderMap::new();
+        assert_eq!(
+            resolve_public_base_url(&headers, "https://rk.example.com"),
+            "https://rk.example.com"
+        );
+    }
+
     use super::*;
 
     #[test]
@@ -1482,6 +1728,213 @@ mod tests {
                 &[OutputKind::Video, OutputKind::Audio],
             ),
             AuthMode::Auto
+        );
+    }
+
+    fn principal(role: ApiKeyRole, key_id: Option<Uuid>) -> AuthPrincipal {
+        AuthPrincipal {
+            key_id,
+            label: "test".to_string(),
+            role,
+            max_download_bytes: None,
+            allow_browser_probe: true,
+            allow_ytdlp: true,
+            allow_external_adapters: true,
+            allow_login_profile: true,
+        }
+    }
+
+    #[test]
+    fn browser_login_session_owner_requires_same_key_or_admin() {
+        let owner_key = Uuid::new_v4();
+        let other_key = Uuid::new_v4();
+        assert!(browser_login_session_owner_matches(
+            &principal(ApiKeyRole::User, Some(owner_key)),
+            Some(owner_key)
+        ));
+        assert!(!browser_login_session_owner_matches(
+            &principal(ApiKeyRole::User, Some(other_key)),
+            Some(owner_key)
+        ));
+        assert!(browser_login_session_owner_matches(
+            &principal(ApiKeyRole::Admin, Some(other_key)),
+            Some(owner_key)
+        ));
+        assert!(!browser_login_session_owner_matches(
+            &principal(ApiKeyRole::User, None),
+            Some(owner_key)
+        ));
+    }
+
+    #[test]
+    fn infer_platform_covers_new_public_platforms() {
+        assert_eq!(
+            infer_platform("https://www.ximalaya.com/sound/70954637"),
+            PlatformHint::Ximalaya
+        );
+        assert_eq!(
+            infer_platform("https://jt.ximalaya.com/example/audio.m4a"),
+            PlatformHint::Ximalaya
+        );
+        assert_eq!(
+            infer_platform("https://weibo.com/tv/show/1034:5274208629096503"),
+            PlatformHint::Weibo
+        );
+        assert_eq!(
+            infer_platform("https://f.video.weibocdn.com/example.mp4"),
+            PlatformHint::Weibo
+        );
+        assert_eq!(
+            infer_platform("https://www.dailymotion.com/video/x84sh87"),
+            PlatformHint::Dailymotion
+        );
+        assert_eq!(
+            infer_platform("https://rumble.com/v2abcdef-example.html"),
+            PlatformHint::Rumble
+        );
+        assert_eq!(
+            infer_platform("https://video.blender.org/w/abc123"),
+            PlatformHint::Peertube
+        );
+        assert_eq!(
+            infer_platform("https://archive.org/details/BigBuckBunny_124"),
+            PlatformHint::ArchiveOrg
+        );
+        assert_eq!(
+            infer_platform("https://web.archive.org/web/20240601000000/https://example.com/"),
+            PlatformHint::Wayback
+        );
+        assert_eq!(
+            infer_platform("https://archive.org/web/"),
+            PlatformHint::Wayback
+        );
+        assert_eq!(
+            infer_platform("https://wayback.archive-it.org/12345/*/https://example.com/"),
+            PlatformHint::ArchiveIt
+        );
+        assert_eq!(
+            infer_platform("https://archive-it.org/collections/123"),
+            PlatformHint::ArchiveIt
+        );
+        assert_eq!(
+            infer_platform("https://perma.cc/ABCD-1234"),
+            PlatformHint::PermaCc
+        );
+        assert_eq!(
+            infer_platform("https://archive.today/20240601000000/https://example.com/"),
+            PlatformHint::ArchiveToday
+        );
+        assert_eq!(
+            infer_platform("https://archive.ph/example"),
+            PlatformHint::ArchiveToday
+        );
+        assert_eq!(
+            infer_platform("https://ghostarchive.org/archive/example"),
+            PlatformHint::Ghostarchive
+        );
+        assert_eq!(
+            infer_platform("https://www.webcitation.org/6example"),
+            PlatformHint::Webcitation
+        );
+        assert_eq!(
+            infer_platform("https://timetravel.mementoweb.org/list/2010/https://example.com/"),
+            PlatformHint::Memento
+        );
+        assert_eq!(
+            infer_platform("https://commons.wikimedia.org/wiki/File:Example.ogg"),
+            PlatformHint::Wikimedia
+        );
+        assert_eq!(
+            infer_platform("https://www.twitch.tv/videos/123456789"),
+            PlatformHint::Twitch
+        );
+        assert_eq!(
+            infer_platform("https://x.com/NASA/status/123456789"),
+            PlatformHint::Twitter
+        );
+        assert_eq!(
+            infer_platform("https://www.reddit.com/r/videos/comments/abcdef/example/"),
+            PlatformHint::Reddit
+        );
+        assert_eq!(
+            infer_platform("https://www.instagram.com/reel/ABC123/"),
+            PlatformHint::Instagram
+        );
+        assert_eq!(
+            infer_platform("https://www.facebook.com/watch/?v=123456789"),
+            PlatformHint::Facebook
+        );
+        assert_eq!(
+            infer_platform("https://pin.it/example"),
+            PlatformHint::Pinterest
+        );
+        assert_eq!(
+            infer_platform("https://imgur.com/a/example"),
+            PlatformHint::Imgur
+        );
+        assert_eq!(
+            infer_platform("https://www.flickr.com/photos/nasacommons/123456789"),
+            PlatformHint::Flickr
+        );
+        assert_eq!(
+            infer_platform("https://artist.bandcamp.com/track/example"),
+            PlatformHint::Bandcamp
+        );
+        assert_eq!(
+            infer_platform("https://www.mixcloud.com/example/show/"),
+            PlatformHint::Mixcloud
+        );
+        assert_eq!(
+            infer_platform("https://www.nicovideo.jp/watch/sm9"),
+            PlatformHint::Niconico
+        );
+        assert_eq!(
+            infer_platform("https://video.fc2.com/content/example"),
+            PlatformHint::Fc2
+        );
+        assert_eq!(
+            infer_platform("https://open.spotify.com/episode/example"),
+            PlatformHint::Spotify
+        );
+    }
+
+    #[test]
+    fn web_archive_platforms_default_to_page_html_when_outputs_are_omitted() {
+        assert_eq!(
+            normalize_outputs_for_platform(None, PlatformHint::Wayback),
+            vec![OutputKind::PageHtml]
+        );
+        assert_eq!(
+            normalize_outputs_for_platform(None, PlatformHint::ArchiveIt),
+            vec![OutputKind::PageHtml]
+        );
+        assert_eq!(
+            normalize_outputs_for_platform(None, PlatformHint::PermaCc),
+            vec![OutputKind::PageHtml]
+        );
+        assert_eq!(
+            normalize_outputs_for_platform(None, PlatformHint::ArchiveToday),
+            vec![OutputKind::PageHtml]
+        );
+        assert_eq!(
+            normalize_outputs_for_platform(None, PlatformHint::Ghostarchive),
+            vec![OutputKind::PageHtml]
+        );
+        assert_eq!(
+            normalize_outputs_for_platform(None, PlatformHint::Webcitation),
+            vec![OutputKind::PageHtml]
+        );
+        assert_eq!(
+            normalize_outputs_for_platform(None, PlatformHint::Memento),
+            vec![OutputKind::PageHtml]
+        );
+        assert_eq!(
+            normalize_outputs_for_platform(None, PlatformHint::ArchiveOrg),
+            vec![OutputKind::Audio, OutputKind::Video]
+        );
+        assert_eq!(
+            normalize_outputs_for_platform(Some(vec![OutputKind::Audio]), PlatformHint::Wayback),
+            vec![OutputKind::Audio]
         );
     }
 }
@@ -1543,22 +1996,62 @@ fn header_str(headers: &HeaderMap, name: &str) -> Option<String> {
         .map(|value| value.to_string())
 }
 
+fn normalize_outputs_for_platform(
+    outputs: Option<Vec<OutputKind>>,
+    platform_hint: PlatformHint,
+) -> Vec<OutputKind> {
+    match outputs {
+        Some(outputs) => normalize_outputs(Some(outputs)),
+        None if platform_defaults_to_page_html(platform_hint) => vec![OutputKind::PageHtml],
+        None => normalize_outputs(None),
+    }
+}
+
+fn platform_defaults_to_page_html(platform_hint: PlatformHint) -> bool {
+    matches!(
+        platform_hint,
+        PlatformHint::Wayback
+            | PlatformHint::ArchiveIt
+            | PlatformHint::PermaCc
+            | PlatformHint::ArchiveToday
+            | PlatformHint::Ghostarchive
+            | PlatformHint::Webcitation
+            | PlatformHint::Memento
+    )
+}
+
 fn infer_platform(source_url: &str) -> PlatformHint {
     let Ok(url) = url::Url::parse(source_url) else {
         return PlatformHint::Auto;
     };
     let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
+    let path = url.path().to_ascii_lowercase();
     if host.contains("bilibili.com") || host.contains("b23.tv") {
         PlatformHint::Bilibili
-    } else if host.contains("youtube.com") || host.contains("youtu.be") {
+    } else if host.contains("youtube.com")
+        || host.contains("youtu.be")
+        || host.contains("googlevideo.com")
+        || host.contains("ytimg.com")
+    {
         PlatformHint::Youtube
-    } else if host.contains("soundcloud.com") {
+    } else if host.contains("soundcloud.com")
+        || host.contains("sndcdn.com")
+        || host.contains("media-streaming.soundcloud.cloud")
+    {
         PlatformHint::Soundcloud
-    } else if host.contains("douyin.com") || host.contains("iesdouyin.com") {
+    } else if host.contains("ximalaya.com") || host.contains("xmcdn.com") {
+        PlatformHint::Ximalaya
+    } else if host.contains("douyin.com")
+        || host.contains("iesdouyin.com")
+        || host.contains("douyinvod.com")
+        || host.contains("douyinpic.com")
+        || host.contains("amemv.com")
+    {
         PlatformHint::Douyin
     } else if host.contains("kuaishou.com")
         || host.contains("v.kuaishou.com")
         || host.contains("gifshow.com")
+        || host.contains("kwaicdn.com")
     {
         PlatformHint::Kuaishou
     } else if host.contains("pornhub.") || host.contains("phncdn.com") {
@@ -1573,11 +2066,126 @@ fn infer_platform(source_url: &str) -> PlatformHint {
         PlatformHint::Tiktok
     } else if host.contains("vimeo.com") || host.contains("vimeocdn.com") {
         PlatformHint::Vimeo
+    } else if host.contains("weibo.com")
+        || host.contains("weibocdn.com")
+        || host.contains("sinaimg.cn")
+    {
+        PlatformHint::Weibo
+    } else if host.contains("dailymotion.com") || host.contains("dmcdn.net") {
+        PlatformHint::Dailymotion
+    } else if host.contains("rumble.com") || host.contains("rumblevideo.com") {
+        PlatformHint::Rumble
+    } else if is_peertube_host(&host) {
+        PlatformHint::Peertube
+    } else if is_wayback_host(&host, &path) {
+        PlatformHint::Wayback
+    } else if host_matches(&host, "archive-it.org") {
+        PlatformHint::ArchiveIt
+    } else if host_matches(&host, "perma.cc") {
+        PlatformHint::PermaCc
+    } else if is_archive_today_host(&host) {
+        PlatformHint::ArchiveToday
+    } else if host_matches(&host, "ghostarchive.org") {
+        PlatformHint::Ghostarchive
+    } else if host_matches(&host, "webcitation.org") {
+        PlatformHint::Webcitation
+    } else if host_matches(&host, "mementoweb.org")
+        || host_matches(&host, "mementoarchive.lanl.gov")
+    {
+        PlatformHint::Memento
+    } else if host.contains("archive.org") {
+        PlatformHint::ArchiveOrg
+    } else if host.contains("wikimedia.org") || host.contains("wikipedia.org") {
+        PlatformHint::Wikimedia
+    } else if host.contains("twitch.tv") || host.contains("ttvnw.net") || host.contains("jtvnw.net")
+    {
+        PlatformHint::Twitch
+    } else if host == "x.com"
+        || host.ends_with(".x.com")
+        || host.contains("twitter.com")
+        || host.contains("twimg.com")
+    {
+        PlatformHint::Twitter
+    } else if host.contains("reddit.com")
+        || host.contains("redd.it")
+        || host.contains("redditmedia.com")
+        || host.contains("redditstatic.com")
+    {
+        PlatformHint::Reddit
+    } else if host.contains("instagram.com") || host.contains("cdninstagram.com") {
+        PlatformHint::Instagram
+    } else if host.contains("facebook.com")
+        || host.contains("fb.watch")
+        || host.contains("fbcdn.net")
+    {
+        PlatformHint::Facebook
+    } else if host.contains("pinterest.com")
+        || host.contains("pin.it")
+        || host.contains("pinimg.com")
+    {
+        PlatformHint::Pinterest
+    } else if host.contains("imgur.com") || host.contains("imgur.io") {
+        PlatformHint::Imgur
+    } else if host.contains("flickr.com")
+        || host.contains("staticflickr.com")
+        || host.contains("flic.kr")
+    {
+        PlatformHint::Flickr
+    } else if host.contains("bandcamp.com") || host.contains("bcbits.com") {
+        PlatformHint::Bandcamp
+    } else if host.contains("mixcloud.com") {
+        PlatformHint::Mixcloud
+    } else if host.contains("nicovideo.jp")
+        || host.contains("niconico")
+        || host.contains("dmc.nico")
+    {
+        PlatformHint::Niconico
+    } else if host.contains("fc2.com") {
+        PlatformHint::Fc2
+    } else if host.contains("spotify.com") || host.contains("spotify.link") {
+        PlatformHint::Spotify
     } else if host.contains("m3u8") || source_url.contains(".m3u8") || source_url.contains(".mpd") {
         PlatformHint::Live
     } else {
         PlatformHint::Auto
     }
+}
+
+fn is_peertube_host(host: &str) -> bool {
+    matches!(
+        host,
+        "video.blender.org"
+            | "peertube.tv"
+            | "framatube.org"
+            | "tilvids.com"
+            | "tube.tchncs.de"
+            | "diode.zone"
+    )
+}
+
+fn host_matches(host: &str, domain: &str) -> bool {
+    host == domain
+        || host
+            .strip_suffix(domain)
+            .is_some_and(|prefix| prefix.ends_with('.'))
+}
+
+fn is_wayback_host(host: &str, path: &str) -> bool {
+    host_matches(host, "web.archive.org")
+        || (host_matches(host, "archive.org") && path.starts_with("/web/"))
+}
+
+fn is_archive_today_host(host: &str) -> bool {
+    matches!(
+        host,
+        "archive.today"
+            | "archive.ph"
+            | "archive.is"
+            | "archive.vn"
+            | "archive.md"
+            | "archive.li"
+            | "archive.fo"
+    )
 }
 
 fn content_type_for(filename: &str) -> &'static str {
