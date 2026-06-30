@@ -306,6 +306,23 @@ fn body_has_access_denied_signal(body: &str) -> bool {
         || lower.contains("accessdenied")
 }
 
+/// A soft/transient denial from an anti-bot or rate-limit gate that returns 401
+/// or 403 instead of 429. The resource exists and is publicly reachable (no
+/// account fixes it) — it is throttling this caller right now. Observed on
+/// Odysee `player.odycdn.com/api/v3/streams/free/...` (public, no-login content)
+/// which 401s with "this content cannot be accessed at the moment" and flips to
+/// 429 "Try again later" under a Referer. Classifying these NeedsProfile is
+/// wrong (there is no profile to supply); SuspectAd (recoverable, retry later)
+/// matches how the sibling 429 path is already treated.
+fn body_has_transient_throttle_signal(body: &str) -> bool {
+    let lower = body.to_ascii_lowercase();
+    lower.contains("cannot be accessed at the moment")
+        || lower.contains("try again later")
+        || lower.contains("too many requests")
+        || lower.contains("rate limit")
+        || lower.contains("temporarily unavailable")
+}
+
 /// Classify a manifest body (HLS/DASH) into a terminal state.
 fn classify_manifest(body: &str) -> CandidateValidationState {
     use CandidateValidationState::*;
@@ -382,6 +399,12 @@ pub fn classify_probe(
             // before the login signal since some error pages carry both words.
             if body_has_access_denied_signal(&body) {
                 return Failed;
+            }
+            // Anti-bot / rate-limit gate that answers 401/403 instead of 429.
+            // The resource is public (no profile fixes it); it is throttling us
+            // now. Treat like a persistent 429 -> SuspectAd, not NeedsProfile.
+            if body_has_transient_throttle_signal(&body) {
+                return SuspectAd;
             }
             if body_has_login_signal(&body) {
                 return NeedsProfile;
@@ -1056,6 +1079,32 @@ mod tests {
         assert_eq!(
             classify_probe(&o, CandidateKind::Video, false),
             CandidateValidationState::Failed
+        );
+    }
+
+    #[test]
+    fn unauthorized_with_transient_throttle_is_suspect_ad() {
+        // Odysee player.odycdn.com /streams/free/... is public no-login content
+        // but 401s with this anti-bot body and flips to 429 under a Referer.
+        // No profile fixes a throttle -> SuspectAd (recoverable), not NeedsProfile.
+        let o = outcome(
+            401,
+            Some("text/plain"),
+            None,
+            Some("this content cannot be accessed at the moment"),
+        );
+        assert_eq!(
+            classify_probe(&o, CandidateKind::Video, false),
+            CandidateValidationState::SuspectAd
+        );
+    }
+
+    #[test]
+    fn forbidden_try_again_later_is_suspect_ad() {
+        let o = outcome(403, Some("text/plain"), None, Some("Try again later"));
+        assert_eq!(
+            classify_probe(&o, CandidateKind::Video, false),
+            CandidateValidationState::SuspectAd
         );
     }
 

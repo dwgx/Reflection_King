@@ -1,0 +1,26 @@
+# Player-config / embed-JSON watch pages — discovered via rk-discover-catalog workflow (heartbeat #24).
+# Distinct extraction path from PeerTube/archive: these sites serve a JS shell +
+# player-config JSON (not og:video / direct manifest), so they exercise a different
+# generic.rs branch. Goal: see whether generic can pull candidates from these at all,
+# and whether verify classifies them correctly (vs zero-candidate JS shells).
+# --- Vimeo (player config JSON) ---
+https://vimeo.com/450533294
+https://vimeo.com/53319581
+https://vimeo.com/24537089
+https://vimeo.com/1079029764
+https://vimeo.com/1065362228
+https://vimeo.com/518806384
+# --- Streamable ---
+https://streamable.com/theimm
+https://streamable.com/tlr26
+# --- Dailymotion ---
+https://www.dailymotion.com/video/xaeko4m
+https://www.dailymotion.com/video/xajo5zu
+# --- Odysee / LBRY (different CDN + page structure than PeerTube) ---
+https://odysee.com/x11-will-completely-end-without-your:879603863bca0060e643ab5db9c4360557e6f86c
+https://odysee.com/i-was-wrong-about-steamos:66a2aea9499f38a8269f55c77586e392f5a1c73c
+https://odysee.com/@DivineSoftware:8/noclip
+https://odysee.com/@BrodieRobertson:5/apple-is-tracking-everything-you-do-on:e
+https://odysee.com/introducing-odysee-sync-tool-ost:9a666006bc8f46114eede9d0f608a4c2b97335cc
+https://odysee.com/why-i-have-just-left-youtube-in-favor-of-odysee:5d8fc0007042da6ba2fdfe5c77979b3b03b02b6b
+https://odysee.com/the-aur-malware-attack-never-stopped:2fb9e634f31ff0c599ea73302327b504c586eceb
