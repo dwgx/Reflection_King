@@ -18,8 +18,9 @@
 | `catalog-peertube.txt` | 35 | PeerTube 跨实例(对象存储后端):暴露真 bug #11(binary/octet-stream 漏判)+ #12(Range-忽略/无-HEAD CDN 误判 Failed)。全量基线 {Usable:211,Failed:4,SuspectAd:4} |
 | `catalog-drm-vectors.txt` | 15 | 规范 HLS/DASH/DRM 测试向量(Apple/Unified/axprod/shaka/dashif),11 clear→Usable + 4 加密→Drm,跨 6 CDN 验 DRM 检测路径。**稳定不腐烂,首选 DRM 回归集** |
 | `catalog-audio.txt` | 10 | 纯音频品类(audio/mpeg/ogg/FLAC):archive.org librivox/78rpm/MLK + megaphone.fm 播客 CDN。全 top=Usable;补 video-heavy catalog 欠覆盖的 AUDIO kind |
+| `catalog-playerconfig.txt` | 17 | player-config/embed-JSON 站(vimeo/streamable/dailymotion/odysee):暴露真 bug #13(Odysee 反爬 401 误判 NeedsProfile→SuspectAd)。注:vimeo/dailymotion 0 候选=generic 提不出 player-config JSON 的已知 gap;streamable→Usable |
 
-> catalog 扩面由 `discover-catalog.js`(ultracode workflow,5 个 opus subagent 各管一类站型,WebSearch+WebFetch 实证后才收录)产出。换站型=换基础设施形状(CDN/存储/MIME)是暴露 verify bug 的最高 ROI 路径(L17/L18)。
+> catalog 扩面由 `discover-catalog.js`(ultracode workflow,5 个 opus subagent 各管一类站型,WebSearch+WebFetch 实证后才收录)产出。换站型=换基础设施形状(CDN/存储/MIME)是暴露 verify bug 的最高 ROI 路径(L17/L18/L20)。
 
 ## 跑法
 
