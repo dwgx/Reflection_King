@@ -144,6 +144,41 @@ fn is_transient_status(status: u16) -> bool {
     matches!(status, 429 | 500 | 502 | 503 | 504)
 }
 
+/// In an HLS master (multivariant) playlist, return the first variant playlist
+/// URL (the non-comment line following an `#EXT-X-STREAM-INF`), resolved
+/// against `base`. DRM in HLS-Widevine/-PlayReady is frequently declared only
+/// in the *media* playlist via `#EXT-X-KEY`, not in the master we probe first;
+/// descending one level lets us catch that. Returns None when the body is not
+/// a master playlist (no `#EXT-X-STREAM-INF`) or no variant URI follows.
+fn first_hls_variant_url(base: &Url, body: &str) -> Option<Url> {
+    let mut lines = body.lines().peekable();
+    while let Some(line) = lines.next() {
+        if line.trim_start().to_ascii_uppercase().starts_with("#EXT-X-STREAM-INF") {
+            // The URI is the next non-blank, non-comment line.
+            for next in lines.by_ref() {
+                let t = next.trim();
+                if t.is_empty() || t.starts_with('#') {
+                    continue;
+                }
+                return base.join(t).ok();
+            }
+        }
+    }
+    None
+}
+
+/// Given a probed outcome, return the first variant URL to descend into iff the
+/// body is an HLS *master* playlist (has `#EXT-X-STREAM-INF`) — i.e. worth a
+/// one-level DRM re-check. None for media playlists, DASH, or non-manifests.
+fn hls_master_variant_to_probe(outcome: &ProbeOutcome) -> Option<Url> {
+    let body = outcome.body_head.as_deref()?;
+    if !body.trim_start().starts_with("#EXTM3U") {
+        return None;
+    }
+    let base = Url::parse(&outcome.final_url).ok()?;
+    first_hls_variant_url(&base, body)
+}
+
 /// True when the URL *path* ends in a manifest extension, ignoring any
 /// `?query`/`#fragment`. CDNs routinely serve signed manifests like
 /// `master.m3u8?token=...`; a naive `str::ends_with(".m3u8")` on the raw URL
@@ -476,6 +511,33 @@ async fn verify_one(candidate: &mut MediaCandidate, skew_secs: i64) {
 
     let expired = false; // TTL already handled above.
     let state = classify_probe(&outcome, candidate.kind, expired);
+
+    // HLS master-playlist DRM descent: a master can classify Usable while its
+    // variant playlists carry the #EXT-X-KEY (real Widevine/PlayReady HLS, e.g.
+    // shaka angel-one). When we got a Usable HLS master, fetch the first
+    // variant once and re-check for DRM so a protected stream isn't waved
+    // through. One level only (no segment fetch); failures leave state as-is.
+    let state = if state == CandidateValidationState::Usable {
+        if let Some(variant) = hls_master_variant_to_probe(&outcome) {
+            match probe(&variant, true).await {
+                Ok(vo) => {
+                    let vstate = classify_probe(&vo, CandidateKind::Manifest, false);
+                    if vstate == CandidateValidationState::Drm {
+                        candidate.validation_status =
+                            Some("drm: variant #EXT-X-KEY".to_string());
+                        CandidateValidationState::Drm
+                    } else {
+                        state
+                    }
+                }
+                Err(_) => state,
+            }
+        } else {
+            state
+        }
+    } else {
+        state
+    };
 
     candidate.validation_state = Some(state);
     candidate.validation_status = Some(outcome.policy_status.clone());
@@ -825,6 +887,26 @@ mod tests {
         for s in [200u16, 206, 301, 400, 401, 403, 404, 410, 451, 501] {
             assert!(!is_transient_status(s), "{s} should NOT be transient");
         }
+    }
+
+    #[test]
+    fn first_hls_variant_resolves_relative_and_skips_comments() {
+        let base = Url::parse("https://cdn.example/hls/master.m3u8").unwrap();
+        // Relative variant URI -> resolved against the master's dir.
+        let rel = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=800000\nlow/v.m3u8\n";
+        assert_eq!(
+            first_hls_variant_url(&base, rel).unwrap().as_str(),
+            "https://cdn.example/hls/low/v.m3u8"
+        );
+        // Comment/blank lines between the tag and the URI are skipped.
+        let gap = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=800000\n\n#comment\nv1.m3u8\n";
+        assert_eq!(
+            first_hls_variant_url(&base, gap).unwrap().as_str(),
+            "https://cdn.example/hls/v1.m3u8"
+        );
+        // A media playlist (no #EXT-X-STREAM-INF) yields no variant.
+        let media = "#EXTM3U\n#EXTINF:6,\nseg0.ts\n";
+        assert!(first_hls_variant_url(&base, media).is_none());
     }
 
     #[test]
