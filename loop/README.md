@@ -14,6 +14,7 @@
 | `catalog-archive.txt` | 41 | archive.org/details 公共领域影视(advancedsearch.php harvest,验过含 og:video) |
 | `catalog-manifest.txt` | 7 | 真实 HLS/DASH demo 流(直链),验 manifest 分类:clean→Usable、axprod→Drm |
 | `catalog-mixed.txt` | 102 | 4 路 harvest 合并:archive-extra + streaming-demos(含 DRM)+ jsonld-shells + social/video JS 壳。最全,首选回归集 |
+| `catalog-commons.txt` | 10 | wikimedia Commons File: 描述页(第 4 真品类):验 application/ogg 当媒体 + 429 限流→SuspectAd(非 Failed)。批量跑会持续触发 wikimedia 节流,单页慢 |
 
 ## 跑法
 
@@ -35,6 +36,12 @@ S3 denied(403 xml)、embed 播放页(200 text/html)、真媒体(200 application/
 `Failed` ~15(瞬时 5xx 会临时抬高,multi-retry 后多半恢复;90/102 页 ≥1 候选,
 81/102 页 top=Usable,12 页零候选=JS 壳社交站如 instagram/tiktok 无 og 标记)。
 SuspectAd 主体是 archive.org `/embed/` 播放页(200 text/html,非直链媒体,分类正确)。
+
+`catalog-commons.txt`(10 页)典型:全部 top=Usable,但 `SuspectAd` 占多数——
+upload.wikimedia.org 在 ~2 次快速探测后限流(429,无 Retry-After,~2-3s 恢复),
+批量持续打一个 host 必触发。**这是正常的,不是回归**:429 修复(真 bug #10)把持久
+429 归为 SuspectAd(可恢复)而非 Failed(死)。47 页全量基线 {Usable:27,SuspectAd:188,
+Failed:2},2 个 Failed 是 cross-wiki 描述链接真 404。
 
 > 注:catalog 里的真实页会随时间腐烂/下线;Failed 升高优先看候选级 `[status]`
 > 判断是真死还是网络抖动,别误读成代码回归。

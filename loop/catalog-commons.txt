@@ -1,0 +1,26 @@
+# RK wikimedia Commons 验证 catalog — 第 4 真品类(开放媒体 File: 描述页)
+# 生成 2026-06-30 心跳#18。来源:Commons API categorymembers(Featured_videos /
+# WebM_videos / Ogg_sound_files / Public_domain_films 等),扩展名过滤(.webm/.ogv/
+# .ogg/.oga),取 47 页全量跑里 top-candidate=Usable 的页 + 2 个经典公有领域影片
+# (Alice in Wonderland 1903 / Big Buck Bunny)做固定回归集,共 10 页(均已验在线 200)。
+# 传入 File: wiki 描述页(真实爬取入口,非直链),generic 抽出 og:video / 直链变体。
+#
+# 验什么:① application/ogg 直链被当媒体(L11 真 bug #9 修复的回归守护);
+# ② 429 限流处置(真 bug #10 修复):upload.wikimedia.org 在 ~2 次快速探测后限流
+# 且不发 Retry-After,~2-3s 恢复;持久 429 应分类 SuspectAd(可恢复)而非 Failed(死)。
+#
+# 基线(47 页全量,verify=true,2026-06-30,耗时 1701s):47/47 页 ≥1 候选,
+# 23/47 top=Usable,{Usable:27, SuspectAd:188, Failed:2}。SuspectAd 几乎全是
+# upload.wikimedia.org 变体的 429 节流(批量持续打一个 host 必触发,分类正确=非终态);
+# 2 个 Failed 是 cross-wiki 描述链接的真 404(de/en.wikipedia Datei: 页不存在,终态正确)。
+# 注意:整 catalog 批量跑会持续触发 wikimedia 节流,单页 ~36s;CI 跑用本 12 页子集即可。
+https://commons.wikimedia.org/wiki/File:!PostOffice_!mailinballot_House_passes_USPS_Rescue_Bill_%2425_billion.webm
+https://commons.wikimedia.org/wiki/File:01-wikidataday2022_pharos_intro_to_wikidata.webm
+https://commons.wikimedia.org/wiki/File:America_Safe!_(James_W._Gerard).ogg
+https://commons.wikimedia.org/wiki/File:America_and_the_War_(Calvin_Coolidge).ogg
+https://commons.wikimedia.org/wiki/File:At_Valley_Forge_(Champ_Clark).ogg
+https://commons.wikimedia.org/wiki/File:Confidence_in_Government_(James_M._Cox).ogg
+https://commons.wikimedia.org/wiki/File:Criminal_Enemies_of_Social_Order_(Miles_Poindexter).ogg
+https://commons.wikimedia.org/wiki/File:D-Day_speech_(Reagan).ogg
+https://commons.wikimedia.org/wiki/File:Alice_in_Wonderland_(1903).ogv
+https://commons.wikimedia.org/wiki/File:Big_Buck_Bunny_medium.ogv
