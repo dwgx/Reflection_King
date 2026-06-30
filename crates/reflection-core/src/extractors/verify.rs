@@ -416,6 +416,17 @@ pub fn classify_probe(
     }
 
     if (200..400).contains(&status) && !ct.is_empty() && content_type_is_media(&ct) {
+        // Kind/content-type mismatch guard: an `image/*` response only confirms an
+        // Image candidate. A Video/Audio candidate that resolves to an image is a
+        // poster/thumbnail that leaked past extraction (e.g. a JSON-LD VideoObject
+        // whose extensionless `contentUrl` actually points at the still frame) —
+        // waving it through as Usable would defeat verify's whole purpose. Demote
+        // to SuspectAd: unconfirmed, not a confirmed playable stream. octet-stream
+        // and the audio/video/ogg families stay Usable for any media kind.
+        let ct_base = ct.split(';').next().unwrap_or(&ct).trim();
+        if ct_base.starts_with("image/") && !matches!(kind, CandidateKind::Image) {
+            return SuspectAd;
+        }
         return Usable;
     }
 
@@ -853,6 +864,35 @@ mod tests {
         let o = outcome(206, Some("video/mp4"), Some(7_000_000), None);
         assert_eq!(
             classify_probe(&o, CandidateKind::Video, false),
+            CandidateValidationState::Usable
+        );
+    }
+
+    #[test]
+    fn video_candidate_serving_image_is_not_usable() {
+        // A Video candidate that resolves to image/* is a poster/thumbnail leaked
+        // past extraction (JSON-LD VideoObject with an extensionless contentUrl
+        // pointing at the still frame). Must not pass as Usable — verify is the
+        // last line of defense against a mis-extracted candidate.
+        let o = outcome(200, Some("image/jpeg"), Some(40_000), None);
+        assert_eq!(
+            classify_probe(&o, CandidateKind::Video, false),
+            CandidateValidationState::SuspectAd
+        );
+        // Same for Audio.
+        let a = outcome(200, Some("image/png"), Some(40_000), None);
+        assert_eq!(
+            classify_probe(&a, CandidateKind::Audio, false),
+            CandidateValidationState::SuspectAd
+        );
+    }
+
+    #[test]
+    fn image_candidate_serving_image_is_usable() {
+        // The mismatch guard must not punish a genuine Image candidate.
+        let o = outcome(200, Some("image/jpeg"), Some(40_000), None);
+        assert_eq!(
+            classify_probe(&o, CandidateKind::Image, false),
             CandidateValidationState::Usable
         );
     }
