@@ -1,0 +1,14 @@
+# Audio-focused catalog — discovered via rk-discover-catalog workflow (heartbeat #24).
+# Exercises the AUDIO candidate kind (audio/mpeg, audio/mp4, ogg, FLAC) which the
+# video-heavy catalogs under-cover. archive.org details pages + direct enclosures +
+# podcast RSS. All web-validated live this session. kind: details=watch, .mp3=media.
+https://archive.org/details/art_of_war_librivox
+https://archive.org/details/alice_in_wonderland_librivox
+https://archive.org/details/adventures_holmes
+https://archive.org/details/MLKDream
+https://archive.org/details/78_house-of-the-rising-sun_josh-white-and-his-guitar_gbia0001628b
+https://archive.org/details/78_mr-sandman_the-chordettes-archie-bleyer-pat-ballard-archie-ballard_gbia0017988b
+https://archive.org/download/art_of_war_librivox/art_of_war_01-02_sun_tzu_64kb.mp3
+https://archive.org/download/78_house-of-the-rising-sun_josh-white-and-his-guitar_gbia0001628b/House%20Of%20The%20Rising%20Sun%20-%20Josh%20White%20and%20his%20Guitar-restored.mp3
+https://archive.org/download/MLKDream/MLKDream.mp3
+https://traffic.megaphone.fm/NATIONALAERONAUTICSANDSPACEADMINISTRATION8038421748.mp3

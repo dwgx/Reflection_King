@@ -15,6 +15,11 @@
 | `catalog-manifest.txt` | 7 | 真实 HLS/DASH demo 流(直链),验 manifest 分类:clean→Usable、axprod→Drm |
 | `catalog-mixed.txt` | 102 | 4 路 harvest 合并:archive-extra + streaming-demos(含 DRM)+ jsonld-shells + social/video JS 壳。最全,首选回归集 |
 | `catalog-commons.txt` | 10 | wikimedia Commons File: 描述页(第 4 真品类):验 application/ogg 当媒体 + 429 限流→SuspectAd(非 Failed)。批量跑会持续触发 wikimedia 节流,单页慢 |
+| `catalog-peertube.txt` | 35 | PeerTube 跨实例(对象存储后端):暴露真 bug #11(binary/octet-stream 漏判)+ #12(Range-忽略/无-HEAD CDN 误判 Failed)。全量基线 {Usable:211,Failed:4,SuspectAd:4} |
+| `catalog-drm-vectors.txt` | 15 | 规范 HLS/DASH/DRM 测试向量(Apple/Unified/axprod/shaka/dashif),11 clear→Usable + 4 加密→Drm,跨 6 CDN 验 DRM 检测路径。**稳定不腐烂,首选 DRM 回归集** |
+| `catalog-audio.txt` | 10 | 纯音频品类(audio/mpeg/ogg/FLAC):archive.org librivox/78rpm/MLK + megaphone.fm 播客 CDN。全 top=Usable;补 video-heavy catalog 欠覆盖的 AUDIO kind |
+
+> catalog 扩面由 `discover-catalog.js`(ultracode workflow,5 个 opus subagent 各管一类站型,WebSearch+WebFetch 实证后才收录)产出。换站型=换基础设施形状(CDN/存储/MIME)是暴露 verify bug 的最高 ROI 路径(L17/L18)。
 
 ## 跑法
 
