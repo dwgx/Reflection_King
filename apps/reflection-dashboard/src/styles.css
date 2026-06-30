@@ -9,23 +9,6 @@
       Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
       sans-serif;
     background: #08090b;
-
-    /* ---- Design tokens (单一来源，便于统一节奏) ---- */
-    /* 间距：4 基准 scale，消除散落魔法数字 */
-    --space-1: 4px;
-    --space-2: 8px;
-    --space-3: 12px;
-    --space-4: 16px;
-    --space-5: 20px;
-    --space-6: 24px;
-    /* 圆角：sm 内部元素 / md 控件 / lg 卡片面板 */
-    --radius-sm: 6px;
-    --radius-md: 8px;
-    --radius-lg: 10px;
-    --radius-pill: 999px;
-    /* 控件高度：紧凑 / 标准；输入·下拉·分段·按钮全部对齐到 standard */
-    --control-h: 40px;
-    --control-h-compact: 32px;
   }
 
   body {
@@ -86,6 +69,7 @@
     margin: 0;
     font-size: 18px;
     font-weight: 700;
+    letter-spacing: 0;
   }
 
   .brand-block p {
@@ -162,8 +146,7 @@
   }
 
   .topbar-title strong {
-    font-size: 18px;
-    font-weight: 700;
+    font-size: 16px;
   }
 
   .topbar-title span {
@@ -213,20 +196,20 @@
     grid-template-rows: auto minmax(0, 1fr);
     overflow: hidden;
     border: 1px solid #242a34;
-    border-radius: var(--radius-lg);
+    border-radius: 8px;
     background: #111318;
     box-shadow: 0 16px 42px rgba(0, 0, 0, 0.18);
   }
 
   .panel-header {
     display: flex;
-    min-height: 52px;
+    min-height: 48px;
     align-items: center;
     justify-content: space-between;
     flex-wrap: wrap;
     gap: 12px;
     border-bottom: 1px solid #242a34;
-    padding: 12px 16px;
+    padding: 11px 14px;
   }
 
   .panel-header h2 {
@@ -237,8 +220,8 @@
     flex: 1 1 180px;
     margin: 0;
     color: #f4f7fb;
-    font-size: 15px;
-    font-weight: 700;
+    font-size: 14px;
+    font-weight: 750;
   }
 
   .panel-header-action {
@@ -256,7 +239,7 @@
 
   .panel-body {
     min-height: 0;
-    padding: 16px;
+    padding: 14px;
   }
 
   .panel-actions {
@@ -274,9 +257,8 @@
   }
 
   .profile-card-actions .button {
-    min-height: var(--control-h-compact);
-    height: var(--control-h-compact);
-    padding-inline: 12px;
+    min-height: 34px;
+    padding-inline: 10px;
   }
 
   .composer-panel {
@@ -306,8 +288,8 @@
 
   .composer-form {
     display: grid;
-    gap: 16px;
-    padding: 16px;
+    gap: 14px;
+    padding: 14px;
   }
 
   .url-command-row {
@@ -324,16 +306,16 @@
     min-width: 0;
     color: #a3adbc;
     font-size: 12px;
-    font-weight: 600;
+    font-weight: 650;
   }
 
   .input {
     width: 100%;
-    height: var(--control-h);
+    height: 40px;
     border: 1px solid #2b3340;
-    border-radius: var(--radius-md);
+    border-radius: 7px;
     background: #080a0e;
-    padding: 0 12px;
+    padding: 0 11px;
     color: #edf2f7;
     font-size: 14px;
     outline: none;
@@ -373,15 +355,15 @@
 
   .button {
     display: inline-flex;
-    height: var(--control-h);
+    height: 40px;
     align-items: center;
     justify-content: center;
-    gap: 8px;
+    gap: 7px;
     border: 1px solid transparent;
-    border-radius: var(--radius-md);
-    padding: 0 14px;
+    border-radius: 7px;
+    padding: 0 12px;
     font-size: 13px;
-    font-weight: 700;
+    font-weight: 750;
     transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
     white-space: nowrap;
   }
@@ -427,11 +409,11 @@
 
   .icon-button {
     display: grid;
-    width: var(--control-h-compact);
-    height: var(--control-h-compact);
+    width: 30px;
+    height: 30px;
     place-items: center;
     border: 1px solid #2b3340;
-    border-radius: var(--radius-md);
+    border-radius: 7px;
     background: #0b0d12;
     color: #dbe3ed;
   }
@@ -493,7 +475,7 @@
   .control-group > div:first-child {
     color: #8f9aaa;
     font-size: 12px;
-    font-weight: 700;
+    font-weight: 750;
   }
 
   .field-hint {
@@ -508,13 +490,13 @@
 
   .segmented {
     display: grid;
-    gap: 4px;
+    gap: 3px;
     grid-template-columns: repeat(auto-fit, minmax(74px, 1fr));
-    min-height: var(--control-h);
+    min-height: 38px;
     border: 1px solid #2b3340;
-    border-radius: var(--radius-md);
+    border-radius: 7px;
     background: #080a0e;
-    padding: 4px;
+    padding: 3px;
   }
 
   .segmented button {
@@ -522,12 +504,12 @@
     min-height: 30px;
     overflow: hidden;
     border: 0;
-    border-radius: var(--radius-sm);
+    border-radius: 5px;
     background: transparent;
     padding: 0 8px;
     color: #aeb8c6;
     font-size: 12px;
-    font-weight: 700;
+    font-weight: 750;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -546,17 +528,17 @@
   .custom-select-trigger {
     display: flex;
     width: 100%;
-    height: var(--control-h);
+    height: 38px;
     align-items: center;
     justify-content: space-between;
     gap: 8px;
     border: 1px solid #2b3340;
-    border-radius: var(--radius-md);
+    border-radius: 7px;
     background: #080a0e;
-    padding: 0 12px;
+    padding: 0 10px;
     color: #edf2f7;
     font-size: 13px;
-    font-weight: 700;
+    font-weight: 750;
   }
 
   .custom-select.open .custom-select-trigger {
@@ -585,14 +567,14 @@
   }
 
   .custom-select-menu button {
-    min-height: var(--control-h-compact);
+    min-height: 32px;
     border: 0;
-    border-radius: var(--radius-sm);
+    border-radius: 6px;
     background: transparent;
-    padding: 0 10px;
+    padding: 0 9px;
     color: #c8d2df;
     font-size: 13px;
-    font-weight: 600;
+    font-weight: 650;
     text-align: left;
   }
 
@@ -613,8 +595,7 @@
   }
 
   .dashboard-panel {
-    min-height: 440px;
-    max-height: 64vh;
+    height: 440px;
   }
 
   .dashboard-panel-body {
@@ -625,8 +606,7 @@
   }
 
   .resource-panel {
-    min-height: 540px;
-    max-height: 76vh;
+    height: 540px;
   }
 
   .resource-panel-body {
@@ -671,7 +651,7 @@
     padding: 0 9px;
     color: #98a4b4;
     font-size: 11px;
-    font-weight: 700;
+    font-weight: 750;
   }
 
   .task-summary strong {
@@ -861,7 +841,7 @@
     min-width: 0;
     color: #e9eef5;
     font-size: 12px;
-    font-weight: 600;
+    font-weight: 650;
     overflow-wrap: anywhere;
   }
 
@@ -943,13 +923,13 @@
   .candidate-row {
     display: grid;
     grid-template-columns: 24px minmax(0, 1fr);
-    gap: 12px;
+    gap: 10px;
     align-items: start;
-    min-height: 96px;
+    min-height: 118px;
     border: 1px solid #242a34;
-    border-radius: var(--radius-md);
+    border-radius: 8px;
     background: #0a0c10;
-    padding: 12px;
+    padding: 10px;
     cursor: pointer;
   }
 
@@ -1008,13 +988,13 @@
     padding: 2px 6px;
     color: #c8d2df;
     font-size: 11px;
-    font-weight: 700;
+    font-weight: 750;
   }
 
   .candidate-meta {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
-    gap: 6px 10px;
+    grid-template-columns: repeat(4, minmax(120px, 1fr));
+    gap: 5px 10px;
     color: #9ba6b5;
     font-size: 11px;
   }
@@ -1060,8 +1040,8 @@
   }
 
   .candidate-flags {
-    /* 允许换行展示全部标签，不再裁切（原 max-height:48px + overflow:hidden 会吞掉徽章） */
-    row-gap: 6px;
+    max-height: 48px;
+    overflow: hidden;
   }
 
   .artifact-list {
@@ -1150,7 +1130,7 @@
     color: #9aa7b8;
     font-size: 11px;
     font-style: normal;
-    font-weight: 700;
+    font-weight: 750;
   }
 
   .artifact-item {
@@ -1302,7 +1282,7 @@
 
   .pager-select .custom-select-trigger,
   .pager .button {
-    height: var(--control-h-compact);
+    height: 32px;
   }
 
   .badge {
@@ -1338,8 +1318,8 @@
   }
 
   .badge.candidates {
-    background: #2a2140;
-    color: #c7b6ff;
+    background: #0c3944;
+    color: #7ce5f4;
   }
 
   .badge.progress {
