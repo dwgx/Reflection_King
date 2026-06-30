@@ -481,16 +481,39 @@ pub fn classify_probe(
 /// vs HEAD. Mirrors hanime.rs: redirect::none(), manual per-hop `validate_url`,
 /// final `validate_response_url_and_peer`.
 async fn probe(url: &Url, want_body: bool) -> Result<ProbeOutcome> {
-    probe_capped(url, want_body, BODY_HEAD_CAP).await
+    probe_capped_with_headers(url, want_body, BODY_HEAD_CAP, &[]).await
 }
 
 /// Like `probe`, but with an explicit body-capture cap. Manifests pass
 /// MANIFEST_BODY_CAP so a DRM marker past 16 KiB is not truncated away; media
 /// and error-body probes use the smaller default.
 async fn probe_capped(url: &Url, want_body: bool, body_cap: usize) -> Result<ProbeOutcome> {
-    let client = policy_client_builder(VERIFY_TIMEOUT)
-        .user_agent(VERIFY_UA)
-        .build()?;
+    probe_capped_with_headers(url, want_body, body_cap, &[]).await
+}
+
+/// Core probe. `replay_headers` are the safe request headers the extractor
+/// captured (yt-dlp's per-format `http_headers`, allowlisted to UA / Accept /
+/// Accept-Language / Referer / Origin in `safe_download_headers`). Replaying
+/// them matters because many CDNs gate a signed media URL on the exact Referer /
+/// User-Agent the player would send: probing bare with the generic VERIFY_UA
+/// gets a 403 / soft block and a false NeedsProfile / Failed, even though the
+/// URL is genuinely playable with the headers the extractor already learned.
+/// Sensitive headers (Cookie / Authorization / X-*) are never stored here (they
+/// flip `requires_profile` instead), so replaying this allowlist is safe.
+/// An explicit Range header in `replay_headers` is ignored — the body-cap Range
+/// below takes precedence so we never fetch an unbounded body.
+async fn probe_capped_with_headers(
+    url: &Url,
+    want_body: bool,
+    body_cap: usize,
+    replay_headers: &[(String, String)],
+) -> Result<ProbeOutcome> {
+    let ua = replay_headers
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("user-agent"))
+        .map(|(_, value)| value.as_str())
+        .unwrap_or(VERIFY_UA);
+    let client = policy_client_builder(VERIFY_TIMEOUT).user_agent(ua).build()?;
     let mut current = url.clone();
     let mut redirects = 0usize;
     let method = if want_body { Method::GET } else { Method::HEAD };
@@ -498,6 +521,20 @@ async fn probe_capped(url: &Url, want_body: bool, body_cap: usize) -> Result<Pro
     let response = loop {
         validate_url(&current)?;
         let mut req = client.request(method.clone(), current.clone());
+        for (name, value) in replay_headers {
+            // UA is applied via the client builder; Range is owned by the
+            // body-cap logic below. Skip both so we don't fetch an unbounded
+            // body or double-set the agent.
+            if name.eq_ignore_ascii_case("user-agent") || name.eq_ignore_ascii_case("range") {
+                continue;
+            }
+            if let (Ok(hn), Ok(hv)) = (
+                header::HeaderName::try_from(name.as_str()),
+                header::HeaderValue::from_str(value),
+            ) {
+                req = req.header(hn, hv);
+            }
+        }
         if want_body {
             // Range upper bound follows the cap (inclusive byte index). Origins
             // that ignore Range and stream the whole body are bounded by the
@@ -595,7 +632,36 @@ async fn probe_capped(url: &Url, want_body: bool, body_cap: usize) -> Result<Pro
 
 /// Probe a single candidate (with HEAD->Range fallback + manifest body fetch)
 /// and write the verdict + observed fields back onto it.
+/// Pull the safe replay headers the extractor stashed in
+/// `metadata_json.download_headers` (written by external_probe's
+/// `safe_download_headers`: an allowlist of UA / Accept / Accept-Language /
+/// Referer / Origin). Returns `(name, value)` pairs for the verify probe to
+/// resend. Empty when the candidate carries none (Direct/Generic candidates),
+/// so their probe behavior is unchanged.
+fn candidate_replay_headers(candidate: &MediaCandidate) -> Vec<(String, String)> {
+    let Some(obj) = candidate
+        .metadata_json
+        .get("download_headers")
+        .and_then(|v| v.as_object())
+    else {
+        return Vec::new();
+    };
+    obj.iter()
+        .filter_map(|(name, value)| {
+            value
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .map(|s| (name.clone(), s.to_string()))
+        })
+        .collect()
+}
+
 async fn verify_one(candidate: &mut MediaCandidate, skew_secs: i64) {
+    // Safe replay headers the extractor captured (yt-dlp http_headers, already
+    // allowlisted in external_probe::safe_download_headers). Threaded into every
+    // probe below so a CDN that gates the signed URL on Referer/UA is satisfied
+    // (otherwise a bare probe gets a false 403 -> NeedsProfile/Failed).
+    let replay_headers = candidate_replay_headers(candidate);
     let url = match Url::parse(&candidate.url) {
         Ok(u) => u,
         Err(_) => {
@@ -623,7 +689,7 @@ async fn verify_one(candidate: &mut MediaCandidate, skew_secs: i64) {
     // Manifests need a body (with the larger manifest cap so a late DRM marker
     // isn't truncated); everything else starts with a cheap HEAD.
     let initial_cap = if is_manifest { MANIFEST_BODY_CAP } else { BODY_HEAD_CAP };
-    let mut outcome = match probe_capped(&url, is_manifest, initial_cap).await {
+    let mut outcome = match probe_capped_with_headers(&url, is_manifest, initial_cap, &replay_headers).await {
         Ok(o) => o,
         Err(RkError::UrlPolicy(reason)) => {
             candidate.validation_state = Some(CandidateValidationState::Failed);
@@ -641,7 +707,7 @@ async fn verify_one(candidate: &mut MediaCandidate, skew_secs: i64) {
             // The capped chunk-read keeps the GET cheap even when the origin
             // ignores Range and streams the whole file.
             if !is_manifest {
-                match probe(&url, true).await {
+                match probe_capped_with_headers(&url, true, BODY_HEAD_CAP, &replay_headers).await {
                     Ok(o) => o,
                     Err(_) => {
                         candidate.validation_state = Some(CandidateValidationState::Failed);
@@ -667,7 +733,7 @@ async fn verify_one(candidate: &mut MediaCandidate, skew_secs: i64) {
         && (matches!(outcome.status, 405 | 501 | 401 | 403)
             || (outcome.content_type.is_none() && (200..300).contains(&outcome.status)));
     if head_unhelpful && outcome.body_head.is_none() {
-        if let Ok(o) = probe(&url, true).await {
+        if let Ok(o) = probe_capped_with_headers(&url, true, BODY_HEAD_CAP, &replay_headers).await {
             outcome = o;
         }
     }
@@ -698,7 +764,7 @@ async fn verify_one(candidate: &mut MediaCandidate, skew_secs: i64) {
             300 * attempts as u64
         };
         tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-        match probe_capped(&url, true, initial_cap).await {
+        match probe_capped_with_headers(&url, true, initial_cap, &replay_headers).await {
             Ok(o) => outcome = o,
             Err(_) => break,
         }
@@ -714,7 +780,7 @@ async fn verify_one(candidate: &mut MediaCandidate, skew_secs: i64) {
     // through. One level only (no segment fetch); failures leave state as-is.
     let state = if state == CandidateValidationState::Usable {
         if let Some(variant) = hls_master_variant_to_probe(&outcome) {
-            match probe_capped(&variant, true, MANIFEST_BODY_CAP).await {
+            match probe_capped_with_headers(&variant, true, MANIFEST_BODY_CAP, &replay_headers).await {
                 Ok(vo) => {
                     let vstate = classify_probe(&vo, CandidateKind::Manifest, false);
                     if vstate == CandidateValidationState::Drm {
@@ -1335,6 +1401,49 @@ mod tests {
     fn has_usable_detects_usable() {
         let c = mk_candidate(Some(CandidateValidationState::Usable), 10);
         assert!(has_usable(&[c]));
+    }
+
+    #[test]
+    fn candidate_replay_headers_reads_safe_download_headers() {
+        let mut c = mk_candidate(Some(CandidateValidationState::Untested), 50);
+        // Shape mirrors external_probe::safe_download_headers output: an
+        // allowlisted, string-valued map under metadata_json.download_headers.
+        c.metadata_json = serde_json::json!({
+            "source": "yt_dlp",
+            "download_headers": {
+                "Referer": "https://www.example.com/watch",
+                "User-Agent": "Mozilla/5.0 (X11)",
+                "Accept-Language": "en-us,en;q=0.5"
+            }
+        });
+        let mut hdrs = candidate_replay_headers(&c);
+        hdrs.sort();
+        assert_eq!(
+            hdrs,
+            vec![
+                ("Accept-Language".to_string(), "en-us,en;q=0.5".to_string()),
+                ("Referer".to_string(), "https://www.example.com/watch".to_string()),
+                ("User-Agent".to_string(), "Mozilla/5.0 (X11)".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn candidate_replay_headers_empty_without_metadata() {
+        // Direct/Generic candidates carry no download_headers -> no replay, so
+        // their probe behavior is unchanged.
+        let c = mk_candidate(Some(CandidateValidationState::Untested), 50);
+        assert!(candidate_replay_headers(&c).is_empty());
+    }
+
+    #[test]
+    fn candidate_replay_headers_skips_non_string_values() {
+        let mut c = mk_candidate(Some(CandidateValidationState::Untested), 50);
+        c.metadata_json = serde_json::json!({
+            "download_headers": { "Referer": "https://x/", "X-Bogus": 42, "Empty": "" }
+        });
+        let hdrs = candidate_replay_headers(&c);
+        assert_eq!(hdrs, vec![("Referer".to_string(), "https://x/".to_string())]);
     }
 
     // --- Live integration tests (network). Run explicitly:
