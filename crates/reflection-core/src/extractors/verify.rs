@@ -36,6 +36,15 @@ const MAX_REDIRECTS: usize = 5;
 /// sharded storage can fail over across several nodes (observed 500,500,206), so
 /// one retry is not always enough; capped so a down origin still terminates.
 const TRANSIENT_RETRIES: usize = 2;
+/// Per-attempt cool-off for rate-limit statuses (429/503) when the origin sends
+/// no `Retry-After`. Seconds-scale because throttle windows are seconds, not
+/// milliseconds (observed: upload.wikimedia.org clears a 429 in ~2-3s); the
+/// short 300ms linear backoff used for flaky 5xx nodes never clears it.
+const RATE_LIMIT_BACKOFF_MS: u64 = 2500;
+/// Upper bound on an honored `Retry-After`, so a hostile/confused origin asking
+/// us to wait minutes can't stall a verify pass; past this we fall through to a
+/// non-terminal classification instead.
+const RETRY_AFTER_CAP_SECS: u64 = 8;
 const BODY_HEAD_CAP: usize = 16 * 1024;
 /// Manifests (HLS/DASH) must be scanned in full for DRM markers (`#EXT-X-KEY`,
 /// `#EXT-X-SESSION-KEY`, DASH `<ContentProtection>`), which can sit past the
@@ -110,6 +119,9 @@ pub struct ProbeOutcome {
     pub resolved_ip: Option<String>,
     pub body_head: Option<String>,
     pub policy_status: String,
+    /// `Retry-After` (delta-seconds form) when the origin sent one, e.g. on 429
+    /// / 503. None when absent or in HTTP-date form (rare for rate limits).
+    pub retry_after_secs: Option<u64>,
 }
 
 /// A candidate is "unverified" if it has no state yet or is still `Untested`.
@@ -371,11 +383,16 @@ pub fn classify_probe(
             // profile may satisfy.
             return NeedsProfile;
         }
+        // A 429 that survived the rate-limit retries above is a persistent
+        // throttle, not a dead resource (Too Many Requests = "exists, come back
+        // later"). Marking it terminal Failed mis-buries a recoverable stream
+        // (observed: upload.wikimedia.org transcoded variants under burst);
+        // SuspectAd keeps it as an unconfirmed-but-not-dead candidate.
+        429 => return SuspectAd,
         s if (400..500).contains(&s) => return Failed,
         s if (500..600).contains(&s) => return Failed,
         _ => {}
     }
-
     // 2xx / 3xx-resolved path.
     // Manifest needs body parse regardless of declared kind.
     if content_type_is_manifest(&ct) || url_path_has_manifest_ext(&outcome.final_url) {
@@ -474,6 +491,10 @@ async fn probe_capped(url: &Url, want_body: bool, body_cap: usize) -> Result<Pro
         .unwrap_or(false);
     let final_url = response.url().to_string();
     let resolved_ip = response.remote_addr().map(|a| a.ip().to_string());
+    let retry_after_secs = h
+        .get(header::RETRY_AFTER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.trim().parse::<u64>().ok());
 
     let body_head = if want_body {
         let bytes = response.bytes().await.unwrap_or_default();
@@ -492,6 +513,7 @@ async fn probe_capped(url: &Url, want_body: bool, body_cap: usize) -> Result<Pro
         resolved_ip,
         body_head,
         policy_status: "passed".into(),
+        retry_after_secs,
     })
 }
 
@@ -566,7 +588,20 @@ async fn verify_one(candidate: &mut MediaCandidate, skew_secs: i64) {
     let mut attempts = 0;
     while is_transient_status(outcome.status) && attempts < TRANSIENT_RETRIES {
         attempts += 1;
-        tokio::time::sleep(Duration::from_millis(300 * attempts as u64)).await;
+        // 429 (and 503) are rate-limit / cool-off statuses: a 300ms nudge does
+        // not clear the window (observed: upload.wikimedia.org throttles after
+        // ~2 rapid probes, sends no Retry-After, and recovers in ~2-3s). Honor
+        // Retry-After when present, else back off seconds-scale for a throttle
+        // vs the short linear backoff that suffices for a flaky 5xx node.
+        let delay_ms = if matches!(outcome.status, 429 | 503) {
+            outcome
+                .retry_after_secs
+                .map(|s| s.min(RETRY_AFTER_CAP_SECS) * 1000)
+                .unwrap_or(RATE_LIMIT_BACKOFF_MS * attempts as u64)
+        } else {
+            300 * attempts as u64
+        };
+        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
         match probe_capped(&url, true, initial_cap).await {
             Ok(o) => outcome = o,
             Err(_) => break,
@@ -748,6 +783,7 @@ mod tests {
             resolved_ip: Some("203.0.113.1".into()),
             body_head: body.map(str::to_string),
             policy_status: "passed".into(),
+            retry_after_secs: None,
         }
     }
 
@@ -932,6 +968,18 @@ mod tests {
         assert_eq!(
             classify_probe(&o, CandidateKind::Manifest, false),
             CandidateValidationState::Drm
+        );
+    }
+
+    #[test]
+    fn persistent_429_is_suspect_not_failed() {
+        // A 429 surviving the rate-limit retries means "throttled, resource
+        // exists" — must not be buried as terminal Failed (regression: wikimedia
+        // upload variants 429 under burst but HEAD 200 once the window clears).
+        let o = outcome(429, None, None, None);
+        assert_eq!(
+            classify_probe(&o, CandidateKind::Video, false),
+            CandidateValidationState::SuspectAd
         );
     }
 
