@@ -149,6 +149,13 @@ fn content_type_is_media(ct: &str) -> bool {
         || ct.starts_with("audio/")
         || ct.starts_with("image/")
         || ct == "application/octet-stream"
+        // `binary/octet-stream` is a legacy-but-live alias of application/octet-stream.
+        // PeerTube and its object-storage backends (observed:
+        // makertube01.fsn1.your-objectstorage.com, tuba.hyperreal.top) serve real
+        // fragmented MP4s (ftyp/iso5 magic, 200/206) with this exact content-type;
+        // without it those genuine playable files fell through to SuspectAd across
+        // many federated instances.
+        || ct == "binary/octet-stream"
         // Ogg container (Theora video / Vorbis|Opus audio) is commonly served as
         // application/ogg, not video/* — e.g. archive.org's .ogv/.ogg derivatives
         // (VoyagetothePlanetofPrehistoricWomen.ogg -> 200 application/ogg, OggS
@@ -921,6 +928,21 @@ mod tests {
         let legacy = outcome(200, Some("application/x-ogg"), Some(50_000_000), None);
         assert_eq!(
             classify_probe(&legacy, CandidateKind::Video, false),
+            CandidateValidationState::Usable
+        );
+    }
+
+    #[test]
+    fn binary_octet_stream_video_is_usable() {
+        // PeerTube object-storage backends (makertube/your-objectstorage,
+        // tuba.hyperreal.top) serve real fragmented MP4s (ftyp/iso5 magic) as
+        // `binary/octet-stream`, a legacy alias of application/octet-stream. These
+        // are genuine playable files (200/206) that were wrongly demoted to
+        // SuspectAd across many federated instances. A 206 with a real byte body
+        // mirrors the live shape.
+        let o = outcome(206, Some("binary/octet-stream"), Some(1_457_988_116), None);
+        assert_eq!(
+            classify_probe(&o, CandidateKind::Video, false),
             CandidateValidationState::Usable
         );
     }
