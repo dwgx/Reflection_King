@@ -337,6 +337,25 @@ mod tests {
         ctx_with_discovery(url, DiscoveryMode::Auto)
     }
 
+    // Build a yt-dlp probe from the optional RK_CHAIN_YTDLP env var (path to the
+    // yt-dlp binary). Returns None when unset or the path does not exist, so the
+    // catalog harness silently runs the Direct+Generic chain only — CI without
+    // yt-dlp installed stays green. yt-dlp itself reads ALL_PROXY/HTTPS_PROXY from
+    // the environment, so routing through the home-cloud SOCKS proxy needs no
+    // extra wiring here (export ALL_PROXY=socks5h://127.0.0.1:1080 before the run).
+    fn chain_yt_dlp_probe() -> Option<YtDlpProbe> {
+        let path = std::env::var("RK_CHAIN_YTDLP").ok()?;
+        let path = std::path::PathBuf::from(path);
+        if !path.exists() {
+            return None;
+        }
+        Some(YtDlpProbe::new(
+            path,
+            std::time::Duration::from_secs(60),
+            16 * 1024 * 1024,
+        ))
+    }
+
     fn ctx_with_discovery(url: &str, discovery: DiscoveryMode) -> ExtractContext {
         ExtractContext {
             job_id: Uuid::new_v4(),
@@ -352,7 +371,7 @@ mod tests {
             page_archive_save_har_enabled: true,
             page_archive_cdp_body_max_bytes: 2 * 1024 * 1024,
             page_archive_cdp_body_total_bytes: 64 * 1024 * 1024,
-            yt_dlp: None,
+            yt_dlp: chain_yt_dlp_probe(),
             external_tools: Vec::new(),
             browser: None,
         }
@@ -571,9 +590,16 @@ mod tests {
     // + twitter:player pointing at real mp4s (see VERIFICATION-DESIGN.md 8.2).
 
     async fn run_chain(url: &str) -> ResolveOutcome {
+        // Mirror the production Auto chain order (Direct -> Generic -> YtDlp).
+        // YtDlpExtractor only fires when ctx.yt_dlp is Some (RK_CHAIN_YTDLP set),
+        // so adding it unconditionally is safe: without the env var it no-ops and
+        // the chain behaves exactly as the Direct+Generic-only harness did. With
+        // it set, the catalog harness can finally exercise the post-generic leg
+        // that covers JS-SPA / API-gated sites (Odysee/Vimeo/Dailymotion/...).
         let resolver = SourceResolver::new(vec![
             Box::new(DirectExtractor),
             Box::new(GenericExtractor),
+            Box::new(YtDlpExtractor),
         ]);
         resolver.resolve(&ctx(url)).await
     }
