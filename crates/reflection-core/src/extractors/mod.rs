@@ -692,17 +692,23 @@ mod tests {
                 // Capture the actual candidate URL for the diagnostic states so a
                 // 401/403->NeedsProfile or an Expired/RegionBlocked verdict can be
                 // traced to the exact stream, not just the page it came from.
+                // SuspectAd included with its validation_status (the "why") so the
+                // soft-block / empty-manifest / unconfirmed-2xx buckets can be
+                // told apart and reviewed for recoverable misclassifications.
                 if matches!(
                     c.validation_state,
                     Some(CandidateValidationState::NeedsProfile)
                         | Some(CandidateValidationState::Expired)
                         | Some(CandidateValidationState::RegionBlocked)
                         | Some(CandidateValidationState::Failed)
+                        | Some(CandidateValidationState::SuspectAd)
                 ) {
+                    let status = c.status.map(|s| s.to_string()).unwrap_or_else(|| "-".into());
+                    let ct = c.content_type.as_deref().unwrap_or("-");
                     diag_candidates
                         .entry(format!("{:?}", c.validation_state.unwrap()))
                         .or_default()
-                        .push(format!("{} <- {}", c.url, page));
+                        .push(format!("[{status} {ct}] {} <- {}", c.url, page));
                 }
             }
             let top_state = outcome.candidates.first().and_then(|c| c.validation_state);
