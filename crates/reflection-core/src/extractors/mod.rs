@@ -669,6 +669,11 @@ mod tests {
         let mut pages_with_cands = 0usize;
         let mut pages_top_usable = 0usize;
         let mut empty_pages: Vec<&str> = Vec::new();
+        // Candidate-level URL lists for the diagnostic terminal states, keyed by
+        // state — finer-grained than pages_by_top_state (a page's top may be
+        // Usable while a lower candidate is NeedsProfile/Expired).
+        let mut diag_candidates: std::collections::BTreeMap<String, Vec<String>> =
+            Default::default();
 
         for (i, page) in pages.iter().enumerate() {
             let outcome = run_chain(page).await;
@@ -684,6 +689,21 @@ mod tests {
                     None => "Untested".to_string(),
                 };
                 *state_counts.entry(key).or_default() += 1;
+                // Capture the actual candidate URL for the diagnostic states so a
+                // 401/403->NeedsProfile or an Expired/RegionBlocked verdict can be
+                // traced to the exact stream, not just the page it came from.
+                if matches!(
+                    c.validation_state,
+                    Some(CandidateValidationState::NeedsProfile)
+                        | Some(CandidateValidationState::Expired)
+                        | Some(CandidateValidationState::RegionBlocked)
+                        | Some(CandidateValidationState::Failed)
+                ) {
+                    diag_candidates
+                        .entry(format!("{:?}", c.validation_state.unwrap()))
+                        .or_default()
+                        .push(format!("{} <- {}", c.url, page));
+                }
             }
             let top_state = outcome.candidates.first().and_then(|c| c.validation_state);
             let top_usable = top_state == Some(CandidateValidationState::Usable);
@@ -721,6 +741,15 @@ mod tests {
             println!("ZERO-candidate pages ({}):", empty_pages.len());
             for p in &empty_pages {
                 println!("  - {p}");
+            }
+        }
+        // Candidate-level URLs behind each diagnostic terminal state (every
+        // occurrence, not just page-top), to ground classifier tuning in the
+        // exact streams that produced NeedsProfile/Expired/RegionBlocked/Failed.
+        for (state, urls) in &diag_candidates {
+            println!("candidates {state} ({}):", urls.len());
+            for u in urls {
+                println!("  * {u}");
             }
         }
 
