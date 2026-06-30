@@ -171,6 +171,12 @@
 - **案例B:charlie_chaplin .ogv top=Failed=真实瞬时,非误分类**。坐实:`archive.org/download/...ogv` 302→存储节点 `dn721202.ca`,该节点 500/206 **抖动**(+0/+1s=500、+3/+6/+10s=206,~2-3s 恢复尺度),非死节点。5xx retry backoff 仅 `300ms×attempt`(~0.9s 累积)短于恢复尺度,但实测恢复率 cur=6/8 vs seconds-scale(1500/3000ms)=7/8——**边际且 n=8 噪声内**。判定:bounded retry 后终态 Failed 可接受,不做投机 backoff 调优。
 - **泛化**:① **"测试 harness 的链 ≠ 生产链"是误判 0-候选的常见陷阱**——分析 catalog 结果前必须先确认 harness 接了哪些 extractor;generic-only harness 下,任何 yt_dlp/browser-only 站(社交/SPA)报 0 候选都是预期,不是 bug。报告 0 候选前先问"这站在生产走哪个 extractor"。② **守 L14/L15 也包括"实测后主动不改"**——不只是"无 repro 不改",还包括"有现象但实测改动收益在噪声内/有反向代价时,明确判非 bug 并记录理由"。投机性 backoff 调优会拖慢所有真死 origin 换取边际恢复率,cap 的存在正是为让真死快速终态;**没有显著、可复现的收益差就不动延迟/重试参数**。③ **诚实记账**:一轮没修 bug 不等于没价值——关掉两个悬留 scope 问题(防下轮重复造需求)+ 确认 102 站 catalog 整体健康(155/187 Usable,其余都解释得通)本身是有效产出。
 
+## L23. escaped-JSON 提取审计无 gap + peertube 35 实例全正确 + bug-finding 瓶颈转为 harness 覆盖(心跳#28,无代码改动)
+- **背景**:2026-06-30 心跳#28。承 L21(尾 `\` 修复)做 escaped-JSON URL 提取的系统审计 + 跑 catalog-peertube(35 联邦实例)。两项均健康,bug 仍 14。
+- **审计A:decode_url_escapes 无 gap(实证非穷举)**。现覆盖 `\/`、`&amp;`、`&#x2F;`、`&#47;`、`&#38;`、`//f`、`&`。扫 7 份真实 HTML 抓包统计 URL 转义形态:只有 `\/`(8589×)+`&amp;`(322×)实际出现,均已覆盖;`&#x26;`/`&sol;`/`\x2F`/双重编码(`&amp;amp;`)实测 **0 出现**。结论:不投机加未观测到的转义形态(守 L14/L15)。JSON 路径(json_ld/harvest 走 serde)转义已预解码天然干净,只有退化到字符扫描的 url_like_tokens 脆(L21 已修)。
+- **审计B:peertube 35 实例全部正确分类**。breakdown `{Failed:4,SuspectAd:4,Untested:104,Usable:211}`,**每页 top 都 Usable**(零非-Usable top)。4 Failed/4 SuspectAd 全是 broken 备选被正确 demote:tinfoil HLS 404=`ENOENT: no such file`(磁盘真无)、infiniteloop download 500=PeerTube 自身 `{"detail":"Invalid URL","code":"TypeError"}`(可复现服务端 bug)、azbyka `-1080.mp4`=现 404 nginx text/html(web-video 已删)、emergeheart `/w/` 短链=返回 HTML player 页非媒体。verify 在所有 35 实例都找到真流选为 top。
+- **泛化**:① **审计要实证驱动,不要穷举想象**——"decode 是否覆盖所有转义"是个无底洞,但"真实 catalog 里实际出现哪些转义"是有限可测的;扫抓包统计形态频率,只补观测到的(L14/L15 的提取-侧应用)。② **PeerTube 这类多备选页是 verify 排序的良性压力测试**——每个 watch 页有 master+多分辨率 HLS+web-video 多个候选,其中部分 broken(404/500),verify 必须正确选出能播的 top 并 demote broken;35 实例零 top-误判证明 classify_probe + 排序在高基数候选下稳健。③ **bug-finding 的瓶颈已从"分类逻辑"转为"harness 覆盖"**——连续两轮(#27/#28)审计 generic+verify 在 archive/peertube/mixed 三大 corpus 无 bug;真实前沿是 chain_live 只接 `direct+generic`,production 的 `yt_dlp→you_get→lux→streamlink→browser` 链全未被 catalog 测到(社交/SPA/Rumble/niconico/Twitch 在 harness 下恒 0 候选)。**再加 archive 影片/peertube 实例同形态站是 padding**;下一个真 bug 大概率在扩 harness 挂 yt_dlp 或找 generic 可提取的新基础设施形状(MediaCMS/Owncast/Kaltura/JW/Brightcove embed)里。
+
 
 
 
