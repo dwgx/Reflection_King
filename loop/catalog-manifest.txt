@@ -1,0 +1,11 @@
+# RK manifest 验证 catalog — 真实 HLS/DASH demo 流(直链当 page 传入,DirectExtractor 接)
+# 验 verify 的 manifest 分类路径(Usable / Drm via SESSION-KEY/UUID/ContentProtection)。
+# 探测过的 status/ct(2026-06-30 home-cloud SOCKS):
+# clean 流 -> 应 Usable;axprod ClearKey -> 应 Drm。
+https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_fmp4/master.m3u8
+https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8
+https://demo.unified-streaming.com/k8s/features/stable/video/tears-of-steel/tears-of-steel.ism/.m3u8
+https://demo.unified-streaming.com/k8s/features/stable/video/tears-of-steel/tears-of-steel.ism/.mpd
+https://storage.googleapis.com/shaka-demo-assets/angel-one-widevine-hls/hls.m3u8
+https://dash.akamaized.net/akamai/bbb_30fps/bbb_30fps.mpd
+https://media.axprod.net/TestVectors/v7-MultiDRM-SingleKey/Manifest_1080p_ClearKey.mpd

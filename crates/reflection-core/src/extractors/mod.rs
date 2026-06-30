@@ -636,8 +636,10 @@ mod tests {
     // recompiling. Diagnostic, not a pass/fail gate: it never asserts on
     // individual sites (real pages rot / go offline); it only fails if the
     // catalog is unreadable or every single page produced zero candidates
-    // (which would signal the chain itself broke). Run:
-    //   RK_CHAIN_CATALOG=loop/catalog-archive.txt RK_VERIFY_ENABLED=1 \
+    // (which would signal the chain itself broke). Repo-tracked catalogs live in
+    // loop/ (see loop/README.md). The test cwd is the crate dir, not the repo
+    // root, so pass an absolute path. Run:
+    //   RK_CHAIN_CATALOG=$PWD/loop/catalog-mixed.txt RK_VERIFY_ENABLED=1 \
     //     cargo test -p reflection-core --release chain_live_catalog \
     //     -- --ignored --nocapture
     #[tokio::test]

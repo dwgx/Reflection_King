@@ -1,0 +1,168 @@
+# RK 混合品类 catalog — 4 路 harvest 合并(wikimedia 待补)
+# 生成 2026-06-30 心跳#12。来源:archive-extra(新集合)+ streaming-demos(HLS/DASH 含 DRM)+ jsonld-shells(D1 VideoObject / D2 JS壳零候选)
+# 已对 catalog-archive.txt + catalog-manifest.txt 去重。
+
+# ========== archive-extra ==========
+# Category A: archive.org/details pages (new collections)
+# Sources: opensource_movies, moviesandfilms, silent_films, short_films, educationalfilms
+#   (film_noir advancedsearch returned 0 results for mediatype:movies)
+# Date: 2026-06-30
+# Validated signal: HTTP 200 + HTML contains og:video" content="https... (via home-cloud proxy curl)
+# Kept 40 (tried 59)
+https://archive.org/details/comologar
+https://archive.org/details/love-nwantiti-1_20220825
+https://archive.org/details/cCloud_20151126
+https://archive.org/details/babies_and_breadwinners_2
+https://archive.org/details/right_to_health_1
+https://archive.org/details/SitaSingsTheBluesTrailer2008-640x360
+https://archive.org/details/bacteria_friend_and_foe
+https://archive.org/details/charlie_chaplin_film_fest
+https://archive.org/details/TheFastandtheFuriousJohnIreland1954goofyrip
+https://archive.org/details/FightingLady
+https://archive.org/details/Return_of_the_Kung_Fu_Dragon
+https://archive.org/details/his_girl_friday
+https://archive.org/details/VoyagetothePlanetofPrehistoricWomen
+https://archive.org/details/house_on_haunted_hill_ipod
+https://archive.org/details/reefer_madness1938
+https://archive.org/details/Sita_Sings_the_Blues
+https://archive.org/details/utopia
+https://archive.org/details/The_Pied_Piper_of_Hamelin
+https://archive.org/details/ThePhantomoftheOpera
+https://archive.org/details/20000LeaguesUndertheSea
+https://archive.org/details/DasKabinettdesDoktorCaligariTheCabinetofDrCaligari
+https://archive.org/details/CC_1916_10_02_ThePawnshop
+https://archive.org/details/BattleshipPotemkin
+https://archive.org/details/dw_griffith_birth_of_a_nation
+https://archive.org/details/Nosferatu_most_complete_version_93_mins.
+https://archive.org/details/CC_1916_09_04_TheCount
+https://archive.org/details/QuevivaMexico
+https://archive.org/details/CC_1916_05_15_TheFloorwalker
+https://archive.org/details/CC_1916_12_04_TheRink
+https://archive.org/details/Haxan_tinted_and_subtitled
+https://archive.org/details/markofzorro-1920
+https://archive.org/details/Intolerance
+https://archive.org/details/CC_1914_11_14_TilliesPuncturedRomance
+https://archive.org/details/Levoyagedanslalune
+https://archive.org/details/DaffyDuckAndTheDinosaur1939
+https://archive.org/details/disorder_in_the_court
+https://archive.org/details/IntroductionToHolography
+https://archive.org/details/rikkitikkitavi_201701
+https://archive.org/details/our_solar_system
+
+# ========== streaming-demos ==========
+# Category C: HLS/DASH demo + test-vector manifests (verify path: Usable vs Drm)
+# Source: public test-vector CDNs — devstreaming-cdn.apple.com (bipbop),
+#   dash.akamaized.net DASH-IF TestCases, storage.googleapis.com/shaka-demo-assets,
+#   media.axprod.net/TestVectors, test-streams.mux.dev, demo.unified-streaming.com.
+# Date: 2026-06-30. Fetched via home-cloud proxy (ssh dwgx-home-cloud + curl, Chrome UA).
+# Validated signal: HTTP 200 AND content-type in {application/x-mpegurl,
+#   vnd.apple.mpegurl, audio/mpegurl, application/dash+xml}. 404/403/timeout dropped.
+# Strict CT gate excludes shaka *-widevine/sintel/dig-the-uke DASH (served as
+#   application/octet-stream) despite valid Widevine bodies, and the v7
+#   Manifest_1080p_ClearKey.mpd (already in catalog-manifest.txt).
+# Tried 99 candidates across 3 batches, kept 38 NEW (8 with DRM signal).
+# DRM signal = grep -iE "ext-x-session-key|ext-x-key|contentprotection|widevine|
+#   playready|edef8ba9|9a04f079" matched the manifest body.
+#
+# ===== DRM-signal manifests (expect verify -> Drm) =====
+# axprod v7 MultiDRM SingleKey (ContentProtection: Widevine edef8ba9 + PlayReady 9a04f079)
+https://media.axprod.net/TestVectors/v7-MultiDRM-SingleKey/Manifest_1080p.mpd
+https://media.axprod.net/TestVectors/v7-MultiDRM-SingleKey/Manifest.mpd
+# axprod v7 MultiDRM SingleKey ClearKey (ContentProtection ClearKey; distinct from catalog 1080p variant)
+https://media.axprod.net/TestVectors/v7-MultiDRM-SingleKey/Manifest_ClearKey.mpd
+# axprod CMAF cbcs protected (ContentProtection in MPD)
+https://media.axprod.net/TestVectors/Cmaf/protected_1080p_h264_cbcs/manifest.mpd
+# unified-streaming tears-of-steel Widevine DASH (ContentProtection widevine)
+https://demo.unified-streaming.com/k8s/features/stable/video/tears-of-steel/tears-of-steel-dash-widevine.ism/.mpd
+# unified-streaming tears-of-steel PlayReady DASH (ContentProtection playready 9a04f079)
+https://demo.unified-streaming.com/k8s/features/stable/video/tears-of-steel/tears-of-steel-dash-playready.ism/.mpd
+# mux DAI discontinuity (HLS EXT-X-KEY signalling)
+https://test-streams.mux.dev/dai-discontinuity-deltatre/manifest.m3u8
+# mux BipBop SAMPLE-AES (HLS EXT-X-KEY method=SAMPLE-AES)
+https://test-streams.mux.dev/bbbAES/playlists/sample_aes/index.m3u8
+#
+# ===== Clear manifests (expect verify -> Usable) =====
+# Apple bipbop (HLS)
+https://devstreaming-cdn.apple.com/videos/streaming/examples/bipbop_16x9/bipbop_16x9_variant.m3u8
+https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_ts/master.m3u8
+https://devstreaming-cdn.apple.com/videos/streaming/examples/adv_dv_atmos/main.m3u8
+https://devstreaming-cdn.apple.com/videos/streaming/examples/historic_planet_content_2023-10-26-3d-video/main.m3u8
+# DASH-IF TestCases (dash.akamaized.net, application/dash+xml)
+https://dash.akamaized.net/dash264/TestCases/1a/sony/SNE_DASH_SD_CASE1A_REVISED.mpd
+https://dash.akamaized.net/dash264/TestCases/1a/qualcomm/1/MultiRate.mpd
+https://dash.akamaized.net/dash264/TestCases/2a/qualcomm/1/MultiResMPEG2.mpd
+https://dash.akamaized.net/dash264/TestCases/2b/qualcomm/1/MultiResMPEG2.mpd
+https://dash.akamaized.net/dash264/TestCases/3a/fraunhofer/aac-lc_stereo_without_video/Sintel/sintel_audio_only_aaclc_stereo_sidx.mpd
+https://dash.akamaized.net/dash264/TestCases/4b/qualcomm/1/ED_OnDemand_5SecSeg_Subtitles.mpd
+https://dash.akamaized.net/dash264/TestCases/5a/1/manifest.mpd
+https://dash.akamaized.net/dash264/TestCases/5b/nomor/1.mpd
+https://dash.akamaized.net/dash264/TestCases/9a/qualcomm/1/MultiRate.mpd
+https://dash.akamaized.net/envivio/EnvivioDash3/manifest.mpd
+https://dash.akamaized.net/dash264/TestCasesHD/2b/qualcomm/1/MultiResMPEG2.mpd
+https://dash.akamaized.net/dash264/TestCasesUHD/2b/2/MultiRate.mpd
+https://dash.akamaized.net/dash264/TestCasesIOP41/CMAF/UnifiedStreaming/ToS_AVC_MultiRate_MultiRes_AAC_Eng_WebVTT.mpd
+# shaka-demo-assets clear (angel-one / bbb-dark-truths, HLS+DASH)
+https://storage.googleapis.com/shaka-demo-assets/angel-one/dash.mpd
+https://storage.googleapis.com/shaka-demo-assets/angel-one/hls.m3u8
+https://storage.googleapis.com/shaka-demo-assets/angel-one-hls/hls.m3u8
+https://storage.googleapis.com/shaka-demo-assets/bbb-dark-truths-hls/hls.m3u8
+# axprod clear test vectors (DASH+HLS)
+https://media.axprod.net/TestVectors/v7-Clear/Manifest_1080p.mpd
+https://media.axprod.net/TestVectors/v7-Clear/Manifest.mpd
+https://media.axprod.net/TestVectors/v8-MultiContent/Clear/Manifest.mpd
+https://media.axprod.net/TestVectors/Cmaf/clear_1080p_h264/manifest.mpd
+https://media.axprod.net/TestVectors/Cmaf/clear_1080p_h264/manifest.m3u8
+# axprod CMAF cbcs protected HLS master (DRM signalled in child playlist, master CT=x-mpegurl)
+https://media.axprod.net/TestVectors/Cmaf/protected_1080p_h264_cbcs/manifest.m3u8
+# mux clear HLS test streams
+https://test-streams.mux.dev/test_001/stream.m3u8
+https://test-streams.mux.dev/pts_shift/master.m3u8
+https://test-streams.mux.dev/tos_ismc/main.m3u8
+
+# ========== jsonld-shells ==========
+# Category D: JSON-LD VideoObject pages vs JS-shell zero-candidate boundaries
+# Harvested: 2026-06-30
+# All URLs fetched via home-cloud proxy (ssh dwgx-home-cloud -> curl, Chrome/124 UA)
+#
+# ============================================================================
+# (D1) PAGES WITH JSON-LD VideoObject  ->  EXPECT NON-EMPTY (>=1 candidate)
+# Validated signal: HTTP 200 AND static HTML contains "VideoObject" AND a
+# contentUrl and/or embedUrl property. 15 URLs, all reconfirmed 200.
+# Sources: schema.org/Google docs (canonical schema demos), TED talks
+# (VideoObject + contentUrl + embedUrl), CNN video (VideoObject + embedUrl).
+# ============================================================================
+https://schema.org/VideoObject
+https://developers.google.com/search/docs/appearance/structured-data/video
+https://www.ted.com/talks/sir_ken_robinson_do_schools_kill_creativity
+https://www.ted.com/talks/bill_gurley_how_to_build_a_career_you_actually_love
+https://www.ted.com/talks/candice_odgers_what_we_re_getting_wrong_about_teens_and_tech
+https://www.ted.com/talks/dhruv_khullar_can_ozempic_end_addiction
+https://www.ted.com/talks/james_g_robinson_the_unexpected_wonders_of_my_son_s_short_life
+https://www.ted.com/talks/katina_bajaj_how_play_boosts_your_creativity_and_resilience
+https://www.ted.com/talks/keith_diaz_what_sitting_all_day_does_to_your_brain_and_body
+https://www.ted.com/talks/kizzmekia_corbett_your_vaccine_questions_deserve_real_answers
+https://www.ted.com/talks/michael_snyder_why_i_m_obsessed_with_health_wearables_and_you_should_be_too
+https://www.ted.com/talks/miles_wu_origami_the_ancient_art_form_solving_modern_problems
+https://www.ted.com/talks/steve_huffman_reddit_s_model_for_a_better_internet
+https://www.ted.com/talks/suresh_subudhi_why_overtourism_could_ruin_your_next_vacation
+https://edition.cnn.com/videos/title-2437739
+#
+# ============================================================================
+# (D2) JS-SHELL / SPA PAGES  ->  EXPECT ZERO CANDIDATES
+# Validated signal: HTTP 200 AND static HTML has NO og:video, NO VideoObject,
+# NO .m3u8/.mpd/.mp4 reference. Confirms the generic extractor does not
+# false-positive on JS-rendered pages. 10 URLs, all reconfirmed clean.
+# NOTE: youtube.com/watch, vimeo.com/<id>, netflix, music.apple, slack and
+# notion were tested but DROPPED here -- their static HTML DOES expose
+# og:video / VideoObject / media refs, so they are not zero-candidate cases.
+# ============================================================================
+https://twitter.com/jack/status/20
+https://www.instagram.com/p/C1abcdefg/
+https://www.tiktok.com/@scout2015/video/6718335390845095173
+https://www.facebook.com/watch/?v=10153231379946729
+https://soundcloud.com/forss/flickermood
+https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT
+https://www.reddit.com/r/videos/
+https://www.pinterest.com/pin/99360735500167749/
+https://www.linkedin.com/feed/
+https://discord.com/channels/@me

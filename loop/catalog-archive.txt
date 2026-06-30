@@ -1,0 +1,48 @@
+# Reflection King 真实站点验证 catalog — archive.org/details 公共领域影视
+# 每行一个 URL;# 开头为注释;空行忽略。harvest 自 advancedsearch.php
+# (collection: feature_films/prelinger/classic_cartoons/sci-fi_horror/
+#  animationandcartoons, mediatype:movies),逐个验证过含 og:video。
+# 用法:RK_CHAIN_CATALOG=/path/to/catalog-archive.txt RK_VERIFY_ENABLED=1 \
+#   cargo test -p reflection-core --release chain_live_catalog -- --ignored --nocapture
+https://archive.org/details/122Eyes1950
+https://archive.org/details/3stooges
+https://archive.org/details/ACornyConcerto1943BugsBunny
+https://archive.org/details/A_Bosko_Cartoon_Collection_1930-1932
+https://archive.org/details/AboutBan1935
+https://archive.org/details/Achievem1955
+https://archive.org/details/Automoti1940
+https://archive.org/details/BettyBoopCartoons
+https://archive.org/details/BigBuckBunny_328
+https://archive.org/details/BloodyPitOfHorror
+https://archive.org/details/CHILD
+https://archive.org/details/Careofth1949
+https://archive.org/details/CaseofSp1940
+https://archive.org/details/DiaryofaNudist
+https://archive.org/details/Doctorin1946
+https://archive.org/details/Dr.Sex
+https://archive.org/details/DuckandC1951
+https://archive.org/details/EatforHe1954
+https://archive.org/details/ElephantsDream
+https://archive.org/details/Escape_From_Sobibor.avi
+https://archive.org/details/Experime1940
+https://archive.org/details/FLIP_FROG-FIDDLESTICKS
+https://archive.org/details/FromtheG1954
+https://archive.org/details/GeneralH1928
+https://archive.org/details/GoodEati1951
+https://archive.org/details/HaveITol1958
+https://archive.org/details/HealthYo1953
+https://archive.org/details/HowtoGoP1954
+https://archive.org/details/JackFrost_
+https://archive.org/details/JerkyTurkey1945
+https://archive.org/details/JoanAvoi1947
+https://archive.org/details/JungleBook
+https://archive.org/details/Mclintock.avi
+https://archive.org/details/MorePopeyeCartoons
+https://archive.org/details/ParkCons1938
+https://archive.org/details/Personal1950
+https://archive.org/details/PopeyeAliBaba
+https://archive.org/details/Popeye_Assault_and_Flattery_1956
+https://archive.org/details/Popeye_Cooking_With_Gags_1954
+https://archive.org/details/Popeye_Nearlyweds
+# --- Sintel (原始 chain_live 种子,embed 陷阱实证) ---
+https://archive.org/details/Sintel
