@@ -136,6 +136,24 @@ fn content_type_is_manifest(ct: &str) -> bool {
         || ct == "application/dash+xml"
 }
 
+/// True when the URL *path* ends in a manifest extension, ignoring any
+/// `?query`/`#fragment`. CDNs routinely serve signed manifests like
+/// `master.m3u8?token=...`; a naive `str::ends_with(".m3u8")` on the raw URL
+/// misses those, so the body never gets parsed and DRM detection is skipped.
+fn url_path_has_manifest_ext(raw: &str) -> bool {
+    let path = match Url::parse(raw) {
+        Ok(u) => u.path().to_ascii_lowercase(),
+        // Not absolute (shouldn't happen for candidate URLs) — fall back to the
+        // substring before any query/fragment.
+        Err(_) => raw
+            .split(['?', '#'])
+            .next()
+            .unwrap_or(raw)
+            .to_ascii_lowercase(),
+    };
+    path.ends_with(".m3u8") || path.ends_with(".mpd")
+}
+
 /// Parse signed-URL expiry from common query needles. Returns epoch seconds.
 fn parse_expiry_epoch(url: &Url) -> Option<i64> {
     const EPOCH_KEYS: &[&str] = &["expires", "expire", "oe", "e"];
@@ -268,10 +286,7 @@ pub fn classify_probe(
 
     // 2xx / 3xx-resolved path.
     // Manifest needs body parse regardless of declared kind.
-    if content_type_is_manifest(&ct)
-        || outcome.final_url.ends_with(".m3u8")
-        || outcome.final_url.ends_with(".mpd")
-    {
+    if content_type_is_manifest(&ct) || url_path_has_manifest_ext(&outcome.final_url) {
         if body.is_empty() {
             return SuspectAd;
         }
@@ -402,9 +417,8 @@ async fn verify_one(candidate: &mut MediaCandidate, skew_secs: i64) {
         let _near = epoch < now + skew_secs;
     }
 
-    let is_manifest = candidate.kind == CandidateKind::Manifest
-        || candidate.url.ends_with(".m3u8")
-        || candidate.url.ends_with(".mpd");
+    let is_manifest =
+        candidate.kind == CandidateKind::Manifest || url_path_has_manifest_ext(&candidate.url);
 
     // Manifests need a body; everything else starts with a cheap HEAD.
     let mut outcome = match probe(&url, is_manifest).await {
@@ -580,6 +594,67 @@ mod tests {
             body_head: body.map(str::to_string),
             policy_status: "passed".into(),
         }
+    }
+
+    /// Like `outcome` but with an explicit `final_url` (to exercise the
+    /// manifest-by-URL path, including signed/tokenized query suffixes).
+    fn outcome_url(
+        final_url: &str,
+        status: u16,
+        ct: Option<&str>,
+        body: Option<&str>,
+    ) -> ProbeOutcome {
+        let mut o = outcome(status, ct, None, body);
+        o.final_url = final_url.into();
+        o
+    }
+
+    #[test]
+    fn signed_manifest_url_with_query_still_parses_body_as_drm() {
+        // Regression: a signed HLS URL ends with `?token=...`, not `.m3u8`, and
+        // the CDN mislabels the content-type as octet-stream. The manifest must
+        // still be body-parsed so DRM is detected (not waved through as Usable).
+        let body = "#EXTM3U\n#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"skd://x\"\n#EXTINF:6,\nseg.ts\n";
+        let o = outcome_url(
+            "https://cdn.example/hls/master.m3u8?token=abc123&expires=later",
+            200,
+            Some("application/octet-stream"),
+            Some(body),
+        );
+        assert_eq!(
+            classify_probe(&o, CandidateKind::Video, false),
+            CandidateValidationState::Drm
+        );
+    }
+
+    #[test]
+    fn signed_dash_url_with_query_parses_body() {
+        let body = "<MPD><Period><Representation id=\"1\"/></Period></MPD>";
+        let o = outcome_url(
+            "https://cdn.example/dash/manifest.mpd?sig=deadbeef",
+            200,
+            Some("application/octet-stream"),
+            Some(body),
+        );
+        assert_eq!(
+            classify_probe(&o, CandidateKind::Video, false),
+            CandidateValidationState::Usable
+        );
+    }
+
+    #[test]
+    fn url_path_manifest_ext_ignores_query_and_fragment() {
+        assert!(url_path_has_manifest_ext(
+            "https://cdn.example/master.m3u8?token=abc"
+        ));
+        assert!(url_path_has_manifest_ext(
+            "https://cdn.example/dash/manifest.mpd#t=10"
+        ));
+        assert!(url_path_has_manifest_ext("https://cdn.example/v.M3U8"));
+        assert!(!url_path_has_manifest_ext(
+            "https://cdn.example/watch?file=movie.m3u8"
+        ));
+        assert!(!url_path_has_manifest_ext("https://cdn.example/clip.mp4"));
     }
 
     #[test]
