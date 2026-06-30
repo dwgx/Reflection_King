@@ -168,9 +168,13 @@ fn browser_navigation_headers() -> HeaderMap {
             "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         ),
         (reqwest::header::ACCEPT_LANGUAGE, "en-US,en;q=0.9"),
-        // NOTE: deliberately no Accept-Encoding. This build of reqwest has no
-        // gzip/br/deflate decompression features, so advertising compression
-        // would hand us bytes we can't decode. Let reqwest default (identity).
+        // NOTE: no manual Accept-Encoding here on purpose. reqwest is built
+        // with the gzip/brotli/deflate features, so it injects its own
+        // Accept-Encoding and transparently decompresses the response.
+        // Setting the header here would DISABLE that auto-decoding and hand
+        // us raw compressed bytes. Some sites (e.g. bilibili) gzip-encode
+        // regardless of the request header, so leaning on reqwest's
+        // auto-decompression is what lets the static scan see real markup.
         (
             HeaderName::from_static("sec-ch-ua"),
             "\"Chromium\";v=\"124\", \"Google Chrome\";v=\"124\", \"Not-A.Brand\";v=\"99\"",
@@ -365,6 +369,7 @@ impl<'a> Collector<'a> {
         self.scan_meta_tags(html); // og:* / twitter:*
         self.scan_json_ld(html); // application/ld+json VideoObject/AudioObject
         self.scan_inline_state(html); // window.__playinfo__ / __NEXT_DATA__ / ...
+        self.scan_media_tags(html); // <video>/<audio>/<source> HTML5 embeds
         self.scan_bare_urls(html); // manifest + media URLs in raw markup
         self.scan_oembed(html); // <link rel=alternate type=application/json+oembed>
         self.scan_iframes(html); // <iframe src> embedded players
@@ -589,6 +594,14 @@ impl<'a> Collector<'a> {
             "window.__NUXT__",
             "window.__data",
             "ytInitialPlayerResponse",
+            // Player state objects used by other SPA players. acfun ships its
+            // play info under `window.videoInfo` / `window.pageInfo`
+            // (`currentVideoInfo.ksPlayJson`); harvesting these structurally is
+            // higher-confidence than catching the same URLs via the bare-URL
+            // sniff pass.
+            "window.videoInfo",
+            "window.pageInfo",
+            "window.videoResource",
         ];
         for global in GLOBALS {
             if let Some(blob) = inline_assignment_json(html, global) {
@@ -614,6 +627,28 @@ impl<'a> Collector<'a> {
         }
         match value {
             Value::String(s) => {
+                // JSON-in-JSON: some players embed their play descriptor as a
+                // *string* whose content is itself a JSON object holding the
+                // media URLs (e.g. acfun's `ksPlayJson`). Check this BEFORE
+                // classify_url: that helper blindly reads a trailing extension
+                // and would mis-classify the whole blob as a media URL, then
+                // bail before we ever look inside. A value that starts with
+                // `{`/`[` is never itself a URL, so try parsing it once more
+                // and recurse. Depth-bounded by the caller's guard.
+                let t = s.trim_start();
+                if t.starts_with('{') || t.starts_with('[') {
+                    if (s.contains("m3u8")
+                        || s.contains(".mpd")
+                        || s.contains(".mp4")
+                        || s.contains("playUrl")
+                        || s.contains("backupUrl"))
+                    {
+                        if let Ok(inner) = serde_json::from_str::<Value>(s) {
+                            self.harvest_json_urls(&inner, depth + 1);
+                        }
+                    }
+                    return;
+                }
                 if let Some(kind) = classify_url(s) {
                     if s.starts_with("http") || s.starts_with("//") {
                         let score = match kind {
@@ -646,6 +681,56 @@ impl<'a> Collector<'a> {
     /// Last resort: scan raw markup for bare `.m3u8` / `.mpd` / media-file URLs
     /// (including percent-encoded and backslash-escaped forms). Adapted from
     /// you-get's `universal` extractor.
+    /// HTML5 media embeds: `<video src>`, `<audio src>`, and `<source src>`
+    /// (the latter nested inside a `<video>`/`<audio>`). This is the most basic
+    /// way a page ships playable media, yet a bare-URL sniff misses the common
+    /// case where the `src` carries no media extension and the format is only
+    /// declared via the `type` attribute (e.g.
+    /// `<source src="/hls/master" type="application/vnd.apple.mpegurl">`). We
+    /// honour `type` first, then fall back to the URL extension. `poster`
+    /// (a thumbnail) is never read, so it cannot bury the real media.
+    fn scan_media_tags(&mut self, html: &str) {
+        let lower = html.to_ascii_lowercase();
+        for tag_name in ["<video", "<audio", "<source"] {
+            let mut from = 0;
+            while let Some(rel) = lower[from..].find(tag_name) {
+                let start = from + rel;
+                // Guard against matching a longer tag that merely starts with
+                // these bytes (none today, but keep the boundary cheap & safe).
+                let after = lower.as_bytes().get(start + tag_name.len());
+                let boundary = matches!(after, Some(b) if b.is_ascii_whitespace() || *b == b'>' || *b == b'/');
+                let end = lower[start..].find('>').map(|e| start + e + 1).unwrap_or(lower.len());
+                from = end;
+                if !boundary {
+                    continue;
+                }
+                let tag = &html[start..end];
+                let tag_lower = &lower[start..end];
+
+                let src = attr_value(tag, tag_lower, "src");
+                let Some(src) = src else { continue };
+                let s = src.trim();
+                if s.is_empty() || s.starts_with("about:") || s.starts_with("javascript:") {
+                    continue;
+                }
+                // Prefer the declared MIME type; fall back to the URL extension.
+                let kind = attr_value(tag, tag_lower, "type")
+                    .and_then(|t| classify_media_type(&t))
+                    .or_else(|| classify_url(s));
+                let Some(kind) = kind else { continue };
+                let score = match kind {
+                    CandidateKind::Manifest => 74,
+                    CandidateKind::Video => 66,
+                    CandidateKind::Audio => 64,
+                    // A <video>/<source> never legitimately points at an image
+                    // as its media; skip to avoid poster-style noise.
+                    _ => continue,
+                };
+                self.add(s, kind, "media_tag", score);
+            }
+        }
+    }
+
     fn scan_bare_urls(&mut self, html: &str) {
         for token in url_like_tokens(html) {
             if let Some(kind) = classify_url(&token) {
@@ -912,13 +997,37 @@ fn decode_url_escapes(input: &str) -> String {
 
 /// Classify a URL by extension into a candidate kind. Returns `None` for URLs
 /// with no media-ish extension.
+/// Map an HTML `type`/MIME attribute to a candidate kind. Lets `<source>`
+/// elements declare HLS/DASH manifests whose `src` carries no file extension.
+fn classify_media_type(mime: &str) -> Option<CandidateKind> {
+    let m = mime.trim().to_ascii_lowercase();
+    // Strip any `; codecs="..."` parameter.
+    let base = m.split(';').next().unwrap_or(&m).trim();
+    match base {
+        "application/vnd.apple.mpegurl"
+        | "application/x-mpegurl"
+        | "audio/mpegurl"
+        | "audio/x-mpegurl"
+        | "application/dash+xml" => Some(CandidateKind::Manifest),
+        _ if base.starts_with("video/") => Some(CandidateKind::Video),
+        _ if base.starts_with("audio/") => Some(CandidateKind::Audio),
+        _ => None,
+    }
+}
+
 fn classify_url(url: &str) -> Option<CandidateKind> {
     // Strip query/fragment before looking at the extension.
     let path = url.split(['?', '#']).next().unwrap_or(url).to_ascii_lowercase();
     let ext = path.rsplit('/').next().and_then(|seg| seg.rsplit_once('.')).map(|(_, e)| e)?;
     match ext {
         "m3u8" | "mpd" => Some(CandidateKind::Manifest),
-        "mp4" | "m4v" | "webm" | "flv" | "mov" | "mkv" | "m4s" => Some(CandidateKind::Video),
+        // `.ogv` (Ogg video) and `.ogm` are common on archive.org / Wikimedia
+        // alongside `.ogg` (audio); without them an og:video pointing at a
+        // `.ogv` mis-classifies as None and gets treated as an embed page to
+        // follow rather than a direct video (observed: archive.org Daffy Duck).
+        "mp4" | "m4v" | "webm" | "flv" | "mov" | "mkv" | "m4s" | "ogv" | "ogm" => {
+            Some(CandidateKind::Video)
+        }
         "mp3" | "m4a" | "aac" | "wav" | "flac" | "opus" | "ogg" => Some(CandidateKind::Audio),
         "jpg" | "jpeg" | "png" | "webp" | "gif" | "avif" => Some(CandidateKind::Image),
         _ => None,
@@ -1006,6 +1115,16 @@ mod tests {
     }
 
     #[test]
+    fn classify_url_ogg_family() {
+        // `.ogv`/`.ogm` are video (archive.org / Wikimedia), `.ogg` is audio.
+        // Spaces in the path don't change the extension read.
+        assert_eq!(classify_url("https://x/a.ogv"), Some(CandidateKind::Video));
+        assert_eq!(classify_url("https://x/a.ogm"), Some(CandidateKind::Video));
+        assert_eq!(classify_url("https://x/Daffy Duck (1939).ogv"), Some(CandidateKind::Video));
+        assert_eq!(classify_url("https://x/a.ogg"), Some(CandidateKind::Audio));
+    }
+
+    #[test]
     fn decode_handles_backslash_and_entities() {
         assert_eq!(decode_url_escapes(r"https:\/\/x\/a.mp4"), "https://x/a.mp4");
         assert_eq!(decode_url_escapes("https://x/a?b=1&amp;c=2"), "https://x/a?b=1&c=2");
@@ -1087,6 +1206,56 @@ mod tests {
             r#"<iframe src="https://player.example/e/9"></iframe><iframe src="about:blank"></iframe>"#,
         );
         assert_eq!(c.follow, vec!["https://player.example/e/9".to_string()]);
+    }
+
+    #[test]
+    fn media_tag_source_uses_type_when_url_has_no_extension() {
+        let ctx = test_ctx("https://site.example/watch");
+        let mut c = Collector::new(&ctx, ctx.url.clone());
+        // HLS source whose src carries no extension; only `type` declares it.
+        c.scan_media_tags(
+            r#"<video poster="https://site.example/thumb.jpg" controls>
+                 <source src="https://cdn.example/hls/master" type="application/vnd.apple.mpegurl">
+               </video>"#,
+        );
+        assert_eq!(c.candidates.len(), 1, "expected exactly the HLS source");
+        let cand = &c.candidates[0];
+        assert_eq!(cand.url, "https://cdn.example/hls/master");
+        assert_eq!(cand.kind, CandidateKind::Manifest);
+        assert_eq!(cand.method, "media_tag");
+    }
+
+    #[test]
+    fn media_tag_video_src_falls_back_to_extension_and_skips_poster() {
+        let ctx = test_ctx("https://site.example/watch");
+        let mut c = Collector::new(&ctx, ctx.url.clone());
+        c.scan_media_tags(
+            r#"<video src="https://cdn.example/clip.mp4" poster="https://cdn.example/p.png"></video>"#,
+        );
+        // Only the mp4 src; the poster image must never become a candidate.
+        assert_eq!(c.candidates.len(), 1);
+        assert_eq!(c.candidates[0].url, "https://cdn.example/clip.mp4");
+        assert_eq!(c.candidates[0].kind, CandidateKind::Video);
+    }
+
+    #[test]
+    fn json_in_json_string_is_reparsed_for_media() {
+        let ctx = test_ctx("https://www.acfun.cn/v/ac1");
+        let mut c = Collector::new(&ctx, ctx.url.clone());
+        // Outer object holds `ksPlayJson` whose *string* value is itself JSON
+        // carrying the real HLS url (acfun's shape).
+        let inner = r#"{\"adaptationSet\":[{\"representation\":[{\"url\":\"https://v.acfun.cn/p/abc-hls_1080p.m3u8\"}]}]}"#;
+        let outer = format!(r#"{{"currentVideoInfo":{{"ksPlayJson":"{inner}"}}}}"#);
+        let value: serde_json::Value = serde_json::from_str(&outer).unwrap();
+        c.harvest_json_urls(&value, 0);
+        assert!(
+            c.candidates
+                .iter()
+                .any(|cand| cand.url == "https://v.acfun.cn/p/abc-hls_1080p.m3u8"
+                    && cand.method == "inline_json"),
+            "expected the m3u8 nested in the ksPlayJson string to be harvested, got {:?}",
+            c.candidates.iter().map(|x| &x.url).collect::<Vec<_>>()
+        );
     }
 
     #[test]
