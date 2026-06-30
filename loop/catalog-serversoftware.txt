@@ -1,0 +1,58 @@
+# Server-software media shapes — discovered via rk-discover-serversoftware workflow (heartbeat #29).
+# Per L23: bug-finding frontier is NEW infrastructure shapes generic CAN extract
+# (json_ld VideoObject / og:video / <video>/<source> / oembed / iframe-follow),
+# distinct from archive.org and PeerTube which are already well-covered.
+# All URLs proxy-validated live (HTTP 200 text/html) at discovery time except where noted.
+# C-SPAN dropped: 403 bot/geo-block from proxy.
+
+# --- MediaCMS (open-source self-hosted video CMS; /view?m=<id>, HLS + MP4 + json_ld) ---
+https://demo.mediacms.io/view?m=lnBR8M2lX
+https://demo.mediacms.io/view?m=zK2nirNLC
+https://demo.mediacms.io/view?m=w2lYWaW8e
+https://demo.mediacms.io/view?m=DE3KByBeo
+https://demo.mediacms.io/view?m=Vt9qtod4q
+https://demo.mediacms.io/view?m=8pWsxkOS5
+https://demo.mediacms.io/view?m=Otbc37Yj4
+https://cinemata.org/view?m=vyTHsS8oc
+https://cinemata.org/view?m=QJn04Isgs
+https://cinemata.org/view?m=ImZF2xFKp
+https://cinemata.org/view?m=gMGMyfmm0
+
+# --- GNU MediaGoblin (open-source media host; /u/.../m/..., direct webm/ogg + audio-only) ---
+https://media.libreplanet.org/u/libreplanet/m/user-liberation/
+https://media.libreplanet.org/u/libreplanet/m/shoetool/
+https://media.libreplanet.org/u/libreplanet/m/rewind/
+https://media.libreplanet.org/u/libreplanet/m/fight-to-repair/
+https://media.libreplanet.org/u/libreplanet/m/the-university-of-costumed-heroes/
+https://media.libreplanet.org/u/libreplanet/m/escape-to-freedom/
+https://media.libreplanet.org/u/libreplanet/m/software-doldrums/
+https://media.libreplanet.org/u/libreplanet/m/keynote-by-fsf-awards-ceremony/
+https://media.libreplanet.org/u/libreplanet/m/finding-a-job-while-caring-about-free-software-audio-only/
+https://media.libreplanet.org/u/libreplanet/m/topographical-maps-for-all-audio-only/
+https://media.libreplanet.org/u/libreplanet/m/free-libre-payment-system-audio-only/
+https://media.libreplanet.org/u/libreplanet/m/lightning-talks-audio-only-2dd4/
+
+# --- Castopod (open-source podcast host; /@channel/episodes/..., og:audio + enclosure MP3) ---
+https://podcast.switchedtolinux.com/@tehankorage/episodes/the-future-of-software-why-open-source-is-suddenly-urgent
+https://podcast.switchedtolinux.com/@tehankorage/episodes/lastpass-breached-again-weekly-news-roundup
+https://podcast.huijzer.xyz/@rikhuijzer/episodes/adam-fannin-eastern-orthodox-heresy
+https://podcast.huijzer.xyz/@rikhuijzer/episodes/bryan-denlinger-spiritual-warfare
+https://talesaudio.com/@TalesAudio/episodes/la-tisseuse
+https://pod.lettereminori.it/@lettereminori/episodes/caramello
+https://podcast.picasoft.net/@picasoft_and_friends/episodes/la-videosurveillance-a-compiegne
+https://podcast.thomask.fr/@montee_de_gradient/episodes/lena-epfl-sciences-du-vivant-et-militantisme-assemblee-decole-la-politique-dans-la-science
+
+# --- Owncast (self-hosted live stream; HLS .m3u8 — may be offline when no live broadcast) ---
+https://watch.chiptune.fm/
+https://live.retrostrange.com/
+https://tv.theindiebeat.fm/
+https://swimrewind.com/
+https://gamesmaster.uk/
+
+# --- JW Player / Brightcove / Kaltura embeds (player-config JSON + iframe-follow path) ---
+https://cdn.jwplayer.com/previews/3XnJSIm4
+https://players.brightcove.net/1752604059001/default_default/index.html?videoId=6351822251112
+https://www.kaltura.com/index.php/extwidget/preview/partner_id/1851962/uiconf_id/40484101/entry_id/1_3jb3wn7e/embed/dynamic
+https://mediaspace.illinois.edu/media/t/1_ll6u4mo7
+http://edu.mediaspace.kaltura.com/media/Lecture+1+-+Business+Strategy/1_7mt6d83j
+http://educonference.mediaspace.kaltura.com/media/Lecture+1+(Example)/1_03gs92ek
