@@ -217,12 +217,21 @@ fn classify_manifest(body: &str) -> CandidateValidationState {
     let trimmed = body.trim_start();
     let lower = body.to_ascii_lowercase();
     if trimmed.starts_with("#EXTM3U") {
-        if lower.contains("#ext-x-key")
-            && (lower.contains("sample-aes")
-                || lower.contains("com.apple.streamingkeydelivery")
-                || lower.contains("widevine")
-                || lower.contains("playready"))
-        {
+        // DRM may be advertised at the media-playlist level (#EXT-X-KEY) or, in
+        // a master playlist (which we probe first), at the multivariant level
+        // (#EXT-X-SESSION-KEY, RFC 8216). The substring "ext-x-key" does NOT
+        // occur inside "ext-x-session-key", so both must be checked. A key tag
+        // alone (e.g. METHOD=AES-128 clear-key) is not necessarily unplayable;
+        // we flag DRM only when a real DRM system is named, either by vendor
+        // word or by KEYFORMAT system UUID (Widevine / PlayReady).
+        let has_key_tag = lower.contains("#ext-x-key") || lower.contains("#ext-x-session-key");
+        let names_drm_system = lower.contains("sample-aes") // FairPlay / SAMPLE-AES(-CTR)
+            || lower.contains("com.apple.streamingkeydelivery")
+            || lower.contains("widevine")
+            || lower.contains("playready")
+            || lower.contains("edef8ba9-79d6-4ace-a3c8-27dcd51d21ed") // Widevine UUID
+            || lower.contains("9a04f079-9840-4286-ab92-e65be0885f95"); // PlayReady UUID
+        if has_key_tag && names_drm_system {
             return Drm;
         }
         if lower.contains("#ext-x-stream-inf")
@@ -747,6 +756,42 @@ mod tests {
         assert_eq!(
             classify_probe(&o, CandidateKind::Manifest, false),
             CandidateValidationState::Drm
+        );
+    }
+
+    #[test]
+    fn hls_master_session_key_fairplay_is_drm() {
+        // Master playlist advertises DRM via #EXT-X-SESSION-KEY (RFC 8216), not
+        // #EXT-X-KEY. "ext-x-key" is NOT a substring of "ext-x-session-key", so
+        // the old check let this through as Usable (it has #EXT-X-STREAM-INF).
+        let body = "#EXTM3U\n#EXT-X-SESSION-KEY:METHOD=SAMPLE-AES,KEYFORMAT=\"com.apple.streamingkeydelivery\",URI=\"skd://x\"\n#EXT-X-STREAM-INF:BANDWIDTH=800000\nlow.m3u8\n";
+        let o = outcome(200, Some("application/vnd.apple.mpegurl"), None, Some(body));
+        assert_eq!(
+            classify_probe(&o, CandidateKind::Manifest, false),
+            CandidateValidationState::Drm
+        );
+    }
+
+    #[test]
+    fn hls_widevine_keyformat_uuid_is_drm() {
+        // Real Widevine HLS (shaka angel-one): SAMPLE-AES-CTR + KEYFORMAT system
+        // UUID, no literal "widevine" word. Detected by the UUID.
+        let body = "#EXTM3U\n#EXT-X-KEY:METHOD=SAMPLE-AES-CTR,URI=\"data:text/plain;base64,AA==\",KEYFORMAT=\"urn:uuid:edef8ba9-79d6-4ace-a3c8-27dcd51d21ed\"\n#EXTINF:4,\nseg.m4s\n";
+        let o = outcome(200, Some("application/x-mpegurl"), None, Some(body));
+        assert_eq!(
+            classify_probe(&o, CandidateKind::Manifest, false),
+            CandidateValidationState::Drm
+        );
+    }
+
+    #[test]
+    fn hls_master_clear_no_key_is_usable() {
+        // Clean master (Apple bipbop): #EXT-X-STREAM-INF, no key tag -> Usable.
+        let body = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=2177116,RESOLUTION=960x540\nv0.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=8001098,RESOLUTION=1920x1080\nv1.m3u8\n";
+        let o = outcome(200, Some("application/vnd.apple.mpegurl"), None, Some(body));
+        assert_eq!(
+            classify_probe(&o, CandidateKind::Manifest, false),
+            CandidateValidationState::Usable
         );
     }
 
