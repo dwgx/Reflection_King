@@ -37,6 +37,13 @@ const MAX_REDIRECTS: usize = 5;
 /// one retry is not always enough; capped so a down origin still terminates.
 const TRANSIENT_RETRIES: usize = 2;
 const BODY_HEAD_CAP: usize = 16 * 1024;
+/// Manifests (HLS/DASH) must be scanned in full for DRM markers (`#EXT-X-KEY`,
+/// `#EXT-X-SESSION-KEY`, DASH `<ContentProtection>`), which can sit past the
+/// 16 KiB media-probe cap — a real multivariant master or multi-DRM MPD exceeds
+/// it (e.g. axprod Manifest_1080p.mpd is 18.5 KiB). Truncating there risks
+/// waving a protected stream through as Usable, so give manifest bodies a much
+/// larger (still bounded) budget.
+const MANIFEST_BODY_CAP: usize = 512 * 1024;
 const SOFT_BLOCK_BYTES: i64 = 4096;
 const DEFAULT_TOP_N: usize = 8;
 const DEFAULT_TRUNCATE_MAX: usize = 80;
@@ -404,6 +411,13 @@ pub fn classify_probe(
 /// vs HEAD. Mirrors hanime.rs: redirect::none(), manual per-hop `validate_url`,
 /// final `validate_response_url_and_peer`.
 async fn probe(url: &Url, want_body: bool) -> Result<ProbeOutcome> {
+    probe_capped(url, want_body, BODY_HEAD_CAP).await
+}
+
+/// Like `probe`, but with an explicit body-capture cap. Manifests pass
+/// MANIFEST_BODY_CAP so a DRM marker past 16 KiB is not truncated away; media
+/// and error-body probes use the smaller default.
+async fn probe_capped(url: &Url, want_body: bool, body_cap: usize) -> Result<ProbeOutcome> {
     let client = policy_client_builder(VERIFY_TIMEOUT)
         .user_agent(VERIFY_UA)
         .build()?;
@@ -415,7 +429,10 @@ async fn probe(url: &Url, want_body: bool) -> Result<ProbeOutcome> {
         validate_url(&current)?;
         let mut req = client.request(method.clone(), current.clone());
         if want_body {
-            req = req.header(header::RANGE, "bytes=0-16383");
+            // Range upper bound follows the cap (inclusive byte index). A server
+            // that ignores Range and sends the whole body is still bounded by the
+            // `body_cap` truncation below.
+            req = req.header(header::RANGE, format!("bytes=0-{}", body_cap - 1));
         }
         let resp = req.send().await?;
         if !resp.status().is_redirection() {
@@ -460,7 +477,7 @@ async fn probe(url: &Url, want_body: bool) -> Result<ProbeOutcome> {
 
     let body_head = if want_body {
         let bytes = response.bytes().await.unwrap_or_default();
-        let cut = bytes.len().min(BODY_HEAD_CAP);
+        let cut = bytes.len().min(body_cap);
         Some(String::from_utf8_lossy(&bytes[..cut]).into_owned())
     } else {
         None
@@ -505,8 +522,10 @@ async fn verify_one(candidate: &mut MediaCandidate, skew_secs: i64) {
     let is_manifest =
         candidate.kind == CandidateKind::Manifest || url_path_has_manifest_ext(&candidate.url);
 
-    // Manifests need a body; everything else starts with a cheap HEAD.
-    let mut outcome = match probe(&url, is_manifest).await {
+    // Manifests need a body (with the larger manifest cap so a late DRM marker
+    // isn't truncated); everything else starts with a cheap HEAD.
+    let initial_cap = if is_manifest { MANIFEST_BODY_CAP } else { BODY_HEAD_CAP };
+    let mut outcome = match probe_capped(&url, is_manifest, initial_cap).await {
         Ok(o) => o,
         Err(RkError::UrlPolicy(reason)) => {
             candidate.validation_state = Some(CandidateValidationState::Failed);
@@ -548,7 +567,7 @@ async fn verify_one(candidate: &mut MediaCandidate, skew_secs: i64) {
     while is_transient_status(outcome.status) && attempts < TRANSIENT_RETRIES {
         attempts += 1;
         tokio::time::sleep(Duration::from_millis(300 * attempts as u64)).await;
-        match probe(&url, true).await {
+        match probe_capped(&url, true, initial_cap).await {
             Ok(o) => outcome = o,
             Err(_) => break,
         }
@@ -564,7 +583,7 @@ async fn verify_one(candidate: &mut MediaCandidate, skew_secs: i64) {
     // through. One level only (no segment fetch); failures leave state as-is.
     let state = if state == CandidateValidationState::Usable {
         if let Some(variant) = hls_master_variant_to_probe(&outcome) {
-            match probe(&variant, true).await {
+            match probe_capped(&variant, true, MANIFEST_BODY_CAP).await {
                 Ok(vo) => {
                     let vstate = classify_probe(&vo, CandidateKind::Manifest, false);
                     if vstate == CandidateValidationState::Drm {
@@ -910,6 +929,27 @@ mod tests {
     fn hls_with_sample_aes_is_drm() {
         let body = "#EXTM3U\n#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"skd://x\"\n#EXTINF:6,\nseg.ts\n";
         let o = outcome(200, Some("application/vnd.apple.mpegurl"), None, Some(body));
+        assert_eq!(
+            classify_probe(&o, CandidateKind::Manifest, false),
+            CandidateValidationState::Drm
+        );
+    }
+
+    #[test]
+    fn drm_tag_past_16kib_still_detected() {
+        // A multivariant master whose DRM marker sits well past the old 16 KiB
+        // media-probe cap. The manifest cap must be large enough that the body
+        // captured for classification still includes it (regression guard for
+        // the cap; classify itself scans whatever it's given).
+        assert!(MANIFEST_BODY_CAP > 16 * 1024 + 32 * 1024);
+        let mut body = String::from("#EXTM3U\n");
+        // ~24 KiB of clear variant lines before any key tag.
+        while body.len() < 24 * 1024 {
+            body.push_str("#EXT-X-STREAM-INF:BANDWIDTH=800000\nlow.m3u8\n");
+        }
+        body.push_str("#EXT-X-SESSION-KEY:METHOD=SAMPLE-AES,KEYFORMAT=\"com.apple.streamingkeydelivery\"\n");
+        assert!(body.len() > 16 * 1024 && body.len() < MANIFEST_BODY_CAP);
+        let o = outcome(200, Some("application/vnd.apple.mpegurl"), None, Some(&body));
         assert_eq!(
             classify_probe(&o, CandidateKind::Manifest, false),
             CandidateValidationState::Drm
