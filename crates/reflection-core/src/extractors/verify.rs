@@ -32,6 +32,10 @@ use crate::{
 
 const VERIFY_TIMEOUT: Duration = Duration::from_secs(8);
 const MAX_REDIRECTS: usize = 5;
+/// Max extra GET attempts after an initial transient (5xx/429) probe. archive's
+/// sharded storage can fail over across several nodes (observed 500,500,206), so
+/// one retry is not always enough; capped so a down origin still terminates.
+const TRANSIENT_RETRIES: usize = 2;
 const BODY_HEAD_CAP: usize = 16 * 1024;
 const SOFT_BLOCK_BYTES: i64 = 4096;
 const DEFAULT_TOP_N: usize = 8;
@@ -136,10 +140,10 @@ fn content_type_is_manifest(ct: &str) -> bool {
         || ct == "application/dash+xml"
 }
 
-/// Transient HTTP statuses that warrant one retry before a terminal verdict:
-/// 429 (rate-limited) and the retryable 5xx (500/502/503/504). Sharded CDN /
-/// storage backends intermittently emit these for a request that succeeds on
-/// the next attempt.
+/// Transient HTTP statuses that warrant a bounded retry before a terminal
+/// verdict: 429 (rate-limited) and the retryable 5xx (500/502/503/504). Sharded
+/// CDN / storage backends intermittently emit these for a request that succeeds
+/// on a subsequent attempt (see TRANSIENT_RETRIES).
 fn is_transient_status(status: u16) -> bool {
     matches!(status, 429 | 500 | 502 | 503 | 504)
 }
@@ -524,15 +528,22 @@ async fn verify_one(candidate: &mut MediaCandidate, skew_secs: i64) {
         }
     }
 
-    // One retry on a transient status before we commit a terminal Failed.
+    // Bounded retries on a transient status before we commit a terminal Failed.
     // CDNs / sharded storage (e.g. archive.org's per-item dnNNNN nodes that a
     // download/ URL 302-redirects to) intermittently 5xx or 429 a request that
     // succeeds moments later; without a retry a genuinely-Usable stream gets
     // permanently marked Failed (observed: ElephantsDream ed_1024.mp4 -> 500
-    // then 200). Retry with a body GET so a recovered node also yields ct/len.
-    if is_transient_status(outcome.status) {
-        if let Ok(o) = probe(&url, true).await {
-            outcome = o;
+    // then 200; charlie_chaplin_film_fest -> 500, 500, then 206 — a single retry
+    // is not enough when archive fails over across multiple nodes). Retry with a
+    // body GET so a recovered node also yields ct/len. Short linear backoff;
+    // capped at TRANSIENT_RETRIES so a truly-down origin still terminates fast.
+    let mut attempts = 0;
+    while is_transient_status(outcome.status) && attempts < TRANSIENT_RETRIES {
+        attempts += 1;
+        tokio::time::sleep(Duration::from_millis(300 * attempts as u64)).await;
+        match probe(&url, true).await {
+            Ok(o) => outcome = o,
+            Err(_) => break,
         }
     }
 
