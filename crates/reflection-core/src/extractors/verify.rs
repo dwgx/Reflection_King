@@ -476,9 +476,9 @@ async fn probe_capped(url: &Url, want_body: bool, body_cap: usize) -> Result<Pro
         validate_url(&current)?;
         let mut req = client.request(method.clone(), current.clone());
         if want_body {
-            // Range upper bound follows the cap (inclusive byte index). A server
-            // that ignores Range and sends the whole body is still bounded by the
-            // `body_cap` truncation below.
+            // Range upper bound follows the cap (inclusive byte index). Origins
+            // that ignore Range and stream the whole body are bounded by the
+            // capped chunk-read below (not by buffering the full body first).
             req = req.header(header::RANGE, format!("bytes=0-{}", body_cap - 1));
         }
         let resp = req.send().await?;
@@ -527,9 +527,32 @@ async fn probe_capped(url: &Url, want_body: bool, body_cap: usize) -> Result<Pro
         .and_then(|s| s.trim().parse::<u64>().ok());
 
     let body_head = if want_body {
-        let bytes = response.bytes().await.unwrap_or_default();
-        let cut = bytes.len().min(body_cap);
-        Some(String::from_utf8_lossy(&bytes[..cut]).into_owned())
+        // Stream chunks and stop once we have `body_cap` bytes, rather than
+        // `response.bytes().await` which buffers the WHOLE body first and only
+        // then truncates. The Range header above is best-effort: some origins
+        // ignore it and reply 200 with the full file (observed live:
+        // oplay.radiomercure.fr HLS -fragmented.mp4 -> 200, Range ignored,
+        // tens-of-MB streamed). With the old buffer-then-cut, those large bodies
+        // ran past VERIFY_TIMEOUT and surfaced as a no-status Err -> false Failed
+        // on a genuinely-playable file. Capping the read bounds both time and
+        // memory regardless of whether the server honors Range.
+        let mut collected: Vec<u8> = Vec::new();
+        let mut resp = response;
+        while collected.len() < body_cap {
+            match resp.chunk().await {
+                Ok(Some(chunk)) => {
+                    let remaining = body_cap - collected.len();
+                    let take = chunk.len().min(remaining);
+                    collected.extend_from_slice(&chunk[..take]);
+                    if take < chunk.len() {
+                        break; // hit the cap mid-chunk
+                    }
+                }
+                Ok(None) => break, // body fully read under the cap
+                Err(_) => break,   // partial body is still classifiable
+            }
+        }
+        Some(String::from_utf8_lossy(&collected).into_owned())
     } else {
         None
     };
@@ -585,9 +608,29 @@ async fn verify_one(candidate: &mut MediaCandidate, skew_secs: i64) {
             return;
         }
         Err(e) => {
-            candidate.validation_state = Some(CandidateValidationState::Failed);
-            candidate.validation_status = Some(format!("probe_error: {e}"));
-            return;
+            // A non-policy error on the initial probe. For a media candidate that
+            // was a HEAD: many CDNs/object stores simply don't implement HEAD and
+            // hang until the client timeout (observed live: PeerTube
+            // /download/.../*-fragmented.mp4 on p2b.drjpdns.com, dalek.zone,
+            // oplay.radiomercure.fr -> HEAD stalls, 0 bytes; the same URL serves a
+            // 200 on GET). Without a GET fallback the timeout surfaced as a
+            // no-status probe_error -> false Failed on a genuinely-playable file.
+            // The capped chunk-read keeps the GET cheap even when the origin
+            // ignores Range and streams the whole file.
+            if !is_manifest {
+                match probe(&url, true).await {
+                    Ok(o) => o,
+                    Err(_) => {
+                        candidate.validation_state = Some(CandidateValidationState::Failed);
+                        candidate.validation_status = Some(format!("probe_error: {e}"));
+                        return;
+                    }
+                }
+            } else {
+                candidate.validation_state = Some(CandidateValidationState::Failed);
+                candidate.validation_status = Some(format!("probe_error: {e}"));
+                return;
+            }
         }
     };
 
