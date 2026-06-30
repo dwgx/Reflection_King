@@ -254,6 +254,21 @@ fn body_has_login_signal(body: &str) -> bool {
     lower.contains("sign in") || lower.contains("log in") || lower.contains("login required")
 }
 
+/// A hard access denial from object storage / a CDN ACL (S3 `AccessDenied`,
+/// GCS `<Error>` bodies, generic "access denied"/"forbidden" XML). Distinct
+/// from a login wall (a profile fixes that) or a geo block: these URLs are not
+/// retrievable as-is — typically a private object or one needing a signature
+/// the page itself generates server-side. Observed on TED `py.tedcdn.com`
+/// fallback MP4s, which 403 with an S3 `<Error><Code>AccessDenied</Code>` body
+/// regardless of Referer/Origin. `Failed` is more honest than `NeedsProfile`.
+fn body_has_access_denied_signal(body: &str) -> bool {
+    let lower = body.to_ascii_lowercase();
+    lower.contains("<code>accessdenied</code>")
+        || lower.contains("<code>signaturedoesnotmatch</code>")
+        || lower.contains("<code>invalidaccesskeyid</code>")
+        || lower.contains("accessdenied")
+}
+
 /// Classify a manifest body (HLS/DASH) into a terminal state.
 fn classify_manifest(body: &str) -> CandidateValidationState {
     use CandidateValidationState::*;
@@ -325,10 +340,17 @@ pub fn classify_probe(
             if body_has_geo_signal(&body) {
                 return RegionBlocked;
             }
+            // Object-storage / CDN ACL denial (S3 AccessDenied, signature
+            // mismatch): not retrievable as-is and no profile fixes it. Checked
+            // before the login signal since some error pages carry both words.
+            if body_has_access_denied_signal(&body) {
+                return Failed;
+            }
             if body_has_login_signal(&body) {
                 return NeedsProfile;
             }
-            // 403 on a signed URL with no other signal: most often expiry.
+            // 403 with no other signal: most often a signed-URL/auth gate a
+            // profile may satisfy.
             return NeedsProfile;
         }
         s if (400..500).contains(&s) => return Failed,
@@ -487,11 +509,16 @@ async fn verify_one(candidate: &mut MediaCandidate, skew_secs: i64) {
         }
     };
 
-    // HEAD unsupported / unhelpful -> one Range GET fallback.
+    // HEAD unsupported / unhelpful -> one Range GET fallback. A 401/403 from a
+    // HEAD carries no body, so the classifier can't tell an S3 AccessDenied
+    // (Failed) from a geo block (RegionBlocked), a login wall (NeedsProfile), or
+    // a bare signed-URL gate. Fetch the error body once so those branches have
+    // the signal they need (observed: TED py.tedcdn.com fallback MP4s 403 with
+    // an `<Error><Code>AccessDenied</Code>` body).
     let head_unhelpful = !is_manifest
-        && (matches!(outcome.status, 405 | 501)
+        && (matches!(outcome.status, 405 | 501 | 401 | 403)
             || (outcome.content_type.is_none() && (200..300).contains(&outcome.status)));
-    if head_unhelpful {
+    if head_unhelpful && outcome.body_head.is_none() {
         if let Ok(o) = probe(&url, true).await {
             outcome = o;
         }
@@ -799,6 +826,30 @@ mod tests {
         assert_eq!(
             classify_probe(&o, CandidateKind::Video, false),
             CandidateValidationState::NeedsProfile
+        );
+    }
+
+    #[test]
+    fn forbidden_with_s3_access_denied_is_failed() {
+        // TED py.tedcdn.com fallback MP4s 403 with an S3 AccessDenied XML body;
+        // no profile/login fixes a private object, so this is Failed, not
+        // NeedsProfile.
+        let body = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
+            <Error><Code>AccessDenied</Code><Message>Access Denied</Message></Error>";
+        let o = outcome(403, Some("application/xml"), None, Some(body));
+        assert_eq!(
+            classify_probe(&o, CandidateKind::Video, false),
+            CandidateValidationState::Failed
+        );
+    }
+
+    #[test]
+    fn forbidden_signature_mismatch_is_failed() {
+        let body = "<Error><Code>SignatureDoesNotMatch</Code></Error>";
+        let o = outcome(403, Some("application/xml"), None, Some(body));
+        assert_eq!(
+            classify_probe(&o, CandidateKind::Video, false),
+            CandidateValidationState::Failed
         );
     }
 
