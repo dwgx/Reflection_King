@@ -383,8 +383,8 @@ impl<'a> Collector<'a> {
     /// PeerTube is federated across thousands of instances, so shape-matching is
     /// the only domain-agnostic way to support it generically.
     fn detect_known_apis(&mut self) {
-        let path = self.base.path();
-        // `/videos/embed/{id}` or `/videos/watch/{id}` or `/w/{id}`.
+        let path = self.base.path().to_string();
+        // PeerTube: `/videos/embed/{id}` or `/videos/watch/{id}` or `/w/{id}`.
         let id = path
             .strip_prefix("/videos/embed/")
             .or_else(|| path.strip_prefix("/videos/watch/"))
@@ -393,12 +393,40 @@ impl<'a> Collector<'a> {
         if let Some(id) = id {
             if !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
                 if let Ok(api) = self.base.join(&format!("/api/v1/videos/{id}")) {
-                    let s = api.to_string();
-                    if !self.api_endpoints.contains(&s) {
-                        self.api_endpoints.push(s);
+                    self.push_api_endpoint(api);
+                }
+            }
+        }
+
+        // MediaCMS: `/view?m={id}` (watch page) or `/embed?m={id}` (player). The
+        // page only ships a JSON-LD VideoObject whose `embedUrl` points back at
+        // the JS-shell player; the actual HLS/MP4 URLs live in the public
+        // `/api/v1/media/{id}` JSON. MediaCMS is self-hosted across arbitrary
+        // domains (demo.mediacms.io, cinemata.org, ...), so shape-matching on
+        // the `?m=` watch path is the only domain-agnostic way to support it.
+        if path == "/view" || path == "/embed" {
+            if let Some(id) = self
+                .base
+                .query_pairs()
+                .find(|(k, _)| k == "m")
+                .map(|(_, v)| v.into_owned())
+            {
+                let id = id.trim();
+                if !id.is_empty()
+                    && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                {
+                    if let Ok(api) = self.base.join(&format!("/api/v1/media/{id}")) {
+                        self.push_api_endpoint(api);
                     }
                 }
             }
+        }
+    }
+
+    fn push_api_endpoint(&mut self, api: Url) {
+        let s = api.to_string();
+        if !self.api_endpoints.contains(&s) {
+            self.api_endpoints.push(s);
         }
     }
 
@@ -650,17 +678,26 @@ impl<'a> Collector<'a> {
                     return;
                 }
                 if let Some(kind) = classify_url(s) {
+                    let score = match kind {
+                        CandidateKind::Manifest => 75,
+                        CandidateKind::Video => 70,
+                        CandidateKind::Audio => 68,
+                        // Skip images here: JSON blobs are full of avatar and
+                        // thumbnail URLs that bury the real media. `direct`
+                        // handles a genuine image target on its own.
+                        _ => return,
+                    };
                     if s.starts_with("http") || s.starts_with("//") {
-                        let score = match kind {
-                            CandidateKind::Manifest => 75,
-                            CandidateKind::Video => 70,
-                            CandidateKind::Audio => 68,
-                            // Skip images here: JSON blobs are full of avatar and
-                            // thumbnail URLs that bury the real media. `direct`
-                            // handles a genuine image target on its own.
-                            _ => return,
-                        };
                         self.add(s, kind, "inline_json", score);
+                    } else if s.starts_with('/') {
+                        // Root-relative media path inside a JSON API response
+                        // (e.g. MediaCMS `hls_info.master_file` =
+                        // `/media/hls/<hash>/master.m3u8`). classify_url already
+                        // confirmed a real media/manifest extension, so resolve
+                        // it against the API base rather than dropping it.
+                        if let Ok(absolute) = self.base.join(s) {
+                            self.add(absolute.as_str(), kind, "inline_json", score);
+                        }
                     }
                 }
             }
@@ -1312,5 +1349,59 @@ mod tests {
         let mut c = Collector::new(&ctx, ctx.url.clone());
         c.detect_known_apis();
         assert!(c.api_endpoints.is_empty());
+    }
+
+    #[test]
+    fn mediacms_view_shape_queues_public_api() {
+        // MediaCMS watch page `/view?m=<id>` → public `/api/v1/media/<id>`.
+        let ctx = test_ctx("https://demo.mediacms.io/view?m=lnBR8M2lX");
+        let mut c = Collector::new(&ctx, ctx.url.clone());
+        c.detect_known_apis();
+        assert_eq!(
+            c.api_endpoints,
+            vec!["https://demo.mediacms.io/api/v1/media/lnBR8M2lX".to_string()]
+        );
+    }
+
+    #[test]
+    fn mediacms_embed_shape_queues_public_api() {
+        // The JSON-LD embedUrl points at `/embed?m=<id>`; it resolves to the
+        // same media API, so following it must not be a dead end.
+        let ctx = test_ctx("https://cinemata.org/embed?m=vyTHsS8oc");
+        let mut c = Collector::new(&ctx, ctx.url.clone());
+        c.detect_known_apis();
+        assert_eq!(
+            c.api_endpoints,
+            vec!["https://cinemata.org/api/v1/media/vyTHsS8oc".to_string()]
+        );
+    }
+
+    #[test]
+    fn root_relative_media_url_in_json_is_resolved() {
+        // MediaCMS API returns `hls_info.master_file` as a root-relative path,
+        // not an absolute URL. It must be joined against the API base instead of
+        // being dropped by the http-only guard.
+        let ctx = test_ctx("https://demo.mediacms.io/view?m=x");
+        let api_base = Url::parse("https://demo.mediacms.io/api/v1/media/x").unwrap();
+        let mut c = Collector::new(&ctx, api_base);
+        let value = serde_json::json!({
+            "hls_info": { "master_file": "/media/hls/abcdef/master.m3u8" },
+            "poster_url": "/media/original/thumbnails/p.jpg"
+        });
+        c.harvest_json_urls(&value, 0);
+        assert!(
+            c.candidates
+                .iter()
+                .any(|cand| cand.url == "https://demo.mediacms.io/media/hls/abcdef/master.m3u8"
+                    && cand.kind == CandidateKind::Manifest
+                    && cand.method == "inline_json"),
+            "expected the root-relative master.m3u8 to be resolved against the API base, got {:?}",
+            c.candidates.iter().map(|x| &x.url).collect::<Vec<_>>()
+        );
+        // The relative poster image must NOT become a candidate (image skip).
+        assert!(
+            c.candidates.iter().all(|cand| !cand.url.contains("thumbnails")),
+            "poster thumbnail leaked into candidates"
+        );
     }
 }
