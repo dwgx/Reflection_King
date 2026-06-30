@@ -130,6 +130,13 @@ fn content_type_is_media(ct: &str) -> bool {
         || ct.starts_with("audio/")
         || ct.starts_with("image/")
         || ct == "application/octet-stream"
+        // Ogg container (Theora video / Vorbis|Opus audio) is commonly served as
+        // application/ogg, not video/* — e.g. archive.org's .ogv/.ogg derivatives
+        // (VoyagetothePlanetofPrehistoricWomen.ogg -> 200 application/ogg, OggS
+        // magic). Without this an OggS-magic media file fell through to SuspectAd.
+        // x-ogg is the legacy alias some older servers still emit.
+        || ct == "application/ogg"
+        || ct == "application/x-ogg"
 }
 
 fn content_type_is_manifest(ct: &str) -> bool {
@@ -791,6 +798,22 @@ mod tests {
         let o = outcome(206, Some("video/mp4"), Some(7_000_000), None);
         assert_eq!(
             classify_probe(&o, CandidateKind::Video, false),
+            CandidateValidationState::Usable
+        );
+    }
+
+    #[test]
+    fn ogg_application_content_type_is_usable() {
+        // archive.org .ogv/.ogg derivatives are served as application/ogg, not
+        // video/*; they were falling through to SuspectAd.
+        let o = outcome(200, Some("application/ogg"), Some(50_000_000), None);
+        assert_eq!(
+            classify_probe(&o, CandidateKind::Video, false),
+            CandidateValidationState::Usable
+        );
+        let legacy = outcome(200, Some("application/x-ogg"), Some(50_000_000), None);
+        assert_eq!(
+            classify_probe(&legacy, CandidateKind::Video, false),
             CandidateValidationState::Usable
         );
     }
