@@ -624,4 +624,93 @@ mod tests {
             }
         }
     }
+
+    // Catalog-driven batch harness. Reads newline-delimited page URLs from the
+    // file named by RK_CHAIN_CATALOG (# comments + blank lines ignored), runs
+    // the full discovery+verify chain over each, and prints per-state aggregate
+    // stats so the loop can grow the catalog to 100-200 sites WITHOUT
+    // recompiling. Diagnostic, not a pass/fail gate: it never asserts on
+    // individual sites (real pages rot / go offline); it only fails if the
+    // catalog is unreadable or every single page produced zero candidates
+    // (which would signal the chain itself broke). Run:
+    //   RK_CHAIN_CATALOG=loop/catalog-archive.txt RK_VERIFY_ENABLED=1 \
+    //     cargo test -p reflection-core --release chain_live_catalog \
+    //     -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore]
+    async fn chain_live_catalog() {
+        let path = match std::env::var("RK_CHAIN_CATALOG") {
+            Ok(p) => p,
+            Err(_) => {
+                println!("RK_CHAIN_CATALOG not set; skipping catalog batch");
+                return;
+            }
+        };
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("cannot read catalog {path}: {e}"));
+        let pages: Vec<&str> = text
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .collect();
+        assert!(!pages.is_empty(), "catalog {path} has no usable URLs");
+
+        let verify_on = std::env::var("RK_VERIFY_ENABLED").is_ok();
+        let mut state_counts: std::collections::BTreeMap<String, usize> = Default::default();
+        let mut pages_with_cands = 0usize;
+        let mut pages_top_usable = 0usize;
+        let mut empty_pages: Vec<&str> = Vec::new();
+
+        for (i, page) in pages.iter().enumerate() {
+            let outcome = run_chain(page).await;
+            let n = outcome.candidates.len();
+            if n > 0 {
+                pages_with_cands += 1;
+            } else {
+                empty_pages.push(page);
+            }
+            for c in &outcome.candidates {
+                let key = match c.validation_state {
+                    Some(s) => format!("{s:?}"),
+                    None => "Untested".to_string(),
+                };
+                *state_counts.entry(key).or_default() += 1;
+            }
+            let top_usable = outcome
+                .candidates
+                .first()
+                .map(|c| c.validation_state == Some(CandidateValidationState::Usable))
+                .unwrap_or(false);
+            if top_usable {
+                pages_top_usable += 1;
+            }
+            println!(
+                "[{:>3}/{}] cands={} top={:?} {}",
+                i + 1,
+                pages.len(),
+                n,
+                outcome.candidates.first().map(|c| c.validation_state),
+                page
+            );
+        }
+
+        println!("\n=== CATALOG SUMMARY ({} pages, verify={}) ===", pages.len(), verify_on);
+        println!("pages with >=1 candidate : {pages_with_cands}/{}", pages.len());
+        println!("pages top-candidate Usable: {pages_top_usable}/{}", pages.len());
+        println!("candidate state breakdown : {state_counts:?}");
+        if !empty_pages.is_empty() {
+            println!("ZERO-candidate pages ({}):", empty_pages.len());
+            for p in &empty_pages {
+                println!("  - {p}");
+            }
+        }
+
+        // Only hard-fail if the chain is wholly broken (nothing discovered
+        // anywhere). Per-site rot is expected and reported, not asserted.
+        assert!(
+            pages_with_cands > 0,
+            "catalog batch produced ZERO candidates across all {} pages — chain broken?",
+            pages.len()
+        );
+    }
 }

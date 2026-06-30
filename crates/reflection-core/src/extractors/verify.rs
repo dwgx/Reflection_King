@@ -136,6 +136,14 @@ fn content_type_is_manifest(ct: &str) -> bool {
         || ct == "application/dash+xml"
 }
 
+/// Transient HTTP statuses that warrant one retry before a terminal verdict:
+/// 429 (rate-limited) and the retryable 5xx (500/502/503/504). Sharded CDN /
+/// storage backends intermittently emit these for a request that succeeds on
+/// the next attempt.
+fn is_transient_status(status: u16) -> bool {
+    matches!(status, 429 | 500 | 502 | 503 | 504)
+}
+
 /// True when the URL *path* ends in a manifest extension, ignoring any
 /// `?query`/`#fragment`. CDNs routinely serve signed manifests like
 /// `master.m3u8?token=...`; a naive `str::ends_with(".m3u8")` on the raw URL
@@ -449,6 +457,18 @@ async fn verify_one(candidate: &mut MediaCandidate, skew_secs: i64) {
         && (matches!(outcome.status, 405 | 501)
             || (outcome.content_type.is_none() && (200..300).contains(&outcome.status)));
     if head_unhelpful {
+        if let Ok(o) = probe(&url, true).await {
+            outcome = o;
+        }
+    }
+
+    // One retry on a transient status before we commit a terminal Failed.
+    // CDNs / sharded storage (e.g. archive.org's per-item dnNNNN nodes that a
+    // download/ URL 302-redirects to) intermittently 5xx or 429 a request that
+    // succeeds moments later; without a retry a genuinely-Usable stream gets
+    // permanently marked Failed (observed: ElephantsDream ed_1024.mp4 -> 500
+    // then 200). Retry with a body GET so a recovered node also yields ct/len.
+    if is_transient_status(outcome.status) {
         if let Ok(o) = probe(&url, true).await {
             outcome = o;
         }
@@ -793,6 +813,18 @@ mod tests {
             classify_probe(&o, CandidateKind::Manifest, false),
             CandidateValidationState::Usable
         );
+    }
+
+    #[test]
+    fn transient_status_set() {
+        // 429 + retryable 5xx get one retry before a terminal verdict.
+        for s in [429u16, 500, 502, 503, 504] {
+            assert!(is_transient_status(s), "{s} should be transient");
+        }
+        // 2xx/3xx and definitive 4xx are NOT retried.
+        for s in [200u16, 206, 301, 400, 401, 403, 404, 410, 451, 501] {
+            assert!(!is_transient_status(s), "{s} should NOT be transient");
+        }
     }
 
     #[test]
