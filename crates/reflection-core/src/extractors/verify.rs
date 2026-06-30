@@ -394,8 +394,20 @@ pub fn classify_probe(
         _ => {}
     }
     // 2xx / 3xx-resolved path.
-    // Manifest needs body parse regardless of declared kind.
-    if content_type_is_manifest(&ct) || url_path_has_manifest_ext(&outcome.final_url) {
+    // Manifest needs body parse regardless of declared content-type. Gate on the
+    // candidate *kind* too, not just CT / path extension: a Manifest-kind
+    // candidate can carry the `.m3u8` in its query string (mac_cms / hanime match
+    // `url.contains(".m3u8")`, so the marker may sit after `?`) or be served as
+    // application/octet-stream (observed: shaka DASH assets). Either way
+    // url_path_has_manifest_ext (path-only) and content_type_is_manifest both miss
+    // it, so without the kind check it would skip classify_manifest and fall
+    // through to the media arm as Usable — the DRM parse never runs (same bypass
+    // family as the signed-manifest and 16 KiB-cap fixes). The body is present
+    // because verify_one fetches it whenever the candidate kind is Manifest.
+    if kind == CandidateKind::Manifest
+        || content_type_is_manifest(&ct)
+        || url_path_has_manifest_ext(&outcome.final_url)
+    {
         if body.is_empty() {
             return SuspectAd;
         }
@@ -1051,6 +1063,37 @@ mod tests {
         assert_eq!(
             classify_probe(&o, CandidateKind::Manifest, false),
             CandidateValidationState::Drm
+        );
+    }
+
+    #[test]
+    fn manifest_kind_octet_stream_still_drm_parsed() {
+        // A Manifest-kind candidate whose body is a DRM-protected playlist but is
+        // served as application/octet-stream with no .m3u8/.mpd in the URL *path*
+        // (the marker may sit in the query string for mac_cms/hanime, which match
+        // url.contains(".m3u8")). Neither content_type_is_manifest nor
+        // url_path_has_manifest_ext fires, so without the kind gate this would skip
+        // classify_manifest and fall through to the octet-stream media arm as
+        // Usable — leaking a protected stream. The kind gate must still DRM-parse.
+        let body = "#EXTM3U\n#EXT-X-SESSION-KEY:METHOD=SAMPLE-AES,KEYFORMAT=\"com.apple.streamingkeydelivery\",URI=\"skd://x\"\n#EXT-X-STREAM-INF:BANDWIDTH=800000\nlow.m3u8\n";
+        // outcome() hardcodes final_url to a .mp4 path, so the path-ext check is
+        // guaranteed to miss — isolating the kind gate.
+        let o = outcome(200, Some("application/octet-stream"), None, Some(body));
+        assert_eq!(
+            classify_probe(&o, CandidateKind::Manifest, false),
+            CandidateValidationState::Drm
+        );
+    }
+
+    #[test]
+    fn manifest_kind_octet_stream_clean_is_usable() {
+        // Same path, clean (no DRM) manifest: the kind gate parses it and a clean
+        // playlist is Usable — the gate must not blanket-demote manifests.
+        let body = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=800000\nlow.m3u8\n";
+        let o = outcome(200, Some("application/octet-stream"), None, Some(body));
+        assert_eq!(
+            classify_probe(&o, CandidateKind::Manifest, false),
+            CandidateValidationState::Usable
         );
     }
 
