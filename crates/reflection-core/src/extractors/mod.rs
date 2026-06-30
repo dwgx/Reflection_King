@@ -661,6 +661,11 @@ mod tests {
 
         let verify_on = std::env::var("RK_VERIFY_ENABLED").is_ok();
         let mut state_counts: std::collections::BTreeMap<String, usize> = Default::default();
+        // Pages whose TOP candidate landed in a non-Usable terminal state, keyed
+        // by that state — turns the aggregate breakdown into an actionable list
+        // (which sites to inspect for a NeedsProfile/Failed/Drm/etc. verdict).
+        let mut pages_by_top_state: std::collections::BTreeMap<String, Vec<&str>> =
+            Default::default();
         let mut pages_with_cands = 0usize;
         let mut pages_top_usable = 0usize;
         let mut empty_pages: Vec<&str> = Vec::new();
@@ -680,20 +685,22 @@ mod tests {
                 };
                 *state_counts.entry(key).or_default() += 1;
             }
-            let top_usable = outcome
-                .candidates
-                .first()
-                .map(|c| c.validation_state == Some(CandidateValidationState::Usable))
-                .unwrap_or(false);
+            let top_state = outcome.candidates.first().and_then(|c| c.validation_state);
+            let top_usable = top_state == Some(CandidateValidationState::Usable);
             if top_usable {
                 pages_top_usable += 1;
+            } else if let Some(s) = top_state {
+                pages_by_top_state
+                    .entry(format!("{s:?}"))
+                    .or_default()
+                    .push(page);
             }
             println!(
                 "[{:>3}/{}] cands={} top={:?} {}",
                 i + 1,
                 pages.len(),
                 n,
-                outcome.candidates.first().map(|c| c.validation_state),
+                top_state,
                 page
             );
         }
@@ -702,6 +709,14 @@ mod tests {
         println!("pages with >=1 candidate : {pages_with_cands}/{}", pages.len());
         println!("pages top-candidate Usable: {pages_top_usable}/{}", pages.len());
         println!("candidate state breakdown : {state_counts:?}");
+        // Per-state page lists for every non-Usable top verdict, so a reviewer
+        // can jump straight to the sites behind each Drm/Failed/NeedsProfile/...
+        for (state, urls) in &pages_by_top_state {
+            println!("pages top-candidate {state} ({}):", urls.len());
+            for u in urls {
+                println!("  - {u}");
+            }
+        }
         if !empty_pages.is_empty() {
             println!("ZERO-candidate pages ({}):", empty_pages.len());
             for p in &empty_pages {
