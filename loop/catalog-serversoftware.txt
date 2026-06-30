@@ -50,9 +50,17 @@ https://swimrewind.com/
 https://gamesmaster.uk/
 
 # --- JW Player / Brightcove / Kaltura embeds (player-config JSON + iframe-follow path) ---
+# yt_dlp covers these (c1) when content exists: JW preview, illinois + educonference
+# Kaltura entries all verify Usable with RK_CHAIN_YTDLP. The three below rotted at
+# source (heartbeat #34, confirmed via yt-dlp directly): Brightcove videoId 404,
+# kaltura.com partner_id 1851962 blocked, edu.mediaspace entry invalid. 0 candidates
+# is CORRECT for them, not a regression — kept as dead-content anchors.
 https://cdn.jwplayer.com/previews/3XnJSIm4
+# DEAD (BC videoId 404): https://players.brightcove.net/1752604059001/default_default/index.html?videoId=6351822251112
 https://players.brightcove.net/1752604059001/default_default/index.html?videoId=6351822251112
+# DEAD (Kaltura partner blocked): https://www.kaltura.com/index.php/extwidget/preview/partner_id/1851962/uiconf_id/40484101/entry_id/1_3jb3wn7e/embed/dynamic
 https://www.kaltura.com/index.php/extwidget/preview/partner_id/1851962/uiconf_id/40484101/entry_id/1_3jb3wn7e/embed/dynamic
 https://mediaspace.illinois.edu/media/t/1_ll6u4mo7
+# DEAD (Kaltura invalid entry): http://edu.mediaspace.kaltura.com/media/Lecture+1+-+Business+Strategy/1_7mt6d83j
 http://edu.mediaspace.kaltura.com/media/Lecture+1+-+Business+Strategy/1_7mt6d83j
 http://educonference.mediaspace.kaltura.com/media/Lecture+1+(Example)/1_03gs92ek
