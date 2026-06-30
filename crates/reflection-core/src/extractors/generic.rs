@@ -970,6 +970,15 @@ fn url_like_tokens(html: &str) -> Vec<String> {
                 .unwrap_or(tail.len());
             let token = &tail[..endi];
             from = start + endi.max(marker.len());
+            // A URL embedded in escaped JSON (`\"contentUrl\":\"https://…\"`)
+            // is terminated by the JSON close-quote `\"`; the scanner stops at
+            // the `"` but captures the preceding escape backslash, leaving a
+            // stray trailing `\` that corrupts the final query param (observed:
+            // streamable CloudFront URLs -> `Key-Pair-Id=…\` => 403 MissingKey).
+            // A literal `\` is never a valid URL byte, so trim any trailing
+            // ones. Mid-token escapes (`\/`, `&`) are left for
+            // decode_url_escapes; only the trailing artifact is dropped here.
+            let token = token.trim_end_matches('\\');
             if token.len() > marker.len() && seen.insert(token.to_string()) {
                 out.push(token.to_string());
             }
@@ -1143,6 +1152,23 @@ mod tests {
         let got = url_like_tokens(html);
         assert!(got.contains(&"https://x/a.mp4".to_string()));
         assert!(got.contains(&"https://y/b.m3u8".to_string()));
+    }
+
+    #[test]
+    fn url_like_tokens_trims_trailing_json_escape_backslash() {
+        // Escaped-JSON close-quote (\") leaves a stray trailing backslash on the
+        // captured token; it must be trimmed or the final query param breaks
+        // (streamable CloudFront -> Key-Pair-Id=...\ => 403 MissingKey).
+        let html = r#"\"contentUrl\":\"https://cdn/x.mp4?Expires=1&Key-Pair-Id=AB\""#;
+        let got = url_like_tokens(html);
+        assert!(
+            got.contains(&"https://cdn/x.mp4?Expires=1&Key-Pair-Id=AB".to_string()),
+            "got {got:?}"
+        );
+        assert!(
+            !got.iter().any(|t| t.ends_with('\\')),
+            "no token should retain a trailing backslash: {got:?}"
+        );
     }
 
     fn test_ctx(url: &str) -> ExtractContext {
