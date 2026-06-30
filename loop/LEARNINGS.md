@@ -1,0 +1,177 @@
+# Reflection King 验证闭环 — 失败模式 & 解法学习
+
+每条:**症状 → 根因 → 解法 → 证据**。可泛化的回灌 generic + classify_probe + verify。
+
+---
+
+## L1. `.mp4` 后缀的 embed/player 页会被纯分数选中(verification 的核心价值)
+- **症状**:`archive.org/embed/Sintel/sintel-2048-stereo.mp4` URL 以 `.mp4` 结尾、URL-pattern 打分高(74),但它根本不是媒体——返回 `text/html`(是播放器页)。
+- **根因**:routing/打分只看 URL 形状,无法区分"真流"和"长得像流的页面"。archive.org 的 `/embed/<id>/<file>.mp4` 是 iframe 播放器,`/download/<id>/<file>.mp4` 才是真 mp4。
+- **解法**:verification stage 探测后按 content-type 判定——`text/html` body + 小体积 → `SuspectAd`,真 `video/mp4` → `Usable`。`state_tier` 排序把 Usable(score 80)浮到 SuspectAd(score 74)之上。**纯分数选择会选错;验证后选对**。
+- **证据**:2026-06-30 `chain_live` 测试(master 2f15245)。Sintel 页:download mp4 → Usable(80,#1),embed mp4 → SuspectAd(74),real 流胜出。
+- **泛化**:这正是用户要的"核实抓到的能不能播"。`.mp4`/`.m3u8` 后缀 ≠ 可播媒体,必须探测确认 content-type。
+
+## L2. 真实页面里哪些可被静态 scan 抓出 candidate(P2 catalog 选站经验)
+- **能静态抓出**(generic 的 og:video/twitter:player/JSON-LD/bare-url scan 命中):
+  - `archive.org/details/<id>` —— og:video + twitter:player + VideoObject,最可靠,直接给真 mp4。
+  - `commons.wikimedia.org/wiki/File:*.webm` —— bare upload.wikimedia.org/.webm URL。
+  - `vimeo.com/<id>` —— og:video:url 给 player.vimeo.com embed(需深一层 follow,不是直链)。
+- **抓不出**(纯 JS 渲染 / 无 meta):w3schools html5_video.asp、test-videos.co.uk、ted.com/talks、media.ccc.de(单页 6KB JS 壳)、rumble/某些站直接 0 字节(挡 curl UA)。
+- **结论**:P2 扩 catalog 优先 archive.org/details(海量公共领域影视)+ wikimedia commons。external yt-dlp 路径(YouTube/bilibili 等)不产 MediaCandidate,验证无用武之地(见基线 candidate_count=0)。
+
+## L3. 签名 manifest URL(带 ?query)绕过 body-parse → DRM 检测被静默跳过(真 bug,已修)
+- **症状**:CDN 上签名/带 token 的 manifest 极常见:`master.m3u8?token=abc`、`manifest.mpd?sig=...`。原 verify 用 `final_url.ends_with(".m3u8")` / `candidate.url.ends_with(".mpd")` 判定是否 manifest——这是对**含 query 的原始 URL 字符串**做后缀匹配,带 query 的 URL 不匹配 → 不抓 body、不 parse → `classify_manifest` 根本不跑 → **DRM 流(#EXT-X-KEY / <ContentProtection>)被当成普通响应放行为 Usable**。若 CDN 再把 content-type 误标成 octet-stream/text/plain,连 content_type_is_manifest 兜底也失效。
+- **根因**:对 URL 做 raw-string `ends_with` 而非解析 path。query suffix 把扩展名"挡"在后面。
+- **解法**:`url_path_has_manifest_ext(raw)` —— `Url::parse` 取 `.path()` 小写后判 `.m3u8`/`.mpd`,忽略 ?query/#fragment;parse 失败回退到 split(['?','#']) 前段。两处调用点(verify_one 的 want_body 决策 + classify_probe 的 parse 触发)统一用它。`/watch?file=movie.m3u8` 这种正确**不**匹配(path 是 /watch)。
+- **证据**:2026-06-30 master 6eeea69。recon 实测真实 manifest:unified-streaming/apple/akamai 的 m3u8/mpd content-type 各异(`application/x-mpegURL` 大小写混合、`application/dash+xml`),axprod ClearKey DASH 的 `<ContentProtection>` 在 byte 989(16KB body cap 内,OK)。3 regression 测试:签名 HLS+SAMPLE-AES+octet-stream→Drm;签名 DASH→Usable;helper 单元。全 suite 85 passed。
+- **泛化**:任何按"URL 扩展名"分流的逻辑都要解析 path、不能 raw-string 后缀匹配——signed URL 是生产常态。direct.rs 的 `classify_extension` 值得照此审一遍。
+- **遗留观察**:BODY_HEAD_CAP=16KB。超大 master manifest 若 `<ContentProtection>`/`#EXT-X-KEY` 落在 16KB 之后,DRM 仍会漏判 → Usable。当前测试样本都在 cap 内,暂不改;记此边界待真实样本触发。
+
+## L4. HLS master playlist 的 DRM 用 `#EXT-X-SESSION-KEY` 而非 `#EXT-X-KEY`,且常只靠 KEYFORMAT system UUID 标识(两个 DRM 漏判,已修)
+- **症状**:`classify_manifest` 只查 `#ext-x-key` + 字面厂商词(sample-aes/widevine/playready)。两个真实 DRM HLS 漏判为 Usable:
+  - **(a) master-level DRM**:RFC 8216 规定 master(多变体)playlist 用 `#EXT-X-SESSION-KEY` 宣告 DRM,media playlist 才用 `#EXT-X-KEY`。verify **先探 master**,而子串 `"ext-x-key"` **不**包含在 `"ext-x-session-key"` 里(实测 `"ext-x-key" in "ext-x-session-key"` = False)→ 带 `#EXT-X-STREAM-INF` 的受保护 master 落进 Usable 分支。
+  - **(b) UUID-only 标识**:真实 Widevine HLS(shaka angel-one variant)用 `METHOD=SAMPLE-AES-CTR` + `KEYFORMAT="urn:uuid:edef8ba9-79d6-4ace-a3c8-27dcd51d21ed"`,正文无字面 "widevine"。靠 UUID 才认得出(SAMPLE-AES-CTR 含 sample-aes 碰巧命中,但 PlayReady `9a04f079-...` 这种就漏了)。
+- **解法**:`has_key_tag = #ext-x-key || #ext-x-session-key`;`names_drm_system` 增加 Widevine UUID `edef8ba9-79d6-4ace-a3c8-27dcd51d21ed` + PlayReady UUID `9a04f079-9840-4286-ab92-e65be0885f95`。
+- **证据**:2026-06-30 master 1d3e3e3。live 实测 apple bipbop master(无 key)→ Usable;shaka widevine variant 确含 SAMPLE-AES-CTR+UUID。3 regression(master SESSION-KEY FairPlay→Drm / KEYFORMAT UUID→Drm / 干净 master→Usable),全 suite 88 passed。
+- **泛化**:DRM 检测要覆盖协议的**所有层级标签**(HLS 的 KEY vs SESSION-KEY)和**所有标识方式**(厂商词 vs system UUID)。只匹配最常见一种 = 受保护流被当可播。DASH 侧 `<contentprotection>` 子串够稳(各 scheme 都带这标签)。
+
+## L5. archive.org `download/` 直链 302→分片存储节点(dnNNNN.*.archive.org)会瞬时 5xx,无 retry 把可播流误判 Failed(已修)
+- **症状**:41 页 archive catalog 批量跑,40/41 top-Usable,唯一例外 ElephantsDream top=Failed。诊断:`og:video` 的 `download/ElephantsDream/ed_1024.mp4` 302 跳到 `dn720706.ca.archive.org`,该节点返回 **500**;几分钟后同 URL 返回 **200 video/mp4**(2 candidate 全 Usable)。**同一流,瞬时 500→Usable**。
+- **根因**:`verify_one` 探测拿到 5xx 直接 `classify_probe`→Failed,无 retry。archive `download/` URL 都会 302 到 per-item 分片存储节点(dnNNNN.us/ca.archive.org),这些节点偶发 5xx/429,下一次就好。CDN/分片存储通病。
+- **解法**:新增 `is_transient_status`(429/500/502/503/504),`verify_one` 在 HEAD-fallback 之后、classify 之前,若状态 transient 则 **retry 一次(body GET,顺便拿 ct/len)**。definitive 4xx(404/410/451)不 retry。
+- **证据**:2026-06-30 master 71e67dc。`transient_status_set` 单元测试 + 全 suite 89 passed。批量基线:41/41 产 candidate,states {Usable:66, SuspectAd:6, Failed:2}(2 Failed 即此 case)。
+- **泛化**:验证管线对**瞬时失败**(5xx/429/网络抖动)要 retry 才能给可信的终态;否则真实流量里大量"假 Failed"。重试 1 次是性价比拐点(分片节点二次命中通常换一台)。后续可考虑指数退避/多次,但先 1 次。
+
+## 工具化:catalog-driven 批量 harness(L5 同 commit)
+- `chain_live_catalog` 测试读 `RK_CHAIN_CATALOG` 文件(每行一 URL,# 注释),跑全链 + 打印 per-state 聚合统计 + 零候选页清单。**catalog 长到 100-200 站无需重编译**。诊断型不是 per-site gate:只在所有页全零候选时 hard-fail。
+- catalog 种子:`E:\Work\Debain\rk-review\loop\catalog-archive.txt`(41 页,advancedsearch.php 从 feature_films/prelinger/classic_cartoons/sci-fi_horror/animationandcartoons harvest,逐个验证过含 og:video)。
+- 跑法:`RK_CHAIN_CATALOG=/tmp/catalog-archive.txt RK_VERIFY_ENABLED=1 cargo test -p reflection-core --release chain_live_catalog -- --ignored --nocapture`(41 页约 240s,走 home-cloud SOCKS)。
+- **下一步扩 catalog**:archive 单一来源同质化(全是 og:video+download mp4)。要更多失败模式得换品类:HLS/DASH demo 站(bitmovin/shaka/unified-streaming/apple devstreaming/dash-if)、wikimedia commons 文件页、带 JSON-LD VideoObject 的新闻站、JS 壳站(预期零候选,验证 generic 边界)。
+
+## L6. HLS-Widevine/-PlayReady 的 DRM 常只在 *variant*(media)playlist 的 #EXT-X-KEY,master 探测看不到 → 一层变体下降补检(已修)
+- **症状**:manifest catalog 跑(7 个真实 demo 流),shaka angel-one-widevine-hls master 判 **Usable**——但它是货真价实的 Widevine 流。master 只有 `#EXT-X-STREAM-INF`(无 key),key 在 variant playlist 里(L4 已证 variant 含 SAMPLE-AES-CTR + Widevine UUID)。verify **只探 master** → 漏判。
+- **解法**:`verify_one` 在 classify 得 Usable HLS master 后,**一层下降**:`hls_master_variant_to_probe`(限 HLS master)取第一个 variant URL(`first_hls_variant_url`:`#EXT-X-STREAM-INF` 后首个非注释行,join 到 master URL),probe 一次 + classify_manifest;variant 判 Drm 就把候选升级 Drm。仅一层(不抓 segment),probe 失败保持原判。DASH/media playlist 不受影响(返回 None)。
+- **证据**:2026-06-30 master 924202c。live 验证:shaka angel-one master 现 → Drm(原 Usable);5 个干净 demo(apple bipbop/mux/unified-streaming HLS+DASH/akamai bbb)保持 Usable;axprod ClearKey DASH 保持 Drm。**无误升**。单元测试 first_hls_variant_resolves_relative_and_skips_comments,全 suite 90 passed。
+- **泛化**:分层媒体协议(HLS master→variant→segment;DASH MPD→Period→Representation)的安全属性(DRM/加密)可能只在深层声明。验证至少要下降到声明那层。HLS 实践:master 看 SESSION-KEY,variant 看 KEY,两层都要。manifest catalog: `E:\Work\Debain\rk-review\loop\catalog-manifest.txt`(7 流,DRM 路径回归基线)。
+
+## 真实站点验证基线(2026-06-30)
+- **archive catalog**(41 页,`catalog-archive.txt`):41/41 产候选,40/41 top-Usable,states {Usable:66,SuspectAd:6,Failed:2→retry 后 0}。同质(全 og:video+download mp4)。
+- **manifest catalog**(7 流,`catalog-manifest.txt`):5 Usable + 2 Drm(shaka widevine + axprod ClearKey),DRM 检测路径(SESSION-KEY/UUID/ContentProtection/variant 下降)全部真实命中。**这是 L3/L4/L6 修复在生产流量的活证据**。
+- **mixed catalog**(102 页,`catalog-mixed.txt`,4 路 workflow harvest 合并;含 existing 共 ~150 站达成 100-200 目标):90/102 产候选,81/102 top-Usable,states {Usable:131, SuspectAd:11, NeedsProfile:10, Drm:8, Failed:4}。12 个零候选**全部是预期的 D2 JS 壳/SPA 站**(twitter/instagram/tiktok/facebook/spotify/reddit/linkedin/discord + schema.org/cnn)——证明 generic 不在 JS 壳站误报。**JSON-LD VideoObject 路径在 TED(11 页全 top-Usable,contentUrl→hls.ted.com manifest 真实 200)验证成功**。
+
+## L12. 回归 catalog 沉淀进 repo + 测试 cwd 非 repo 根(回归安全网 + 流程修正)
+- **背景**:2026-06-30 心跳#17。接 L11 留下的优先项:把 mixed catalog(102 页)沉淀为 repo 内固定回归集——此前三个 harvest catalog 只活在 home-cloud `/tmp`,重启即丢,无法当 verify 改动的安全网。
+- **做了什么**:把 `catalog-archive.txt`(41)、`catalog-manifest.txt`(7)、`catalog-mixed.txt`(102)+ `loop/README.md`(跑法 + 基线分布)提交进 repo `loop/`。README 记录:候选级诊断行格式 `* [HTTP状态 ct] 媒体URL <- 来源页`、状态直方图读法、真实页腐烂时 Failed 升高优先看候选级 `[status]` 判真死 vs 抖动。
+- **顺带流程修正(真坑)**:跑全量 mixed catalog 时 `RK_CHAIN_CATALOG=loop/catalog-mixed.txt` 直接 panic `No such file or directory`——**cargo test 的 cwd 是 crate 目录不是 repo 根**(`crates/reflection-core/`),相对路径解析失败。改用绝对路径 `$PWD/loop/...` 即通。mod.rs 里那条 doc-comment 示例命令(`loop/catalog-archive.txt`)本身就是错的(从没真跑过那条相对路径),一并修成 `$PWD/`。
+- **全量基线(102 页,verify=true,2026-06-30)**:`{Usable:168, Drm:8, SuspectAd:10, Failed:15}`;90/102 页 ≥1 候选,81/102 页 top=Usable,12 页零候选(=instagram/tiktok 等 JS 壳社交站,无 og 标记)。Failed 15 比 L10 单页观察高,是瞬时 5xx 在全量跑里的累积(multi-retry 后多半本可恢复,但 564s 全量跑里抖动样本多)。耗时 564s。
+- **教训**:① **测试 fixture 必须进版本控制**——只活在 `/tmp` 的 catalog 等于没有安全网,且"文档写了某条命令"≠"那条命令真跑过"(mod.rs 相对路径示例从没被执行过,一执行就 ENOENT)。沉淀回归集时顺手实跑一遍校验路径/基线,是发现这类纸面错误的唯一办法。② **cargo test cwd = crate 目录非 workspace 根**:任何测试里读相对路径文件都要么 `$PWD`/`CARGO_MANIFEST_DIR` 锚定、要么 env 传绝对路径;这是 workspace 多 crate 项目的通用坑。③ 回归集基线要连同"为什么是这些数字"一起记(零候选=JS 壳、Failed 高=瞬时抖动),否则下次跑出不同数字无法判断是回归还是正常浮动。累计真 bug 修复=9(本轮是流程/基础设施,非新 verify bug)。master=517aa23。
+
+## L11. application/ogg 漏判媒体 + manifest 16KB body cap 截断 DRM 风险(真 bug #9 + 安全短路硬化)
+- **背景**:2026-06-30 心跳#16。接 L10 留下的两个边界:① SuspectAd 桶里那个 `.ogg`(200 application/ogg)真媒体;② manifest 16KB body cap 截断 DRM 信号的理论风险——这轮都实证落地。
+- **真 bug #9(application/ogg 漏判)**:`content_type_is_media` 只认 `video/`、`audio/`、`image/`、`application/octet-stream`,**不认 `application/ogg`**(Ogg 容器标准 MIME,装 Theora 视频/Vorbis|Opus 音频)。archive `VoyagetothePlanetofPrehistoricWomen.ogg` 最终 200 + `application/ogg` + `OggS` magic(curl 实证 od -c 头 4 字节=OggS),真可播文件却落 SuspectAd catch-all。修:加 `application/ogg` + 老式别名 `application/x-ogg`。live 该页 1 SuspectAd→4/4 Usable。单测 `ogg_application_content_type_is_usable`。
+- **安全短路硬化(16KB cap 截断 DRM,实证非纯理论)**:probe 对所有 GET 固定 `Range: bytes=0-16383`,body 也按 16KB 截。实测 5 个真 manifest:axprod `Manifest_1080p.mpd` = **18561 字节,超 16KB**。grep -bo 查 DRM 标记字节偏移:ContentProtection/Widevine/PlayReady/pssh 全在 935-5577(DASH 把 ContentProtection 放 AdaptationSet 头部,靠前)——**这条 live 截断后仍正确判 Drm,纯属运气**(DASH 结构使然),但长 HLS 多码率 master 的 variant 级 `#EXT-X-KEY` 可能排在 16KB 后→截断漏检→受保护流误判 Usable(放行)。修:probe 拆出 `probe_capped(url, want_body, body_cap)`,manifest(初探+transient retry+HLS variant DRM 下降)用 `MANIFEST_BODY_CAP=512KiB`,媒体/4xx error-body 仍用 16KB;Range 上界跟 cap 走,截断保护仍兜底忽略 Range 的 server。单测 `drm_tag_past_16kib_still_detected`(造 24KB 全 clear variant 后接 SESSION-KEY 的 master)。live:axprod MPD 仍 Drm(现全量捕获)、Apple clear fMP4 master 仍 Usable。全 suite 95 passed(91→93→94→95)。
+- **教训**:① **容器 MIME 要查全**——Ogg 不走 video/audio 前缀而是 application/ogg,媒体类型白名单按"前缀+已知容器全名"两层维护;magic bytes(OggS)是判真媒体的硬证据,值得在诊断里利用。② **"碰巧没出事"≠安全**:16KB cap 截断 DRM 的风险被一个 18.5KB 真 manifest 命中,只因 DASH 把 ContentProtection 放头部才没误判——这种靠数据布局运气的安全短路必须硬化(放行受保护内容是最坏误判方向,宁可多读字节)。③ **实证驱动**:没先 curl 测真 manifest 大小+DRM 偏移就改 cap=盲改;先证 18.5KB 存在、再证标记位置、再决定 cap 值(512KiB 留足多 DRM 多码率余量且仍有界),改完 live 复验判定不变。流程兜底:推前 D: cargo test --no-run + 全 suite,tree 一致。累计真 bug 修复=9。master=30171e4。
+
+## L10. 单次 transient retry 不够,archive 多节点 failover 致假 Failed(真 bug #8,安全短路鲁棒性)
+- **背景**:2026-06-30 心跳#15。接 L9 候选级诊断,这轮把 SuspectAd 也纳入诊断清单,并给每条诊断行加 `[HTTP状态 content-type]` 前缀(取代恒为 "passed" 的 policy_status,因 validation_status 只存 policy 不存原因)。用 L9 方法核查 SuspectAd 11 例。
+- **SuspectAd 核查结论(非 bug)**:11 例中 10 例是 `archive.org/embed/<id>/<file>.mp4` **player/embed 页**(探测 200 text/html),GenericExtractor 按"路径像媒体"(`.mp4`/`.mov`)把 iframe player URL 当媒体候选采了,探测发现是 HTML→正确落 SuspectAd(同页的 `download/` 真 MP4 另有候选且 Usable)。第 11 例是 `.ogg`(200 application/ogg)真媒体——边界,暂存。即 SuspectAd 桶**无可救误判**,分类正确。
+- **真 bug #8(顺带挖出,安全短路鲁棒性)**:同次 mixed run 的 **Failed 从 5 暴涨到 17**,内含 3 个 `[500 video/mp4]` archive `download/` URL。curl 复探:`charlie_chaplin_film_fest.mp4` 连续 **500、500、然后 206**;`house_on_haunted` 重试即 206。即 archive 分片存储跨多 dnNNNN 节点 failover,**单次 transient retry 落在第二个 500 上**→真正 Usable 的流被永久误判 Failed。
+- **修**:把 verify_one 里"`if is_transient_status {单次 retry}`"改成**有界循环**(`TRANSIENT_RETRIES=2`,共 3 次机会)+ 线性退避(`300ms * attempt`);truly-down origin 仍快速终止。live 复跑 3 个受影响 archive 页 → 全部 top=Usable(8 Usable / 1 SuspectAd=embed 页)。全 suite 93 passed。
+- **教训**:① **重试次数要匹配后端真实 failover 深度**——分片/CDN 存储一次故障可能连累多个节点,N=1 重试对"500,500,206"这类无效;但也不能无界(加 cap + 退避,平衡延迟与召回)。② **诊断行带 `[status ct]` 极大提速分类**:一眼区分 SuspectAd 的 200-html(embed 页)vs 200-ogg(真媒体)、Failed 的 500(瞬时可救)vs 404(真死)vs 403-xml(S3 denied);可观测性投资持续复利。③ **run-to-run 方差**:Failed 桶大小受网络抖动影响大,聚合数字要结合候选级 `[status]` 判断是真死还是瞬时——否则会把网络抖动误读成代码回归。
+
+## L9. 403+S3 `AccessDenied` body 误判 NeedsProfile（真 bug #7,verification 状态迁移精化）
+- **背景**:2026-06-30 心跳#14。接 L8 的 per-state 可观测性,这轮加**候选级**(非仅页 top)诊断 URL 清单,把 NeedsProfile/Expired/RegionBlocked/Failed 每个候选的 URL+来源页打印出来,用来 ground 分类器调优(L8 只列 top 候选非 Usable 的页,二级候选落 NeedsProfile 时页 top 仍 Usable 故不可见——正是 TED fallback 这个盲区)。
+- **定位**:mixed catalog 的 10 个 NeedsProfile **全是** TED `py.tedcdn.com/...fallback...mp4`(每页 top 是 hls.ted.com manifest Usable,fallback 是二级候选)。curl 探:这些 fallback MP4 **403 + `content-type: application/xml` + body `<Error><Code>AccessDenied</Code>`(AmazonS3)**;带 `Referer: ted.com` / `Origin` 仍 403。即 S3 对象 ACL 私有,需 TED 服务端签名,**没有任何 profile/login 能解锁**。
+- **真 bug #7**:`classify_probe` 的 401/403 分支,无 geo/login signal 就 catch-all→NeedsProfile(注释自承"signed URL 多半是 expiry")。但 S3 AccessDenied 既非 geo 非 login 非可登录修复→NeedsProfile 误导。修两处:① classify_probe 加 `body_has_access_denied_signal`(检 `<code>accessdenied</code>`/`signaturedoesnotmatch`/`invalidaccesskeyid`)在 login 检查**之前**返回 Failed;② **关键**:非 manifest 候选走 HEAD,403 的 HEAD **无 body**,分类器根本看不到 XML——把 HEAD→Range-GET fallback 的触发条件从 `405|501|空CT-2xx` 扩到**也含 `401|403`(且 body 尚空时)**,这样 geo/login/access-denied 三个分支才真有 body 可查。
+- **验证**:单测 `forbidden_with_s3_access_denied_is_failed` + `forbidden_signature_mismatch_is_failed`;live TED 页 fallback 由 NeedsProfile→**Failed**,页 top 仍 4 Usable。全 suite 93 passed(此前 91,+2)。
+- **教训**:① **HEAD-only 探测对 4xx 的 body 信号是盲的**——任何依赖 error body 区分状态(geo/login/access-denied)的逻辑,都必须确保该状态下真的抓了 body,否则分类分支形同虚设(本轮 classify 改完 live 仍 NeedsProfile,正因 body 没抓,补 GET fallback 才生效)。改分类器时要连同"喂给它的数据从哪来"一起验。② **诊断粒度要到候选级**:页 top 聚合会掩盖二级候选的真实状态分布;可观测性投资(L8→L9 两轮)直接把一个误判从"10 个 NeedsProfile 看起来像需要登录"还原成"10 个 S3 私有对象,本就取不到"。③ 流程兜底已落地:本轮推前在 D: 跑了 `cargo test --no-run`(非仅 build),确认测试构建通过再 push(防 L8 那种 origin 测试断裂复发);home-cloud 与 origin tree 推后比对一致。
+
+## L8. `.ogv`/`.ogm` 未分类 + format-patch 链漏传基础 commit 致 origin 测试构建断裂(两个真问题)
+- **背景**:2026-06-30 心跳#13。给 catalog harness 加 per-state 页清单(哪些站落 NeedsProfile/Failed/Drm),重跑 mixed catalog 定位非 Usable 来源。
+- **观测改进**:harness 现按"top 候选非 Usable 终态"分组打印 URL(镜像已有 ZERO-candidate 清单),把聚合 breakdown 变成可操作清单。立刻暴露:8 Drm 全是真 DRM 测试向量(axprod/unified-streaming/mux);10 NeedsProfile 全是**非 top 候选**(不影响任何页结果,低优先级);2 Failed = developers.google(example.com 占位,预期)+ archive Floorwalker(302→存储节点瞬时);1 SuspectAd top = archive DaffyDuck。
+- **真 bug #8(`.ogv`/`.ogm` 漏分类)**:`classify_url` 把 `.ogg`→Audio,但**没有 `.ogv`(Ogg video)/`.ogm` 分支**→落 None。og:video 指向 `.ogv` 时被当 embed 页去 follow 而非直接 video 候选,页面无可用 video。archive DaffyDuck 的 og:video=`.../Daffy Duck and the Dinosaur (1939)-...ogv`(还带空格+括号)即此症,原判 SuspectAd。修:`.ogv`/`.ogm` → Video。live 验证 → top Usable(4 候选)。空格/括号由下游 `Url::parse` 自动 %编码(已实测 `url` crate 对空格编 `%20`,括号原样但服务器接受),非缺陷。单测 `classify_url_ogg_family`。
+- **真问题 #9(基础设施:origin 测试构建断裂)**:诊断 patch 链时发现 **GitHub origin/master(80a167b)的 `cargo test` 编译失败**。根因:之前逐文件 format-patch 链**漏传了创建 `generic.rs` 的基础 commit `c063be1`**(该 commit 同时加 generic.rs + mod.rs 的 `mod generic`/`use GenericExtractor` 两行 + 改 probe.ts)。结果 D:/origin 的 mod.rs test harness 引用了 `GenericExtractor`,但该类型与 generic.rs 在 origin 上根本不存在。**`cargo build` 能过(test harness 在 `#[cfg(test)]` 内被跳过),所以断裂一直没被发现——只有 `cargo test --no-run` 才暴露**。修:从 home-cloud format-patch 出 `c063be1` 整 commit,连同 .ogv + harness 两 commit 一起 `git am --3way` 到 D:,补回 generic.rs+mod 声明+probe.ts。D: 现 `cargo test` 编过,91 passed,推 origin(e6a3933)。home-cloud HEAD 与 origin/master 现 tree 完全一致(`git diff --stat` 空)。
+- **教训(流程,关键)**:**逐文件/逐 commit format-patch 跨机同步极易漏掉"新增文件"型基础 commit**——diff 能干净应用不代表语义完整(库编过 ≠ 测试编过)。①每次推后应在 D: 跑 `cargo test --no-run` 而非仅 `cargo build` 验证;②或周期性做全树指纹比对(`git ls-tree -r + sha1sum` 两边)兜底;③理想是让 D: 直接 fetch home-cloud 或共享同一 origin,而非人肉搬 patch。本轮已加全树比对脚本思路到流程。
+- **背景**:2026-06-30 心跳#12,用 ultracode workflow 4 路并行 harvester(archive 新集合/wikimedia/streaming demo/JSON-LD+JS壳)经 home-cloud 代理验证真实 URL,合并去重成 102 页 mixed catalog 跑批量。
+- **结论:管线在 102 真实页上行为正确,无新代码改动**。DRM(8)、NeedsProfile(10)、SuspectAd(11)、Failed(4)状态迁移全部合理。
+- **边界 1(非 bug)**:`developers.google.com/.../video` 文档页 top=Failed——因为它的 JSON-LD VideoObject 里是 **example.com 占位 contentUrl**,Failed 正确(占位 URL 不可达)。是 harvester 选错页(文档页非真实内容),不是提取 bug。提取本身正确(解析出 JSON-LD contentUrl)。
+- **边界 2(非 bug,符合预期)**:12 零候选页全是 JS 壳/SPA(twitter/instagram/tiktok/facebook/spotify/soundcloud/reddit/pinterest/linkedin/discord + schema.org/cnn)。静态 HTML 无媒体 → generic 正确不误报。这正是 D2 组的设计目的(验 generic 边界不 false-positive)。
+- **harvester 观察(streaming-demos)**:shaka 的 *-widevine/sintel DASH 资产 server 返回 `application/octet-stream`(非 dash+xml),harvester 自己的 strict CT gate 会漏掉它们尽管 body 是有效 Widevine。**已核查不是管线 bug**:generic 发现阶段靠 `classify_url`(URL 扩展名 .m3u8/.mpd)识别 manifest,不靠 content-type,所以 octet-stream 服务的 manifest 只要 URL 带扩展名仍被正确发现;verify 的 `url_path_has_manifest_ext` 也走 body 探测。CT-gate 是 harvester 验证口径的取舍,非管线缺陷。
+- **泛化**:大规模真实批量的价值不只在抓 bug,也在**确认正确边界行为**(零候选不等于失败、占位 URL 该 Failed)。catalog 要分组标注"预期零候选",否则误报为回归。workflow 4 路扇出 ~实测可行但 wikimedia Commons API 两步解析(list+imageinfo)经代理极慢,单 agent 可能卡住 20min+ 不返回——**长尾 harvester 要设硬超时或拆更小批**。
+
+## L13. 持久 429 被当终态 Failed = 假死(真 bug #10)+ wikimedia Commons 第 4 品类 catalog
+- **背景**:2026-06-30 心跳#18。接 L11 留下的 wikimedia 品类。先用 Commons `File:` 描述页(真实爬取入口,非直链)测 generic——单页抽出 6 候选含 3 Usable(`application/ogg` .ogv 是 L11 #9 修复的回归守护),但 2 个 `upload.wikimedia.org` 变体 `429` 落进 `(400..500)=>Failed` 终态。
+- **真 bug #10**:`429`(Too Many Requests)语义是"被限流、资源仍在",非死。`classify_probe` 的通配 4xx 把它埋成终态 `Failed`——L10/L8/L5 同一"假死"家族。**实证根因**:直接 HEAD 返回 `200 video/webm`(资源在);紧凑 burst 复现——`upload.wikimedia.org` 在 ~2 次快速探测后限流,**不发 `Retry-After`**,~2-3s 恢复。已有 transient-retry 列表含 429,但 300/600ms 退避太短清不掉限流窗口 → 提交 Failed。
+- **两段修复**(`verify.rs`):① 限流感知退避——429/503 用秒级冷却(`RATE_LIMIT_BACKOFF_MS=2500`,或尊重 `Retry-After` 上限 8s),取代对 flaky 5xx 够用但清不掉节流的 300ms 线性退避;`ProbeOutcome` 加 `retry_after_secs`(解析 Retry-After 头)。② 安全网——retry 后仍 429 归 `SuspectAd`(未确认但非死),绝不终态 Failed。单测 `persistent_429_is_suspect_not_failed`,全 suite 96 passed。
+- **live 验证**(Commons Alice .ogv):`{Failed:2,SuspectAd:1,Usable:3}` → `{SuspectAd:3,Usable:3}`——零假死,真 .ogv 仍 Usable。2.5s 退避在 6 候选 burst 下不总能清窗口,但安全网正确兜底。
+- **第 4 品类 catalog**(`catalog-commons.txt`,10 页):Commons API categorymembers harvest,扩展名过滤 + 逐页验在线 200。全量 47 页基线 `{Usable:27,SuspectAd:188,Failed:2}`:188 SuspectAd 几乎全是 `upload.*` 变体的 429 节流(批量持续打一个 host 必触发,**分类正确=非终态,不是回归**);2 Failed 是 cross-wiki 描述链接真 404(de/en.wikipedia `Datei:` 页不存在,终态正确)。
+- **流程教训(复犯 L12 陷阱)**:手工往 catalog 加 4 个"知名"标题(Popeye/Chaplin),验证发现 2 个 404——**"知名"≠ 在线**,凡入 catalog 必先 curl 验 200。另:Commons 自身 API 也限流快速 imageinfo,扩展名过滤比逐页 imageinfo 验证更稳(chain_live 跑时自会验)。批量跑整 catalog 单页 ~36s(429 退避累积),CI 用 10 页子集即可。
+- **泛化**:凡"语义=暂时不可用"的状态码(429/503/Retry-After 类)绝不能落进通配 4xx/5xx 终态桶——要么退避到恢复,要么归非终态。退避量级要匹配现实窗口(限流是秒级,非毫秒);毫秒退避是给 flaky 单点的,不是给限流的。
+
+## L14. image/* 响应不能确认 Video/Audio 候选(verify 边界硬化,非观察到的误判)
+- **背景**:2026-06-30 心跳#19。审 image/* 是否在媒体白名单过宽——`classify_probe` 的 `content_type_is_media` 是 **kind 无关**的:任意媒体 CT 匹配任意媒体 kind。于是一个 Video/Audio 候选探测回 `image/*` 会在 verify.rs:418 被判 `Usable`。
+- **风险路径**:generic.rs:572 `classify_url(url).unwrap_or(kind)`——JSON-LD `VideoObject` 的 `contentUrl` 若无扩展名,fallback 到节点 kind=Video;若该 URL 实为静帧/poster(serves image/*),verify 会确认它为可播流。这正是 verify 安全网该拦的"poster 泄漏进视频候选"。
+- **关键诚实**:**catalog 里没有 live 复现**(extraction 已小心不采 poster/thumbnail 进视频候选,grep `image/` 全 0 命中)。所以这是**潜在边界硬化**,不是观察到的误判——commit message 与本条都如实标注,不算进"真 bug"计数(仍=10)。
+- **修复**:媒体匹配改 kind-aware——`image/*` 响应只确认 `Image` 候选;Video/Audio 降 `SuspectAd`(未确认,非确认流)。octet-stream 与 audio/video/ogg 家族对所有媒体 kind 不变。单测 `video_candidate_serving_image_is_not_usable` + `image_candidate_serving_image_is_usable`,全 suite 98 passed。
+- **回归确认坑**:commons 3 页跑里第 3 页 top 从 Usable→SuspectAd,疑似我的 guard 误伤——单页隔离重跑证明是 **429 节流方差**(该 .ogg 直链在 burst 下被限流),候选级诊断 3 个 SuspectAd 全是 `429 text/html`,无一是 image 降级。**教训**:批量跑的 top 漂移先单页隔离 + 候选级诊断归因,别急着归咎刚改的代码(也别急着排除)。
+- **泛化**:安全网类校验(verify)凡"X 响应满足 X 候选"的匹配都要查是否 **kind/type 维度无关**——无关就意味着"任意合法子类型都放行",可能放过 mis-extraction。审白名单不只看"有没有列错条目",更看"匹配是否够具体"。
+
+## L15. Manifest-kind 候选在 CT/path 双失配时漏 DRM-parse(verify DRM 旁路硬化,L14 follow-up #4)
+- **背景**:2026-06-30 心跳#20。接 L14 follow-up——系统审 verify 其他 kind-aware 盲点。`classify_probe` 的 manifest body-parse 闸(verify.rs:398)只看 `content_type_is_manifest` + `url_path_has_manifest_ext`(**仅 path**),**不看候选 kind**。
+- **旁路路径**:Manifest-kind 候选可双失配两个闸——① mac_cms.rs:155 / hanime.rs:120 用 `url.contains(".m3u8")` 赋 Manifest kind,标记可落 **query string**(`?file=x.m3u8`),path-ext 检查漏;② manifest 偶被服务为 `application/octet-stream`(L7 shaka DASH 实测)。双失配时 classify_probe 跳过 `classify_manifest`(DRM parse)→ 落到 octet-stream 媒体臂 → `Usable`。**body 已取**(verify_one 凡 kind=Manifest 必 fetch body,verify.rs:556 的 is_manifest 用了 kind)但从不 DRM-parse——与 L3 签名 manifest、L11 16KB cap 同一旁路家族(取了 body 却没解析 DRM)。
+- **关键诚实**:**demo catalog 无 live 复现**(各站 manifest URL 的 .m3u8/.mpd 都在 path,既有检查已覆盖)。潜在硬化非观察泄漏,**不计真 bug(仍=10)**——同 L14 框架。
+- **修复**:闸加 `kind == CandidateKind::Manifest` 条件(对齐 verify.rs:556 的 is_manifest 口径,只是那里决定 fetch、这里决定 parse,两处口径之前不一致才留洞)。单测 `manifest_kind_octet_stream_still_drm_parsed`(DRM body + octet-stream CT + .mp4 path → Drm)+ `manifest_kind_octet_stream_clean_is_usable`(闸不盲降干净 manifest)。全 suite 100 passed,manifest catalog live 不变(5 Usable 2 Drm)。
+- **泛化(承 L14)**:同一属性(is_manifest)在管线两处用,口径要一致——一处 `kind || ext`(决定取 body)另一处 `ct || ext`(决定 parse),不一致的差集就是洞。审"同一概念多处判定"时对齐谓词,别让 fetch 与 parse 的触发条件错位。
+
+## L16. catalog-mixed 全量 Failed/SuspectAd 候选级三角验证:零误判(实证确认,无代码改动)
+- **背景**:2026-06-30 心跳#21。连续两轮(L14/L15)是无 live 复现的推测性硬化,本轮回到实证核心——跑 catalog-mixed 全量 102 页 + 逐桶候选级核查。基线 `{Usable:163,Drm:8,SuspectAd:10,Failed:20}`(552s)。
+- **Failed 20 全部正确/瞬时**,分三组:① 13× `py.tedcdn.com` 403+application/xml=TED 私有 fallback MP4(L9 已确认,终态正确);② 3× `example.com` 404=Google structured-data 文档页里的**字面占位符 URL**(`www.example.com/video/123/file.mp4` 等,本就不存在,终态正确);③ 4× archive.org `500 video/mp4`=瞬时节点 failover(L10 家族)。
+- **archive 500 三角验证**:HEAD 直接探 `302`(从不 500),跟随重定向 + Range 探 8/8 全 `206`(out-of-band 即时恢复)。500 是并发跑期间节点负载尖峰,2 retry/900ms 窗口在持续尖峰下耗尽。**关键:4 个 500 页 top 全 = Usable**——500 命中的是冗余变体非获胜候选,**零用户影响**。故不调 TRANSIENT_RETRIES(调高=对真死 origin 加延迟换边际恢复,不划算)。
+- **SuspectAd 10 全部正确**:全是 `archive.org/embed/...` 播放器页返 `200 text/html`(GenericExtractor 按 path 抓到 iframe 播放器 URL,是 HTML 播放器页非流,SuspectAd 正确)。均为次级候选,所在页 top 仍 Usable。
+- **泛化**:推测性硬化(无 repro 的 kind-aware 加固)做两轮后必须回到实证跑核查,否则会脱离真实失败漂移。**"Failed 数升高"先别慌**(20 vs 基线 15)——逐条三角验证后全是已知正确类 + 瞬时,数字波动来自并发负载下 archive 节点尖峰,非回归。核查终态分类对错的黄金标准=候选级 out-of-band 复探 + 看该页 top 是否受影响(冗余变体失败 ≠ 页失败)。
+
+## L17. 真 bug #11:`binary/octet-stream` 未列入媒体白名单 → PeerTube 真实 MP4 误判 SuspectAd
+- **背景**:2026-06-30 心跳#22。512KiB cap 端到端测因 SSRF guard 封 loopback(url_policy.rs:80)且无 test 旁路而**不可行**(且 DRM 标记超 512KiB 不现实——标记都在 header,master 是 KB 级),遂转实证 item ④:建 PeerTube 跨实例 catalog 找新站型 gap。SepiaSearch API(`sepiasearch.org/api/v1/search/videos`)取 35 个 watch URL 跨 **24 个联邦实例**,跑 chain_live 12 页。
+- **bug**:`content_type_is_media`(verify.rs:146)白名单收 `application/octet-stream` 但**不收 `binary/octet-stream`**——后者是前者的 legacy-but-live 别名。PeerTube 及其对象存储后端(实测 `makertube01.fsn1.your-objectstorage.com`、`tuba.hyperreal.top`、`hyperreal.tube`)用**恰好这个 CT** 服务真实 fragmented MP4。8 个真实可播文件(跨 hyperreal.tube/makertube.net)被误降 SuspectAd。
+- **坐实是真媒体**:HEAD/Range 探返 `206` + content-range `0-32/1457988116`(1.45GB)+ magic `00 00 00 1c 66 74 79 70 69 73 6f 35`=`ftypiso5`(ISO-BMFF/MP4 ftyp box)。铁证真 MP4,非误标。
+- **修复**:白名单加 `binary/octet-stream`(紧跟 application/octet-stream)。单测 `binary_octet_stream_video_is_usable`(206+该 CT+真实 len→Usable)。全 suite 101 passed。**live 复跑同 12 页:SuspectAd 8→0,Usable 62→70,每页 top 仍 Usable**——真实修复确认,计入真 bug(**=11**)。
+- **泛化**:① **MIME 别名陷阱**——白名单按精确字符串匹配时,同一语义的 legacy 变体(`binary/` vs `application/` octet-stream、`application/x-ogg` vs `application/ogg`)各站乱用,得逐个收;凡精确匹配的 CT 白名单都要查"有没有等价别名漏了"。② **换站型才暴露新 bug**——archive.org 重的 catalog 跑 N 轮都零误判,一上 PeerTube(对象存储后端 CT 习惯不同)立刻命中;扩 catalog 的价值不在量而在**基础设施多样性**(不同 CDN/存储/MIME 配置)。③ 当某条 P3 项(512KiB e2e)因架构约束(SSRF guard)不可行且收益低,别硬造测试剧场,转去做高收益的实证扩面。
+
+## L18. 真 bug #12:两个复合根因致 Range-忽略 / 无-HEAD CDN 的真实媒体误判 Failed
+- **背景**:2026-06-30 心跳#23。承 L17 item ①——跑完整 PeerTube **35** 页(上轮只 12),发现 Failed 33 个里大量是 `[- video/mp4]`(**无 status**,即 probe 整个返 Err)的 `/download/.../*-fragmented.mp4` HLS shard。out-of-band 复探坐实根因。
+- **根因A(Range 被忽略 + 全量缓冲)**:`probe` 用 `response.bytes().await` 把**整个 body 缓冲完**才截断到 body_cap。但 Range header 是 best-effort,这些源(p2b.drjpdns.com / dalek.zone / oplay.radiomercure.fr)**无视 Range** 直接 200 回完整文件(几十 MB)。全量读跑爆 `VERIFY_TIMEOUT`(8s)→ 无 status Err。注释还写着"忽略 Range 的服务器也被下面的 body_cap 截断兜住"——**该不变量是假的**,bytes() 先缓冲全部才截断。**修=改流式 `chunk()` 循环,收够 body_cap 就停**,无论是否支持 Range 都同时界定时间和内存。
+- **根因B(无 HEAD 兜底)**:媒体候选先探 HEAD,但这些端点**不实现 HEAD**——直接挂到 timeout(0 字节)。原有 GET 兜底只在 HEAD **成功但无用**时触发(405/401/403/无 CT 的 2xx),HEAD **超时(Err)**直奔 Failed(verify.rs:610)。**修=非-manifest 候选的首探 HEAD 遇非-policy Err 时回落到(已被 cap 的)GET 再判**;SSRF/policy Err 仍立即失败。
+- **坐实**:curl HEAD → `code=000 0 bytes 15s 超时`;curl GET Range → `200 application/octet-stream`,无视 Range 流了 38MB。GET 能成,HEAD 不能。
+- **结果**:同 35 页 chain_live 复跑 **Failed 33→4,Usable 182→211(+29 真实媒体救回),每页 top 仍 Usable**。残留 4 Failed 现在**全是正确分类**(真 404 deleted playlist / 真 500,带 problem+json body),非无-status 超时。全 suite 101 passed。计真 bug(**=12**)。
+- **泛化**:① **`response.bytes()` = 全量缓冲陷阱**——任何"读一点就够"的 HTTP body 探测(magic bytes / DRM marker / 错误体),都不能先 `.bytes()` 再切片,必须流式 `chunk()` 到 cap 即停;否则不配合的源(无视 Range)能让你读爆 timeout。② **HEAD 不是普世支持的**——大量 CDN/对象存储不实现 HEAD(挂起或 405),媒体存活探测必须有 HEAD→GET 兜底,且兜底要覆盖 **HEAD 整个失败(超时/连接错)**这一支,不能只覆盖"HEAD 成功但无用"。③ 这俩 bug **互相掩盖**:就算先修了 B(HEAD→GET 兜底),没修 A 的话 GET 仍会读爆 timeout——复合 bug 要两个都修才见效,实证复跑是唯一可信验收。④ **跑全量比跑采样更暴露问题**:上轮只跑 12 页 Failed 10,这轮全 35 页 Failed 33,样本越全失败类越完整。
+
+## L19. workflow 扇出扩 catalog:diversity 比 URL 数更值钱,稳定向量 > 会腐烂的真站(无 bug 轮)
+- **背景**:2026-06-30 心跳#24。承 L17/L18"换站型才暴露 bug"的结论,首次真用 ultracode workflow(`loop/discover-catalog.js`)扇出 5 个 opus subagent,各管一类站型(hls-dash-drm / odysee-lbry / vimeo-embed / eu-jp-kr-public / archive-audio),WebSearch 找 + WebFetch 实证后才收录,返 69 URL(53 validated)。
+- **过程胜利**:**写 workflow 前先 Read [[workflow-agent-api-signature]] 对照三个坑(thunk-parallel / positional-string prompt / general-purpose agentType),一次写对**——这正是 L18-memory 血泪教训("坑早记了但写前没读")的反向验证:读了就不踩。另:`node --check` 本地先验语法(避免 TS 注解/截断误入)。
+- **结果**:两个最高价值 catalog 入库,chain_live 验证零误判——**catalog-drm-vectors.txt(15)**:Apple/Unified/axprod/shaka/dashif 规范向量跨 6 CDN,11 clear→Usable + 5 加密→Drm,verify 还**抓出 discovery agent 误标 clear 的 cbcs manifest**(说明 verify 的 DRM 检测比 LLM 的标签更可信);**catalog-audio.txt(10)**:librivox/78rpm/MLK + megaphone.fm 播客 CDN,纯 AUDIO kind 补 video-heavy 欠覆盖,全 top=Usable。
+- **泛化**:① **稳定测试向量 > 会腐烂的真站**——规范 DRM/HLS 向量(devstreaming/axprod/dashif/shaka)是供应商长期维护的,不像 PeerTube 用户视频会下线;扩回归网时优先收这类"永久 fixture",真站留给"找新 bug"的探索性跑。② **verify 比 LLM 标签准**——discovery agent 凭文件名猜 cbcs manifest 是 clear,verify 读 body 看 `#EXT-X-KEY`/PSSH 才是 ground truth;catalog 注释以 verify 实跑结果为准,不盲信 agent 的 drm 字段。③ **workflow 扇出的正确切分维度 = 基础设施形状**(CDN/存储/page 结构/manifest 类型),不是 URL 数量;5 个 agent 各攻一个"形状"比 1 个 agent 找 100 个同形状 URL 价值高。④ 本轮**无 bug**(纯回归网扩面),诚实记账:扩 catalog 是为下轮探索铺路,不是修复。
+
+## L20. 真 bug #13:反爬 / 限流的 401·403 软拒被误判 NeedsProfile(应 SuspectAd)
+- **背景**:2026-06-30 心跳#25。承 L19 扩的 player-config catalog,跑 chain_live 见 5 个 Odysee 页 top=NeedsProfile。候选 URL `player.odycdn.com/api/v3/streams/**free**/...mp4`(路径明写 free=公开免登内容),401 body "this content cannot be accessed at the moment"。
+- **坐实(L14/L15 纪律:无 live repro 不改码)**:SOCKS 实探——无 header 401 稳定(3 连探同 body)、加浏览器 UA 仍 401、**加 Referer 翻 429 "Try again later"**。两种都是反爬/限流软拒的措辞,不是登录墙;Odysee free 内容浏览器无账号可播 = 没有 profile 可补。
+- **根因**:`classify_probe` 的 `401 | 403` 臂顺序判 geo→access-denied→login→**默认 NeedsProfile**(verify.rs:391)。Odysee body 不含任何 signal,落到默认,把"限流"当成"缺登录"。NeedsProfile 语义是"补个 profile 重试就行",但限流没有 credential 能解。
+- **修**:加 `body_has_transient_throttle_signal`(cannot be accessed at the moment / try again later / too many requests / rate limit / temporarily unavailable),在 login signal **之前**判(措辞可能与 login 词共现),映射 **SuspectAd**——与持久-429 路径(bug #10)同处理:可恢复、稍后重试。单测 +2,live 5 页 NeedsProfile→SuspectAd 每页仍解析。
+- **泛化**:① **HTTP 状态码会被滥用**——反爬网关用 401/403 替代标准的 429 来表达限流(可能为了不暴露"限流"给爬虫);分类不能只看 status code,**body 措辞是 ground truth**。同一家族:bug #7(403+S3 AccessDenied≠NeedsProfile 而是 Failed)、bug #10(持久 429≠Failed 而是 SuspectAd)、本 bug(401/403+throttle 措辞≠NeedsProfile 而是 SuspectAd)——**401/403 是"需要进一步看 body 区分 5 种命运(geo/access-denied/throttle/login/默认)"的多义状态,不是单一含义**。② **路径里的语义线索可信**——URL 含 `/free/` 是"公开内容"的强信号,与 NeedsProfile(暗示付费/登录)直接矛盾,矛盾本身就是误判的红旗。③ **default 分支是误判温床**——401/403 臂的"默认 NeedsProfile"吞掉了一切未识别 body;每加一个新 catalog 站型都可能撞出新的 default 误吞,catalog 多样性持续暴露 default 的过度宽泛。④ **附带发现非 bug 也要记**:vimeo/dailymotion 0 候选(generic 提不出 player-config JSON)是真 gap 但需先确认 scope,别把"未支持"当 bug 造需求。
+
+## L21. 真 bug #14:sniff 出的 URL 尾部带 JSON 转义反斜杠 → 签名 URL 误 403(MissingKey)→ NeedsProfile
+- **背景**:2026-06-30 心跳#26。承 L20 streamable 残留 4 NeedsProfile。候选是 CloudFront 签名 URL `cdn-cf-east.streamable.com/.../theimm.mp4?Expires=1783081920&Signature=…&Key-Pair-Id=APKAIEYUVEN4EVB2OKEQ`。
+- **坐实(二分法)**:Expires=Jul3 2026 **未过期**;clean 版 curl=200 video/mp4 24MB;但 chain_live 候选**尾部多一个 `\`**(`…OKEQ\`)。同 URL 带尾 `\`=403 text/xml `<Error><Code>MissingKey</Code>`、去掉 `\`=200——反斜杠让 CDN 把 `Key-Pair-Id=…EQ\` 读成无效值,丢了 Key-Pair-Id。
+- **根因**:`url_like_tokens`(scan_bare_urls 的裸 URL sniff)在 escaped-JSON 上下文 `\"contentUrl\":\"https://…OKEQ\"` 里,URL 被 JSON 闭引号 `\"` 终止。scanner 的终止集是 `" ' < > 空白 ) }`,在 `"` 处停,但**把紧邻的转义 `\` 吞进了 token**。`decode_url_escapes` 只处理 `\/`、`\uXXXX`、`&amp;` 等,不管**裸的尾部 `\`**,于是坏 URL 作为独立候选与 clean 版并存,各自 probe:clean→Usable、坏的→403→NeedsProfile。
+- **修**:token 末尾 `trim_end_matches('\\')`——裸反斜杠永远不是合法 URL 字节,尾部出现必是转义残留;中段的 `\/`、`&` 等仍留给 decode_url_escapes。单测 +1,live streamable NeedsProfile 4→0 每页仍 Usable,全 catalog 无回归。
+- **泛化**:① **裸字符串 sniff 的边界吞噬**——基于"找到 http://、扫到分隔符为止"的 URL 提取器,终止集少一个字符(这里是 `\`)就会把转义残留/相邻语法吞进 URL;在 escaped-JSON / JS 字符串里 URL 两侧常是 `\"`,sniff 路径尤其脆。**结构化提取(serde 解 JSON)天然免疫**——bug 只在退化到正则/字符扫描的 scan_bare_urls 出现,结构化的 scan_json_ld / scan_inline_state(走 serde)同一个 URL 是干净的。② **"clean 候选存在 ≠ 没 bug"**——本页 top 一直是 Usable,坏候选只是被正确排在下面,容易被当"另案"忽略;但它是真实的提取缺陷,会在没有 clean 兄弟的页面上变成唯一候选→整页误判。**残留的低优先级误分类值得追到根因,可能是更普遍 bug 的低危表现**。③ **签名 URL 是放大镜**——CloudFront/S3 签名对 URL 字节零容忍(多一个 `\` 就 MissingKey/SignatureDoesNotMatch),所以提取的细微污染在签名 URL 上立刻暴露为 4xx;普通 URL 上同样的尾 `\` 可能被服务器宽容忽略而潜伏。带签名的 catalog 是 URL-提取保真度的高灵敏探针。
+
+## L22. 两个"调查后判非 bug"的纪律案例(心跳#27,无代码改动)
+- **背景**:2026-06-30 心跳#27。承 L20/L21 收尾两个悬留项 + 跑 catalog-mixed(102 站)。两项都经实测坐实为**非 bug**,诚实不计数(bug 仍 14)。
+- **案例A:vimeo/dailymotion 0 候选=正确,非 gap**。坐实:两者都在 `PlatformHint` SUPPORTED(models.rs:596/598)、host 分发已配(main.rs),但生产 `DiscoveryMode::Auto` 链是 `direct→hanime1→mac_cms→generic→**yt_dlp**→you_get→lux→streamlink→browser_probe`(mod.rs:451-462)——JS-SPA player 由 **yt_dlp 兜底**。而 chain_live 测试 harness **只接 `direct+generic`**(mod.rs:574-577,故意不挂 yt_dlp 避免外部 binary 依赖)。所以 catalog 里这些站 0 候选是 **harness 覆盖盲区,不是提取缺陷**;往 generic 塞 player-config 解析会与 yt_dlp 重复→**否决回灌**。
+- **案例B:charlie_chaplin .ogv top=Failed=真实瞬时,非误分类**。坐实:`archive.org/download/...ogv` 302→存储节点 `dn721202.ca`,该节点 500/206 **抖动**(+0/+1s=500、+3/+6/+10s=206,~2-3s 恢复尺度),非死节点。5xx retry backoff 仅 `300ms×attempt`(~0.9s 累积)短于恢复尺度,但实测恢复率 cur=6/8 vs seconds-scale(1500/3000ms)=7/8——**边际且 n=8 噪声内**。判定:bounded retry 后终态 Failed 可接受,不做投机 backoff 调优。
+- **泛化**:① **"测试 harness 的链 ≠ 生产链"是误判 0-候选的常见陷阱**——分析 catalog 结果前必须先确认 harness 接了哪些 extractor;generic-only harness 下,任何 yt_dlp/browser-only 站(社交/SPA)报 0 候选都是预期,不是 bug。报告 0 候选前先问"这站在生产走哪个 extractor"。② **守 L14/L15 也包括"实测后主动不改"**——不只是"无 repro 不改",还包括"有现象但实测改动收益在噪声内/有反向代价时,明确判非 bug 并记录理由"。投机性 backoff 调优会拖慢所有真死 origin 换取边际恢复率,cap 的存在正是为让真死快速终态;**没有显著、可复现的收益差就不动延迟/重试参数**。③ **诚实记账**:一轮没修 bug 不等于没价值——关掉两个悬留 scope 问题(防下轮重复造需求)+ 确认 102 站 catalog 整体健康(155/187 Usable,其余都解释得通)本身是有效产出。
+
+
+
+
+
