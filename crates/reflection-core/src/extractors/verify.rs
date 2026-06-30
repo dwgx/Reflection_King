@@ -1579,4 +1579,83 @@ mod tests {
         );
         assert!(cands[0].url.contains("blender.org"));
     }
+
+    /// Fetch a currently-live i.pximg.net image URL from the public pixiv daily
+    /// ranking. pximg paths are date-stamped so a hardcoded URL rots within
+    /// days; the ranking API returns whatever is live right now. Returns the
+    /// `url` of the first ranked illustration (an img-master thumbnail under the
+    /// Referer-gated i.pximg.net CDN).
+    async fn fetch_live_pximg_url() -> Option<String> {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(20))
+            .build()
+            .ok()?;
+        let body = client
+            .get("https://www.pixiv.net/ranking.php?mode=daily&format=json&p=1")
+            .header(reqwest::header::REFERER, "https://www.pixiv.net/")
+            .header(reqwest::header::USER_AGENT, "Mozilla/5.0")
+            .send()
+            .await
+            .ok()?
+            .text()
+            .await
+            .ok()?;
+        let json: serde_json::Value = serde_json::from_str(&body).ok()?;
+        json.get("contents")?
+            .as_array()?
+            .iter()
+            .find_map(|item| item.get("url").and_then(|u| u.as_str()).map(str::to_string))
+    }
+
+    /// Bug #16 regression: verify must replay the safe request headers the
+    /// extractor captured (`metadata_json.download_headers`), not probe bare.
+    /// i.pximg.net is a pure Referer-hotlink gate that does NOT key on egress IP
+    /// (works from any host): bare GET -> 403 text/html, GET with
+    /// `Referer: pixiv.net` -> 200 image/jpeg. Before #16 verify probed with
+    /// only VERIFY_UA and got the 403 -> a false Failed/NeedsProfile on a URL
+    /// that is genuinely playable with the header the extractor already knows.
+    /// Proven live (heartbeat #35): same URL 403 bare / 200+179738B with Referer.
+    #[tokio::test]
+    #[ignore]
+    async fn verify_live_pximg_referer_gate_replays_download_headers() {
+        let Some(url) = fetch_live_pximg_url().await else {
+            eprintln!("SKIP: could not fetch a live pximg URL from pixiv ranking API");
+            return;
+        };
+        assert!(
+            url.contains("i.pximg.net"),
+            "ranking url not on pximg CDN: {url}"
+        );
+
+        // (a) No replay headers -> bare probe hits the hotlink gate (403).
+        let mut bare = vec![live_candidate(&url, CandidateKind::Image)];
+        verify_top_n(&mut bare, &enabled_cfg()).await;
+        println!(
+            "PXIMG bare {} -> {:?} status={:?} ct={:?}",
+            bare[0].url, bare[0].validation_state, bare[0].status, bare[0].content_type
+        );
+        assert_ne!(
+            bare[0].validation_state,
+            Some(CandidateValidationState::Usable),
+            "bare probe should be gated by the Referer hotlink check, not Usable"
+        );
+
+        // (b) Same URL, but the candidate carries the Referer the extractor
+        // would have captured. verify must replay it and now see 200 image/jpeg.
+        let mut withref = vec![live_candidate(&url, CandidateKind::Image)];
+        withref[0].metadata_json = serde_json::json!({
+            "download_headers": { "Referer": "https://www.pixiv.net/" }
+        });
+        verify_top_n(&mut withref, &enabled_cfg()).await;
+        println!(
+            "PXIMG +Referer {} -> {:?} status={:?} ct={:?}",
+            withref[0].url, withref[0].validation_state, withref[0].status,
+            withref[0].content_type
+        );
+        assert_eq!(
+            withref[0].validation_state,
+            Some(CandidateValidationState::Usable),
+            "replaying the captured Referer must flip the hotlink-gated URL to Usable"
+        );
+    }
 }
