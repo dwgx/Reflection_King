@@ -33,9 +33,10 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          # docker/metadata-action lowercases the image path automatically, so
-          # the uppercase repo name (Reflection_King) is handled for GHCR.
-          images: ghcr.io/${{ github.repository }}
+          # Pin the image path explicitly: deriving from github.repository
+          # yields reflection_king (underscore) from the repo name, but the
+          # published/documented image is reflection-king (hyphen).
+          images: ghcr.io/dwgx/reflection-king
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
