@@ -53,6 +53,10 @@ const BODY_HEAD_CAP: usize = 16 * 1024;
 /// waving a protected stream through as Usable, so give manifest bodies a much
 /// larger (still bounded) budget.
 const MANIFEST_BODY_CAP: usize = 512 * 1024;
+// Compile-time guard: the manifest cap must stay well clear of the 16 KiB media
+// cap so a DRM marker past it (see `drm_tag_past_16kib_still_detected`) is never
+// truncated away before classification scans the body.
+const _: () = assert!(MANIFEST_BODY_CAP > 16 * 1024 + 32 * 1024);
 const SOFT_BLOCK_BYTES: i64 = 4096;
 const DEFAULT_TOP_N: usize = 8;
 const DEFAULT_TRUNCATE_MAX: usize = 80;
@@ -144,7 +148,12 @@ fn is_media_kind(kind: CandidateKind) -> bool {
 }
 
 fn content_type_is_media(ct: &str) -> bool {
-    let ct = ct.split(';').next().unwrap_or(ct).trim().to_ascii_lowercase();
+    let ct = ct
+        .split(';')
+        .next()
+        .unwrap_or(ct)
+        .trim()
+        .to_ascii_lowercase();
     ct.starts_with("video/")
         || ct.starts_with("audio/")
         || ct.starts_with("image/")
@@ -166,7 +175,12 @@ fn content_type_is_media(ct: &str) -> bool {
 }
 
 fn content_type_is_manifest(ct: &str) -> bool {
-    let ct = ct.split(';').next().unwrap_or(ct).trim().to_ascii_lowercase();
+    let ct = ct
+        .split(';')
+        .next()
+        .unwrap_or(ct)
+        .trim()
+        .to_ascii_lowercase();
     ct == "application/vnd.apple.mpegurl"
         || ct == "application/x-mpegurl"
         || ct == "audio/mpegurl"
@@ -190,7 +204,11 @@ fn is_transient_status(status: u16) -> bool {
 fn first_hls_variant_url(base: &Url, body: &str) -> Option<Url> {
     let mut lines = body.lines().peekable();
     while let Some(line) = lines.next() {
-        if line.trim_start().to_ascii_uppercase().starts_with("#EXT-X-STREAM-INF") {
+        if line
+            .trim_start()
+            .to_ascii_uppercase()
+            .starts_with("#EXT-X-STREAM-INF")
+        {
             // The URI is the next non-blank, non-comment line.
             for next in lines.by_ref() {
                 let t = next.trim();
@@ -254,7 +272,9 @@ fn parse_expiry_epoch(url: &Url) -> Option<i64> {
         }
         let hex = raw.strip_prefix("0x").or_else(|| raw.strip_prefix("0X"));
         let looks_hex = hex.is_some()
-            || raw.chars().any(|c| c.is_ascii_hexdigit() && !c.is_ascii_digit());
+            || raw
+                .chars()
+                .any(|c| c.is_ascii_hexdigit() && !c.is_ascii_digit());
         if looks_hex {
             if let Ok(n) = i64::from_str_radix(hex.unwrap_or(raw), 16) {
                 if (MIN_EPOCH..MAX_EPOCH).contains(&n) {
@@ -446,7 +466,13 @@ pub fn classify_probe(
 
     // Soft-block: 200 + HTML (or tiny body) where we expected media.
     if is_media_kind(kind) {
-        let html = (!ct.is_empty() && ct.split(';').next().unwrap_or(&ct).trim().eq_ignore_ascii_case("text/html"))
+        let html = (!ct.is_empty()
+            && ct
+                .split(';')
+                .next()
+                .unwrap_or(&ct)
+                .trim()
+                .eq_ignore_ascii_case("text/html"))
             || (!body.is_empty() && body_looks_like_html(&body));
         let tiny = outcome
             .content_length
@@ -477,20 +503,6 @@ pub fn classify_probe(
     SuspectAd
 }
 
-/// SSRF-safe probe. `want_body` selects GET+Range (manifest / HEAD fallback)
-/// vs HEAD. Mirrors hanime.rs: redirect::none(), manual per-hop `validate_url`,
-/// final `validate_response_url_and_peer`.
-async fn probe(url: &Url, want_body: bool) -> Result<ProbeOutcome> {
-    probe_capped_with_headers(url, want_body, BODY_HEAD_CAP, &[]).await
-}
-
-/// Like `probe`, but with an explicit body-capture cap. Manifests pass
-/// MANIFEST_BODY_CAP so a DRM marker past 16 KiB is not truncated away; media
-/// and error-body probes use the smaller default.
-async fn probe_capped(url: &Url, want_body: bool, body_cap: usize) -> Result<ProbeOutcome> {
-    probe_capped_with_headers(url, want_body, body_cap, &[]).await
-}
-
 /// Core probe. `replay_headers` are the safe request headers the extractor
 /// captured (yt-dlp's per-format `http_headers`, allowlisted to UA / Accept /
 /// Accept-Language / Referer / Origin in `safe_download_headers`). Replaying
@@ -513,7 +525,9 @@ async fn probe_capped_with_headers(
         .find(|(name, _)| name.eq_ignore_ascii_case("user-agent"))
         .map(|(_, value)| value.as_str())
         .unwrap_or(VERIFY_UA);
-    let client = policy_client_builder(VERIFY_TIMEOUT).user_agent(ua).build()?;
+    let client = policy_client_builder(VERIFY_TIMEOUT)
+        .user_agent(ua)
+        .build()?;
     let mut current = url.clone();
     let mut redirects = 0usize;
     let method = if want_body { Method::GET } else { Method::HEAD };
@@ -688,40 +702,47 @@ async fn verify_one(candidate: &mut MediaCandidate, skew_secs: i64) {
 
     // Manifests need a body (with the larger manifest cap so a late DRM marker
     // isn't truncated); everything else starts with a cheap HEAD.
-    let initial_cap = if is_manifest { MANIFEST_BODY_CAP } else { BODY_HEAD_CAP };
-    let mut outcome = match probe_capped_with_headers(&url, is_manifest, initial_cap, &replay_headers).await {
-        Ok(o) => o,
-        Err(RkError::UrlPolicy(reason)) => {
-            candidate.validation_state = Some(CandidateValidationState::Failed);
-            candidate.validation_status = Some(format!("blocked: {reason}"));
-            return;
-        }
-        Err(e) => {
-            // A non-policy error on the initial probe. For a media candidate that
-            // was a HEAD: many CDNs/object stores simply don't implement HEAD and
-            // hang until the client timeout (observed live: PeerTube
-            // /download/.../*-fragmented.mp4 on p2b.drjpdns.com, dalek.zone,
-            // oplay.radiomercure.fr -> HEAD stalls, 0 bytes; the same URL serves a
-            // 200 on GET). Without a GET fallback the timeout surfaced as a
-            // no-status probe_error -> false Failed on a genuinely-playable file.
-            // The capped chunk-read keeps the GET cheap even when the origin
-            // ignores Range and streams the whole file.
-            if !is_manifest {
-                match probe_capped_with_headers(&url, true, BODY_HEAD_CAP, &replay_headers).await {
-                    Ok(o) => o,
-                    Err(_) => {
-                        candidate.validation_state = Some(CandidateValidationState::Failed);
-                        candidate.validation_status = Some(format!("probe_error: {e}"));
-                        return;
-                    }
-                }
-            } else {
+    let initial_cap = if is_manifest {
+        MANIFEST_BODY_CAP
+    } else {
+        BODY_HEAD_CAP
+    };
+    let mut outcome =
+        match probe_capped_with_headers(&url, is_manifest, initial_cap, &replay_headers).await {
+            Ok(o) => o,
+            Err(RkError::UrlPolicy(reason)) => {
                 candidate.validation_state = Some(CandidateValidationState::Failed);
-                candidate.validation_status = Some(format!("probe_error: {e}"));
+                candidate.validation_status = Some(format!("blocked: {reason}"));
                 return;
             }
-        }
-    };
+            Err(e) => {
+                // A non-policy error on the initial probe. For a media candidate that
+                // was a HEAD: many CDNs/object stores simply don't implement HEAD and
+                // hang until the client timeout (observed live: PeerTube
+                // /download/.../*-fragmented.mp4 on p2b.drjpdns.com, dalek.zone,
+                // oplay.radiomercure.fr -> HEAD stalls, 0 bytes; the same URL serves a
+                // 200 on GET). Without a GET fallback the timeout surfaced as a
+                // no-status probe_error -> false Failed on a genuinely-playable file.
+                // The capped chunk-read keeps the GET cheap even when the origin
+                // ignores Range and streams the whole file.
+                if !is_manifest {
+                    match probe_capped_with_headers(&url, true, BODY_HEAD_CAP, &replay_headers)
+                        .await
+                    {
+                        Ok(o) => o,
+                        Err(_) => {
+                            candidate.validation_state = Some(CandidateValidationState::Failed);
+                            candidate.validation_status = Some(format!("probe_error: {e}"));
+                            return;
+                        }
+                    }
+                } else {
+                    candidate.validation_state = Some(CandidateValidationState::Failed);
+                    candidate.validation_status = Some(format!("probe_error: {e}"));
+                    return;
+                }
+            }
+        };
 
     // HEAD unsupported / unhelpful -> one Range GET fallback. A 401/403 from a
     // HEAD carries no body, so the classifier can't tell an S3 AccessDenied
@@ -780,12 +801,13 @@ async fn verify_one(candidate: &mut MediaCandidate, skew_secs: i64) {
     // through. One level only (no segment fetch); failures leave state as-is.
     let state = if state == CandidateValidationState::Usable {
         if let Some(variant) = hls_master_variant_to_probe(&outcome) {
-            match probe_capped_with_headers(&variant, true, MANIFEST_BODY_CAP, &replay_headers).await {
+            match probe_capped_with_headers(&variant, true, MANIFEST_BODY_CAP, &replay_headers)
+                .await
+            {
                 Ok(vo) => {
                     let vstate = classify_probe(&vo, CandidateKind::Manifest, false);
                     if vstate == CandidateValidationState::Drm {
-                        candidate.validation_status =
-                            Some("drm: variant #EXT-X-KEY".to_string());
+                        candidate.validation_status = Some("drm: variant #EXT-X-KEY".to_string());
                         CandidateValidationState::Drm
                     } else {
                         state
@@ -935,7 +957,12 @@ mod tests {
         }
     }
 
-    fn outcome(status: u16, ct: Option<&str>, len: Option<i64>, body: Option<&str>) -> ProbeOutcome {
+    fn outcome(
+        status: u16,
+        ct: Option<&str>,
+        len: Option<i64>,
+        body: Option<&str>,
+    ) -> ProbeOutcome {
         ProbeOutcome {
             status,
             content_type: ct.map(str::to_string),
@@ -1081,7 +1108,12 @@ mod tests {
 
     #[test]
     fn tiny_html_is_suspect_ad() {
-        let o = outcome(200, Some("text/html"), Some(300), Some("<html><body>ad</body></html>"));
+        let o = outcome(
+            200,
+            Some("text/html"),
+            Some(300),
+            Some("<html><body>ad</body></html>"),
+        );
         assert_eq!(
             classify_probe(&o, CandidateKind::Video, false),
             CandidateValidationState::SuspectAd
@@ -1108,7 +1140,12 @@ mod tests {
 
     #[test]
     fn forbidden_with_geo_is_region_blocked() {
-        let o = outcome(403, Some("text/html"), None, Some("This video is not available in your country."));
+        let o = outcome(
+            403,
+            Some("text/html"),
+            None,
+            Some("This video is not available in your country."),
+        );
         assert_eq!(
             classify_probe(&o, CandidateKind::Video, false),
             CandidateValidationState::RegionBlocked
@@ -1117,7 +1154,12 @@ mod tests {
 
     #[test]
     fn forbidden_with_login_is_needs_profile() {
-        let o = outcome(403, Some("text/html"), None, Some("Please sign in to continue"));
+        let o = outcome(
+            403,
+            Some("text/html"),
+            None,
+            Some("Please sign in to continue"),
+        );
         assert_eq!(
             classify_probe(&o, CandidateKind::Video, false),
             CandidateValidationState::NeedsProfile
@@ -1219,17 +1261,24 @@ mod tests {
     fn drm_tag_past_16kib_still_detected() {
         // A multivariant master whose DRM marker sits well past the old 16 KiB
         // media-probe cap. The manifest cap must be large enough that the body
-        // captured for classification still includes it (regression guard for
-        // the cap; classify itself scans whatever it's given).
-        assert!(MANIFEST_BODY_CAP > 16 * 1024 + 32 * 1024);
+        // captured for classification still includes it (the cap itself is
+        // guarded by a compile-time assertion at its definition; classify
+        // scans whatever body it's given).
         let mut body = String::from("#EXTM3U\n");
         // ~24 KiB of clear variant lines before any key tag.
         while body.len() < 24 * 1024 {
             body.push_str("#EXT-X-STREAM-INF:BANDWIDTH=800000\nlow.m3u8\n");
         }
-        body.push_str("#EXT-X-SESSION-KEY:METHOD=SAMPLE-AES,KEYFORMAT=\"com.apple.streamingkeydelivery\"\n");
+        body.push_str(
+            "#EXT-X-SESSION-KEY:METHOD=SAMPLE-AES,KEYFORMAT=\"com.apple.streamingkeydelivery\"\n",
+        );
         assert!(body.len() > 16 * 1024 && body.len() < MANIFEST_BODY_CAP);
-        let o = outcome(200, Some("application/vnd.apple.mpegurl"), None, Some(&body));
+        let o = outcome(
+            200,
+            Some("application/vnd.apple.mpegurl"),
+            None,
+            Some(&body),
+        );
         assert_eq!(
             classify_probe(&o, CandidateKind::Manifest, false),
             CandidateValidationState::Drm
@@ -1384,9 +1433,18 @@ mod tests {
             mk(Some(CandidateValidationState::Usable), 10),
         ];
         sort_verified(&mut v);
-        assert_eq!(v[0].validation_state, Some(CandidateValidationState::Usable));
-        assert_eq!(v[1].validation_state, Some(CandidateValidationState::Untested));
-        assert_eq!(v[2].validation_state, Some(CandidateValidationState::Failed));
+        assert_eq!(
+            v[0].validation_state,
+            Some(CandidateValidationState::Usable)
+        );
+        assert_eq!(
+            v[1].validation_state,
+            Some(CandidateValidationState::Untested)
+        );
+        assert_eq!(
+            v[2].validation_state,
+            Some(CandidateValidationState::Failed)
+        );
     }
 
     #[tokio::test]
@@ -1394,7 +1452,10 @@ mod tests {
         let mut v = vec![mk_candidate(Some(CandidateValidationState::Untested), 50)];
         let cfg = VerifyConfig::default(); // enabled = false
         verify_top_n(&mut v, &cfg).await;
-        assert_eq!(v[0].validation_state, Some(CandidateValidationState::Untested));
+        assert_eq!(
+            v[0].validation_state,
+            Some(CandidateValidationState::Untested)
+        );
     }
 
     #[test]
@@ -1422,7 +1483,10 @@ mod tests {
             hdrs,
             vec![
                 ("Accept-Language".to_string(), "en-us,en;q=0.5".to_string()),
-                ("Referer".to_string(), "https://www.example.com/watch".to_string()),
+                (
+                    "Referer".to_string(),
+                    "https://www.example.com/watch".to_string()
+                ),
                 ("User-Agent".to_string(), "Mozilla/5.0 (X11)".to_string()),
             ]
         );
@@ -1443,7 +1507,10 @@ mod tests {
             "download_headers": { "Referer": "https://x/", "X-Bogus": 42, "Empty": "" }
         });
         let hdrs = candidate_replay_headers(&c);
-        assert_eq!(hdrs, vec![("Referer".to_string(), "https://x/".to_string())]);
+        assert_eq!(
+            hdrs,
+            vec![("Referer".to_string(), "https://x/".to_string())]
+        );
     }
 
     // --- Live integration tests (network). Run explicitly:
@@ -1649,8 +1716,7 @@ mod tests {
         verify_top_n(&mut withref, &enabled_cfg()).await;
         println!(
             "PXIMG +Referer {} -> {:?} status={:?} ct={:?}",
-            withref[0].url, withref[0].validation_state, withref[0].status,
-            withref[0].content_type
+            withref[0].url, withref[0].validation_state, withref[0].status, withref[0].content_type
         );
         assert_eq!(
             withref[0].validation_state,
