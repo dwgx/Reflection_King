@@ -1,0 +1,160 @@
+/*
+ * slider.css — dark-theme range slider styles (cross-browser).
+ *
+ * --fill technique:
+ *   The "filled" portion (left of the thumb) is painted with a hard-stop
+ *   linear-gradient on the WebKit/Blink track. We pass the fill percentage in
+ *   via the `--fill` CSS custom property (set inline by the React component as
+ *   `style={{ "--fill": "42%" }}`). The gradient places the accent colour up to
+ *   `var(--fill)` and the dark track colour from that same stop onward, so the
+ *   two colours meet at a crisp edge under the thumb.
+ *
+ * Firefox split:
+ *   Firefox does NOT let the runnable-track gradient track the thumb position,
+ *   so it exposes a dedicated `::-moz-range-progress` pseudo-element for the
+ *   filled portion and `::-moz-range-track` for the unfilled base. We colour
+ *   them separately there and ignore `--fill` (Firefox sizes the progress
+ *   element automatically from the input's value).
+ *
+ * Palette: bg #08090b, surfaces rgba(255,255,255,0.04-0.08),
+ *          accent #38bdf8 (sky), text #eef2f6, muted #9aa4b2.
+ */
+
+.slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 28px; /* generous hit area */
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.slider:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+/* ---- Track (unfilled base) ---- */
+.slider::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 999px;
+  background: linear-gradient(
+    to right,
+    #38bdf8 var(--fill, 0%),
+    rgba(255, 255, 255, 0.08) var(--fill, 0%)
+  );
+}
+
+.slider::-moz-range-track {
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* ---- Filled progress (Firefox only) ---- */
+.slider::-moz-range-progress {
+  height: 6px;
+  border-radius: 999px;
+  background: #38bdf8;
+}
+
+/* ---- Thumb ---- */
+.slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  margin-top: -5px; /* center 16px thumb on 6px track */
+  border-radius: 50%;
+  background: #38bdf8;
+  border: 2px solid #08090b;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+  transition: box-shadow 0.15s ease, transform 0.1s ease;
+}
+
+.slider::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #38bdf8;
+  border: 2px solid #08090b;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+  transition: box-shadow 0.15s ease, transform 0.1s ease;
+}
+
+.slider:hover::-webkit-slider-thumb {
+  box-shadow: 0 0 0 4px rgba(56, 189, 248, 0.18);
+}
+.slider:hover::-moz-range-thumb {
+  box-shadow: 0 0 0 4px rgba(56, 189, 248, 0.18);
+}
+
+.slider:active::-webkit-slider-thumb {
+  transform: scale(1.12);
+}
+.slider:active::-moz-range-thumb {
+  transform: scale(1.12);
+}
+
+.slider:focus {
+  outline: none;
+}
+.slider:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 4px rgba(56, 189, 248, 0.4);
+}
+.slider:focus-visible::-moz-range-thumb {
+  box-shadow: 0 0 0 4px rgba(56, 189, 248, 0.4);
+}
+
+/* ---- Field layout ---- */
+.slider-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.slider-field__head {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.slider-field__label {
+  font-size: 13px;
+  color: #9aa4b2;
+}
+
+.slider-field__value {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: #eef2f6;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  padding: 2px 8px;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+/* ---- Tick labels ---- */
+.slider-ticks {
+  display: flex;
+  flex-direction: row;
+  justify-content: space-between;
+  margin-top: 2px;
+  font-size: 11px;
+  color: #9aa4b2;
+}
+
+.slider-tick {
+  text-align: center;
+}
+
+.slider-tick.active {
+  color: #38bdf8;
+  font-weight: 600;
+}
