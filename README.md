@@ -51,7 +51,27 @@ Dashboard: http://你的服务器IP:8780
 Admin key file: /root/reflection-king-admin-key.txt
 ```
 
-### Docker Compose
+### Docker（预构建镜像，最快）
+
+无需本地编译，直接拉取 GHCR 上的发布镜像运行：
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/dwgx/Reflection_King/master/docker-compose.ghcr.yml
+curl -fsSLO https://raw.githubusercontent.com/dwgx/Reflection_King/master/.env.docker.example
+cp .env.docker.example .env.docker
+docker compose -f docker-compose.ghcr.yml --env-file .env.docker up -d
+docker compose -f docker-compose.ghcr.yml logs -f reflection-king
+```
+
+固定某个版本（默认拉 `latest`）：
+
+```bash
+RK_IMAGE_TAG=v0.1.0 docker compose -f docker-compose.ghcr.yml --env-file .env.docker up -d
+```
+
+### Docker Compose（本地构建）
+
+需要自行编译时（Rust release + Playwright，首次较慢）：
 
 ```bash
 git clone https://github.com/dwgx/Reflection_King.git
