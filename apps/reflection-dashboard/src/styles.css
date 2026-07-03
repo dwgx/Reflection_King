@@ -340,15 +340,6 @@
     height: auto;
   }
 
-  .command-text {
-    min-height: 72px;
-    padding: 10px 11px;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 12px;
-    line-height: 18px;
-    resize: vertical;
-  }
-
   .key-input {
     min-width: 280px;
   }
@@ -407,17 +398,6 @@
     min-width: 130px;
   }
 
-  .icon-button {
-    display: grid;
-    width: 30px;
-    height: 30px;
-    place-items: center;
-    border: 1px solid #2b3340;
-    border-radius: 7px;
-    background: #0b0d12;
-    color: #dbe3ed;
-  }
-
   .notice-strip {
     border: 1px solid #265a65;
     border-radius: 8px;
@@ -432,8 +412,7 @@
     color: #ffe2a4;
   }
 
-  .admin-note,
-  .command-box {
+  .admin-note {
     border: 1px solid #263142;
     border-radius: 8px;
     background: #0a0d12;
@@ -441,22 +420,6 @@
     color: #95a1b1;
     font-size: 12px;
     line-height: 18px;
-  }
-
-  .command-box {
-    display: grid;
-    gap: 8px;
-  }
-
-  .command-box > div:first-child {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-  }
-
-  .command-box strong {
-    color: #e9eef5;
   }
 
   .parameter-grid {
