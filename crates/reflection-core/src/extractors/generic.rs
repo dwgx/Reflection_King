@@ -70,8 +70,7 @@ impl SourceExtractor for GenericExtractor {
         let mut seen_pages = std::collections::HashSet::new();
         // Worklist of (page URL, depth). Depth 0 is the requested page; embeds
         // and oEmbed players are followed up to `MAX_FOLLOW_DEPTH`.
-        let mut queue: std::collections::VecDeque<(Url, usize)> =
-            std::collections::VecDeque::new();
+        let mut queue: std::collections::VecDeque<(Url, usize)> = std::collections::VecDeque::new();
         queue.push_back((ctx.url.clone(), 0));
 
         while let Some((page_url, depth)) = queue.pop_front() {
@@ -203,13 +202,19 @@ async fn fetch_page(start_url: &Url) -> Result<String> {
     let mut url = start_url.clone();
     for redirect_count in 0..=MAX_REDIRECTS {
         validate_url(&url)?;
-        let response = client.get(url.clone()).headers(headers.clone()).send().await?;
+        let response = client
+            .get(url.clone())
+            .headers(headers.clone())
+            .send()
+            .await?;
         validate_response_url_and_peer(&response)?;
         let status = response.status();
 
         if status.is_redirection() {
             if redirect_count == MAX_REDIRECTS {
-                return Err(RkError::Source("generic page had too many redirects".to_string()));
+                return Err(RkError::Source(
+                    "generic page had too many redirects".to_string(),
+                ));
             }
             let location = response
                 .headers()
@@ -222,7 +227,9 @@ async fn fetch_page(start_url: &Url) -> Result<String> {
         }
 
         if status != StatusCode::OK {
-            return Err(RkError::Source(format!("generic page returned HTTP {status}")));
+            return Err(RkError::Source(format!(
+                "generic page returned HTTP {status}"
+            )));
         }
 
         // Only parse HTML-ish bodies; a non-HTML body here means `direct` should
@@ -248,7 +255,9 @@ async fn fetch_page(start_url: &Url) -> Result<String> {
         };
         return Ok(String::from_utf8_lossy(slice).into_owned());
     }
-    Err(RkError::Source("generic page fetch exhausted redirects".to_string()))
+    Err(RkError::Source(
+        "generic page fetch exhausted redirects".to_string(),
+    ))
 }
 
 /// Fetch an oEmbed endpoint and return the player/media URL it advertises, if
@@ -269,7 +278,11 @@ async fn fetch_oembed_target(base: &Url, endpoint: &str) -> Result<Option<Url>> 
         return Ok(None);
     }
     let body = response.bytes().await?;
-    let slice = if body.len() > MAX_HTML_BYTES { &body[..MAX_HTML_BYTES] } else { &body[..] };
+    let slice = if body.len() > MAX_HTML_BYTES {
+        &body[..MAX_HTML_BYTES]
+    } else {
+        &body[..]
+    };
     let value: Value = match serde_json::from_slice(slice) {
         Ok(value) => value,
         Err(_) => return Ok(None),
@@ -287,7 +300,10 @@ async fn fetch_oembed_target(base: &Url, endpoint: &str) -> Result<Option<Url>> 
     if let Some(html) = value.get("html").and_then(Value::as_str) {
         let lower = html.to_ascii_lowercase();
         if let Some(rel) = lower.find("<iframe") {
-            let end = lower[rel..].find('>').map(|e| rel + e + 1).unwrap_or(lower.len());
+            let end = lower[rel..]
+                .find('>')
+                .map(|e| rel + e + 1)
+                .unwrap_or(lower.len());
             let tag = &html[rel..end];
             let tag_lower = &lower[rel..end];
             if let Some(src) = attr_value(tag, tag_lower, "src") {
@@ -324,7 +340,11 @@ async fn fetch_api_media(
         return Ok(Vec::new());
     }
     let body = response.bytes().await?;
-    let slice = if body.len() > MAX_HTML_BYTES { &body[..MAX_HTML_BYTES] } else { &body[..] };
+    let slice = if body.len() > MAX_HTML_BYTES {
+        &body[..MAX_HTML_BYTES]
+    } else {
+        &body[..]
+    };
     let value: Value = match serde_json::from_slice(slice) {
         Ok(value) => value,
         Err(_) => return Ok(Vec::new()),
@@ -413,7 +433,9 @@ impl<'a> Collector<'a> {
             {
                 let id = id.trim();
                 if !id.is_empty()
-                    && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                    && id
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
                 {
                     if let Ok(api) = self.base.join(&format!("/api/v1/media/{id}")) {
                         self.push_api_endpoint(api);
@@ -538,8 +560,12 @@ impl<'a> Collector<'a> {
     /// `og:video` is `/videos/embed/<id>`), follow it so a deeper pass can find
     /// the real stream. `og:video:url` / `twitter:player` are common embed forms.
     fn scan_meta_tags(&mut self, html: &str) {
-        const VIDEO_PROPS: &[&str] =
-            &["og:video", "og:video:url", "og:video:secure_url", "twitter:player:stream"];
+        const VIDEO_PROPS: &[&str] = &[
+            "og:video",
+            "og:video:url",
+            "og:video:secure_url",
+            "twitter:player:stream",
+        ];
         const AUDIO_PROPS: &[&str] = &["og:audio", "og:audio:url", "og:audio:secure_url"];
         const EMBED_PROPS: &[&str] = &["og:video:iframe", "twitter:player"];
 
@@ -665,11 +691,11 @@ impl<'a> Collector<'a> {
                 // and recurse. Depth-bounded by the caller's guard.
                 let t = s.trim_start();
                 if t.starts_with('{') || t.starts_with('[') {
-                    if (s.contains("m3u8")
+                    if s.contains("m3u8")
                         || s.contains(".mpd")
                         || s.contains(".mp4")
                         || s.contains("playUrl")
-                        || s.contains("backupUrl"))
+                        || s.contains("backupUrl")
                     {
                         if let Ok(inner) = serde_json::from_str::<Value>(s) {
                             self.harvest_json_urls(&inner, depth + 1);
@@ -735,8 +761,12 @@ impl<'a> Collector<'a> {
                 // Guard against matching a longer tag that merely starts with
                 // these bytes (none today, but keep the boundary cheap & safe).
                 let after = lower.as_bytes().get(start + tag_name.len());
-                let boundary = matches!(after, Some(b) if b.is_ascii_whitespace() || *b == b'>' || *b == b'/');
-                let end = lower[start..].find('>').map(|e| start + e + 1).unwrap_or(lower.len());
+                let boundary =
+                    matches!(after, Some(b) if b.is_ascii_whitespace() || *b == b'>' || *b == b'/');
+                let end = lower[start..]
+                    .find('>')
+                    .map(|e| start + e + 1)
+                    .unwrap_or(lower.len());
                 from = end;
                 if !boundary {
                     continue;
@@ -791,7 +821,10 @@ impl<'a> Collector<'a> {
         let mut from = 0;
         while let Some(rel) = lower[from..].find("<link") {
             let start = from + rel;
-            let end = lower[start..].find('>').map(|e| start + e + 1).unwrap_or(lower.len());
+            let end = lower[start..]
+                .find('>')
+                .map(|e| start + e + 1)
+                .unwrap_or(lower.len());
             let tag = &html[start..end];
             let tag_lower = &lower[start..end];
             from = end;
@@ -822,7 +855,10 @@ impl<'a> Collector<'a> {
         let mut from = 0;
         while let Some(rel) = lower[from..].find("<iframe") {
             let start = from + rel;
-            let end = lower[start..].find('>').map(|e| start + e + 1).unwrap_or(lower.len());
+            let end = lower[start..]
+                .find('>')
+                .map(|e| start + e + 1)
+                .unwrap_or(lower.len());
             let tag = &html[start..end];
             let tag_lower = &lower[start..end];
             from = end;
@@ -852,7 +888,10 @@ fn meta_contents(html: &str, key: &str) -> Vec<String> {
     let mut from = 0;
     while let Some(rel) = lower[from..].find("<meta") {
         let start = from + rel;
-        let end = lower[start..].find('>').map(|e| start + e + 1).unwrap_or(lower.len());
+        let end = lower[start..]
+            .find('>')
+            .map(|e| start + e + 1)
+            .unwrap_or(lower.len());
         let tag = &html[start..end];
         let tag_lower = &lower[start..end];
         from = end;
@@ -899,7 +938,9 @@ fn attr_value(tag: &str, tag_lower: &str, attr: &str) -> Option<String> {
             }
         } else {
             // Unquoted attribute: read until whitespace or '>'.
-            let endi = rest.find(|c: char| c.is_whitespace() || c == '>').unwrap_or(rest.len());
+            let endi = rest
+                .find(|c: char| c.is_whitespace() || c == '>')
+                .unwrap_or(rest.len());
             return Some(rest[..endi].to_string());
         }
     }
@@ -1001,8 +1042,16 @@ fn url_like_tokens(html: &str) -> Vec<String> {
             let tail = &html[start..];
             let endi = tail
                 .find(|c: char| {
-                    c == '"' || c == '\'' || c == '<' || c == '>' || c == ' ' || c == '\n'
-                        || c == '\t' || c == '\r' || c == ')' || c == '}'
+                    c == '"'
+                        || c == '\''
+                        || c == '<'
+                        || c == '>'
+                        || c == ' '
+                        || c == '\n'
+                        || c == '\t'
+                        || c == '\r'
+                        || c == ')'
+                        || c == '}'
                 })
                 .unwrap_or(tail.len());
             let token = &tail[..endi];
@@ -1036,7 +1085,10 @@ fn decode_url_escapes(input: &str) -> String {
             .replace("&#38;", "&");
     }
     if s.contains("\\u") {
-        s = s.replace("\\u002F", "/").replace("\\u002f", "/").replace("\\u0026", "&");
+        s = s
+            .replace("\\u002F", "/")
+            .replace("\\u002f", "/")
+            .replace("\\u0026", "&");
     }
     s
 }
@@ -1063,8 +1115,16 @@ fn classify_media_type(mime: &str) -> Option<CandidateKind> {
 
 fn classify_url(url: &str) -> Option<CandidateKind> {
     // Strip query/fragment before looking at the extension.
-    let path = url.split(['?', '#']).next().unwrap_or(url).to_ascii_lowercase();
-    let ext = path.rsplit('/').next().and_then(|seg| seg.rsplit_once('.')).map(|(_, e)| e)?;
+    let path = url
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(url)
+        .to_ascii_lowercase();
+    let ext = path
+        .rsplit('/')
+        .next()
+        .and_then(|seg| seg.rsplit_once('.'))
+        .map(|(_, e)| e)?;
     match ext {
         "m3u8" | "mpd" => Some(CandidateKind::Manifest),
         // `.ogv` (Ogg video) and `.ogm` are common on archive.org / Wikimedia
@@ -1123,7 +1183,10 @@ mod tests {
         };
         let result = GenericExtractor.extract(&ctx).await.expect("extract ok");
         for c in &result.candidates {
-            eprintln!("[{}] score={} kind={:?} {}", c.method, c.score, c.kind, c.url);
+            eprintln!(
+                "[{}] score={} kind={:?} {}",
+                c.method, c.score, c.kind, c.url
+            );
         }
         assert!(
             !result.candidates.is_empty(),
@@ -1155,8 +1218,14 @@ mod tests {
 
     #[test]
     fn classify_url_reads_extension_past_query() {
-        assert_eq!(classify_url("https://x/a.m3u8?token=1"), Some(CandidateKind::Manifest));
-        assert_eq!(classify_url("https://x/a.mp4#t=10"), Some(CandidateKind::Video));
+        assert_eq!(
+            classify_url("https://x/a.m3u8?token=1"),
+            Some(CandidateKind::Manifest)
+        );
+        assert_eq!(
+            classify_url("https://x/a.mp4#t=10"),
+            Some(CandidateKind::Video)
+        );
         assert_eq!(classify_url("https://x/page.html"), None);
     }
 
@@ -1166,14 +1235,20 @@ mod tests {
         // Spaces in the path don't change the extension read.
         assert_eq!(classify_url("https://x/a.ogv"), Some(CandidateKind::Video));
         assert_eq!(classify_url("https://x/a.ogm"), Some(CandidateKind::Video));
-        assert_eq!(classify_url("https://x/Daffy Duck (1939).ogv"), Some(CandidateKind::Video));
+        assert_eq!(
+            classify_url("https://x/Daffy Duck (1939).ogv"),
+            Some(CandidateKind::Video)
+        );
         assert_eq!(classify_url("https://x/a.ogg"), Some(CandidateKind::Audio));
     }
 
     #[test]
     fn decode_handles_backslash_and_entities() {
         assert_eq!(decode_url_escapes(r"https:\/\/x\/a.mp4"), "https://x/a.mp4");
-        assert_eq!(decode_url_escapes("https://x/a?b=1&amp;c=2"), "https://x/a?b=1&c=2");
+        assert_eq!(
+            decode_url_escapes("https://x/a?b=1&amp;c=2"),
+            "https://x/a?b=1&c=2"
+        );
     }
 
     #[test]
@@ -1243,9 +1318,14 @@ mod tests {
         let ctx = test_ctx("https://framatube.org/w/abc");
         let mut c = Collector::new(&ctx, ctx.url.clone());
         // PeerTube shape: og:video points at a player page with no media ext.
-        c.scan_meta_tags(r#"<meta property="og:video" content="https://framatube.org/videos/embed/abc">"#);
+        c.scan_meta_tags(
+            r#"<meta property="og:video" content="https://framatube.org/videos/embed/abc">"#,
+        );
         assert!(c.candidates.is_empty());
-        assert_eq!(c.follow, vec!["https://framatube.org/videos/embed/abc".to_string()]);
+        assert_eq!(
+            c.follow,
+            vec!["https://framatube.org/videos/embed/abc".to_string()]
+        );
     }
 
     #[test]
@@ -1390,17 +1470,18 @@ mod tests {
         });
         c.harvest_json_urls(&value, 0);
         assert!(
-            c.candidates
-                .iter()
-                .any(|cand| cand.url == "https://demo.mediacms.io/media/hls/abcdef/master.m3u8"
-                    && cand.kind == CandidateKind::Manifest
-                    && cand.method == "inline_json"),
+            c.candidates.iter().any(|cand| cand.url
+                == "https://demo.mediacms.io/media/hls/abcdef/master.m3u8"
+                && cand.kind == CandidateKind::Manifest
+                && cand.method == "inline_json"),
             "expected the root-relative master.m3u8 to be resolved against the API base, got {:?}",
             c.candidates.iter().map(|x| &x.url).collect::<Vec<_>>()
         );
         // The relative poster image must NOT become a candidate (image skip).
         assert!(
-            c.candidates.iter().all(|cand| !cand.url.contains("thumbnails")),
+            c.candidates
+                .iter()
+                .all(|cand| !cand.url.contains("thumbnails")),
             "poster thumbnail leaked into candidates"
         );
     }

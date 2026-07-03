@@ -19,8 +19,7 @@ use reflection_core::{
     job_store::JobStore,
     models::{
         ApiKeyRecord, ApiKeyRole, ApiKeyView, ArchiveFileView, ArchiveTreeView, ArtifactView,
-        AuthMode,
-        CacheCategoryView, CacheCleanupEntryView, CacheCleanupRequest, CacheCleanupView,
+        AuthMode, CacheCategoryView, CacheCleanupEntryView, CacheCleanupRequest, CacheCleanupView,
         CacheInventoryView, CandidateKind, CandidateProtection, CandidateValidationState,
         ClearJobsResponse, CreateUserKeyRequest, CreatedUserKeyResponse, DiscoveryMode,
         HiddenJobBatchView, JobRecord, JobStatus, JobView, MediaCandidate, OutputKind,

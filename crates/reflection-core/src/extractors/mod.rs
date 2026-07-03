@@ -11,8 +11,8 @@
 
 mod browser;
 mod direct;
-mod generic;
 mod external_tool;
+mod generic;
 mod hanime;
 mod mac_cms;
 pub mod verify;
@@ -20,8 +20,8 @@ mod yt_dlp;
 
 pub use browser::BrowserExtractor;
 pub use direct::DirectExtractor;
-pub use generic::GenericExtractor;
 pub use external_tool::ExternalToolExtractor;
+pub use generic::GenericExtractor;
 pub use hanime::HanimeExtractor;
 pub use mac_cms::MacCmsEpisodeExtractor;
 pub use yt_dlp::YtDlpExtractor;
@@ -731,7 +731,10 @@ mod tests {
                         | Some(CandidateValidationState::Failed)
                         | Some(CandidateValidationState::SuspectAd)
                 ) {
-                    let status = c.status.map(|s| s.to_string()).unwrap_or_else(|| "-".into());
+                    let status = c
+                        .status
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| "-".into());
                     let ct = c.content_type.as_deref().unwrap_or("-");
                     diag_candidates
                         .entry(format!("{:?}", c.validation_state.unwrap()))
@@ -759,9 +762,19 @@ mod tests {
             );
         }
 
-        println!("\n=== CATALOG SUMMARY ({} pages, verify={}) ===", pages.len(), verify_on);
-        println!("pages with >=1 candidate : {pages_with_cands}/{}", pages.len());
-        println!("pages top-candidate Usable: {pages_top_usable}/{}", pages.len());
+        println!(
+            "\n=== CATALOG SUMMARY ({} pages, verify={}) ===",
+            pages.len(),
+            verify_on
+        );
+        println!(
+            "pages with >=1 candidate : {pages_with_cands}/{}",
+            pages.len()
+        );
+        println!(
+            "pages top-candidate Usable: {pages_top_usable}/{}",
+            pages.len()
+        );
         println!("candidate state breakdown : {state_counts:?}");
         // Per-state page lists for every non-Usable top verdict, so a reviewer
         // can jump straight to the sites behind each Drm/Failed/NeedsProfile/...

@@ -236,11 +236,7 @@ async fn index() -> Response {
 async fn safe_dashboard_asset_path(path: &str) -> Option<std::path::PathBuf> {
     use std::path::{Component, Path as StdPath};
 
-    if path.is_empty()
-        || path.contains("..")
-        || path.starts_with('/')
-        || path.contains('\\')
-    {
+    if path.is_empty() || path.contains("..") || path.starts_with('/') || path.contains('\\') {
         return None;
     }
     let rel = StdPath::new(path);
@@ -594,7 +590,9 @@ async fn get_archive_file(
         return Err(RkError::Source("archive file is empty".to_string()).into());
     }
     let filename = path.file_name().and_then(|value| value.to_str());
-    let content_type = filename.map(content_type_for).unwrap_or("application/octet-stream");
+    let content_type = filename
+        .map(content_type_for)
+        .unwrap_or("application/octet-stream");
     // C1 defense: archived bytes come from arbitrary captured pages. If a
     // captured .html is served inline as text/html on the dashboard origin,
     // its <script> runs with access to the stored API key. Mark every archive

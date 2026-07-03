@@ -771,7 +771,10 @@ mod tests {
         ] {
             let url = Url::parse(raw).expect("valid url");
             let result = fetch_following_redirects(&client, url, |request| request).await;
-            assert!(result.is_err(), "expected blocked-address rejection for {raw}");
+            assert!(
+                result.is_err(),
+                "expected blocked-address rejection for {raw}"
+            );
         }
     }
 }

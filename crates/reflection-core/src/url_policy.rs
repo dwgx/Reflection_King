@@ -129,7 +129,12 @@ fn embedded_ipv4(ip: Ipv6Addr) -> Option<Ipv4Addr> {
     }
 
     // NAT64 well-known prefix 64:ff9b::/96 embeds a.b.c.d in the low 32 bits.
-    if seg[0] == 0x0064 && seg[1] == 0xff9b && seg[2] == 0 && seg[3] == 0 && seg[4] == 0 && seg[5] == 0
+    if seg[0] == 0x0064
+        && seg[1] == 0xff9b
+        && seg[2] == 0
+        && seg[3] == 0
+        && seg[4] == 0
+        && seg[5] == 0
     {
         let [a, b] = seg[6].to_be_bytes();
         let [c, d] = seg[7].to_be_bytes();
@@ -181,13 +186,13 @@ mod tests {
             ("::ffff:1.1.1.1", false),
             ("::ffff:8.8.8.8", false),
             // 6to4 wrapping metadata / private
-            ("2002:a9fe:a9fe::", true),   // 169.254.169.254
-            ("2002:0a00:0001::", true),   // 10.0.0.1
-            ("2002:0808:0808::", false),  // 8.8.8.8 public
+            ("2002:a9fe:a9fe::", true),  // 169.254.169.254
+            ("2002:0a00:0001::", true),  // 10.0.0.1
+            ("2002:0808:0808::", false), // 8.8.8.8 public
             // NAT64 well-known prefix wrapping metadata / private
-            ("64:ff9b::a9fe:a9fe", true), // 169.254.169.254
-            ("64:ff9b::0a00:0001", true), // 10.0.0.1
-            ("64:ff9b::0808:0808", false),// 8.8.8.8 public
+            ("64:ff9b::a9fe:a9fe", true),  // 169.254.169.254
+            ("64:ff9b::0a00:0001", true),  // 10.0.0.1
+            ("64:ff9b::0808:0808", false), // 8.8.8.8 public
             // Plain v6 loopback / unspecified / ULA / link-local stay blocked
             ("::1", true),
             ("::", true),
