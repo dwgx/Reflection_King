@@ -37,8 +37,12 @@ jobs:
           # yields reflection_king (underscore) from the repo name, but the
           # published/documented image is reflection-king (hyphen).
           images: ghcr.io/dwgx/reflection-king
+          # Emit both v-prefixed and bare tags so `v0.1.0` (matching the git
+          # tag, as documented) and `0.1.0` both resolve.
           tags: |
+            type=semver,pattern=v{{version}}
             type=semver,pattern={{version}}
+            type=semver,pattern=v{{major}}.{{minor}}
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
 
