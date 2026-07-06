@@ -31,7 +31,7 @@ jobs:
 
       - name: Derive image metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           # Pin the image path explicitly: deriving from github.repository
           # yields reflection_king (underscore) from the repo name, but the
