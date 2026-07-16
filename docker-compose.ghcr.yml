@@ -3,11 +3,24 @@
 #   cp .env.docker.example .env.docker
 #   docker compose -f docker-compose.ghcr.yml --env-file .env.docker up -d
 #
-# Pin a specific release by setting RK_IMAGE_TAG (defaults to latest):
-#   RK_IMAGE_TAG=v0.1.0 docker compose -f docker-compose.ghcr.yml --env-file .env.docker up -d
+# REPRODUCIBILITY: the default image is pinned by DIGEST, not a tag. A digest
+# (sha256:...) is immutable — the same reference always pulls the exact same
+# bytes, so an AI or operator following the deploy doc gets an identical
+# deployment every time. Tags (latest, v0.1.0) can be re-pushed and are NOT
+# guaranteed identical. See docs/ONE_CLICK_DEPLOY.md for the digest-verify step.
+#
+# Default = v0.1.0 @ sha256:ad780a20bb0aa8b1717ecc9fead9b77595d1cba51f9241ba69d7d491b355b2ac
+#
+# To deploy a different build, override RK_IMAGE_REF with another digest:
+#   RK_IMAGE_REF=ghcr.io/dwgx/reflection-king@sha256:<digest> \
+#     docker compose -f docker-compose.ghcr.yml --env-file .env.docker up -d
+#
+# Convenience only (NOT byte-identical — avoid for production): pin by tag:
+#   RK_IMAGE_REF=ghcr.io/dwgx/reflection-king:v0.1.0 \
+#     docker compose -f docker-compose.ghcr.yml --env-file .env.docker up -d
 services:
   reflection-king:
-    image: "ghcr.io/dwgx/reflection-king:${RK_IMAGE_TAG:-latest}"
+    image: "${RK_IMAGE_REF:-ghcr.io/dwgx/reflection-king@sha256:ad780a20bb0aa8b1717ecc9fead9b77595d1cba51f9241ba69d7d491b355b2ac}"
     pull_policy: always
     restart: unless-stopped
     init: true

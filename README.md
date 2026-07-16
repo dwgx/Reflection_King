@@ -51,23 +51,22 @@ Dashboard: http://你的服务器IP:8780
 Admin key file: /root/reflection-king-admin-key.txt
 ```
 
-### Docker（预构建镜像，最快）
+### Docker（预构建镜像，最快 —— 生产推荐）
 
-无需本地编译，直接拉取 GHCR 上的发布镜像运行：
+无需本地编译，直接拉取 GHCR 上的发布镜像运行。`docker-compose.ghcr.yml` 的默认
+镜像已按 **digest（sha256）锁定**，保证每次部署字节一致（要"一模一样"就用这个）：
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/dwgx/Reflection_King/master/docker-compose.ghcr.yml
-curl -fsSLO https://raw.githubusercontent.com/dwgx/Reflection_King/master/.env.docker.example
+curl -fsSLO https://raw.githubusercontent.com/dwgx/Reflection_King/v0.1.0/docker-compose.ghcr.yml
+curl -fsSLO https://raw.githubusercontent.com/dwgx/Reflection_King/v0.1.0/.env.docker.example
 cp .env.docker.example .env.docker
 docker compose -f docker-compose.ghcr.yml --env-file .env.docker up -d
 docker compose -f docker-compose.ghcr.yml logs -f reflection-king
 ```
 
-固定某个版本（默认拉 `latest`）：
-
-```bash
-RK_IMAGE_TAG=v0.1.0 docker compose -f docker-compose.ghcr.yml --env-file .env.docker up -d
-```
+**完整的确定性部署剧本（含 digest 校验、升级/回滚）见
+[`docs/ONE_CLICK_DEPLOY.md`](docs/ONE_CLICK_DEPLOY.md)。** 生产请用 digest，
+不要用可变的 `latest`。
 
 ### Docker Compose（本地构建）
 
